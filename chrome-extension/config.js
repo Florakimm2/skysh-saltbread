@@ -5,5 +5,6 @@ globalThis.SALTBREAD_CONFIG = Object.freeze({
   apiBaseUrl: "https://skysh-saltbread.vercel.app",
   dashboardUrl: "https://skysh-saltbread.vercel.app/dashboard",
   detectPath: "/api/ext/detect",
+  behaviorEventsPath: "/api/behavior/events",
   upbitApiBaseUrl: "https://api.upbit.com",
 });
