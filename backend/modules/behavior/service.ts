@@ -5,6 +5,7 @@ import { analyzeEmotionRisk } from "./analyzer";
 import {
   createBehaviorEvent,
   createRiskAnalysis,
+  findBehaviorEventsByUser,
   findRecentBehaviorEvents,
 } from "./repository";
 import type {
@@ -22,24 +23,21 @@ export async function recordBehaviorEvent(
 }*/
 
 export async function recordBehaviorEvent(params: {
-    userId: string;
-    input: BehaviorEventInput;
-  }) {
-    return createBehaviorEvent({
-      userId: params.userId,
-      input: params.input,
-    });
-  }
+  userId: string;
+  input: BehaviorEventInput;
+}) {
+  return createBehaviorEvent(params.userId, params.input);
+}
 
-  export async function getRecentBehaviorLogs(params: {
-    userId: string;
-    limit?: number;
-  }) {
-    return findRecentBehaviorEvents({
-      userId: params.userId,
-      limit: params.limit,
-    });
-  }
+export async function getRecentBehaviorLogs(params: {
+  userId: string;
+  limit?: number;
+}) {
+  return findBehaviorEventsByUser({
+    userId: params.userId,
+    limit: params.limit,
+  });
+}
 
 export async function analyzeCurrentRisk(
   userId: string,
