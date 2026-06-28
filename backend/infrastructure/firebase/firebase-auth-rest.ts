@@ -1,6 +1,6 @@
 import { AppError } from "@/backend/common/errors";
 
-const API_KEY = process.env.FIREBASE_PRIVATE_KEY;
+const API_KEY = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
 
 if (!API_KEY) {
   throw new Error("FIREBASE_WEB_API_KEY is missing");
