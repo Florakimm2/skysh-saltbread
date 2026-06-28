@@ -9,7 +9,7 @@ function getPrivateKey() {
     throw new Error("FIREBASE_PRIVATE_KEY is missing");
   }
 
-  return privateKey.replace(/\\n/g, "\n");
+  return privateKey;
 }
 
 const app =
