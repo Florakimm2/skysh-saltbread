@@ -106,16 +106,6 @@ function createPanel(auth) {
           그래도 진행
         </button>
       </div>
-
-      <section class="saltbread-panel__section" aria-labelledby="saltbread-ping-title">
-        <div class="saltbread-panel__section-heading">
-          <h2 id="saltbread-ping-title">API Ping</h2>
-        </div>
-        <button class="saltbread-panel__button" type="button">API Ping</button>
-        <p class="saltbread-panel__result" aria-live="polite">
-          버튼을 눌러 서버 연결을 확인하세요.
-        </p>
-      </section>
     </div>
   `;
 
@@ -127,9 +117,6 @@ function createPanel(auth) {
   panel
     .querySelector(".saltbread-panel__reopen")
     .addEventListener("click", () => setPanelCollapsed(panel, false));
-  panel
-    .querySelector(".saltbread-panel__button")
-    .addEventListener("click", () => requestPing(panel));
   panel
     .querySelector(".saltbread-action-button--history")
     .addEventListener("click", openDashboard);
@@ -311,35 +298,6 @@ function stopBehaviorTracking() {
   window.clearInterval(behaviorTimerId);
   behaviorTimerId = null;
   behaviorState = null;
-}
-
-async function requestPing(panel) {
-  const button = panel.querySelector(".saltbread-panel__button");
-  const result = panel.querySelector(".saltbread-panel__result");
-
-  button.disabled = true;
-  result.dataset.status = "pending";
-  result.textContent = "요청 중...";
-
-  try {
-    // 페이지 CORS 정책을 피하기 위해 실제 요청은 background에서 수행합니다.
-    const response = await chrome.runtime.sendMessage({
-      type: "REQUEST_API_PING",
-    });
-
-    if (!response?.ok) {
-      throw new Error(response?.error || "요청에 실패했습니다.");
-    }
-
-    result.dataset.status = "success";
-    result.textContent = response.text;
-  } catch (error) {
-    result.dataset.status = "error";
-    result.textContent =
-      error instanceof Error ? error.message : "요청에 실패했습니다.";
-  } finally {
-    button.disabled = false;
-  }
 }
 
 function syncPanel(auth) {

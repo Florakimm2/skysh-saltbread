@@ -91,8 +91,7 @@
 
 .saltbread-panel__collapse:focus-visible,
 .saltbread-panel__reopen:focus-visible,
-.saltbread-action-button:focus-visible,
-.saltbread-panel__button:focus-visible {
+.saltbread-action-button:focus-visible {
   outline: 3px solid rgba(49, 115, 255, 0.28);
   outline-offset: 2px;
 }
@@ -165,18 +164,6 @@
   border-radius: 50%;
   background: #3478f6;
   box-shadow: 0 0 0 3px rgba(52, 120, 246, 0.12);
-}
-
-.saltbread-panel__section + .saltbread-panel__section {
-  margin-top: 18px;
-  padding-top: 18px;
-  border-top: 1px solid #e3e9f2;
-}
-
-.saltbread-panel__actions + .saltbread-panel__section {
-  margin-top: 18px;
-  padding-top: 18px;
-  border-top: 1px solid #e3e9f2;
 }
 
 .saltbread-panel__section-heading {
@@ -285,49 +272,6 @@
   border-color: #c52633;
   background: #c92c38;
   box-shadow: 0 6px 14px rgba(201, 44, 56, 0.24);
-}
-
-.saltbread-panel__button {
-  width: 100%;
-  height: 42px;
-  border: 0;
-  border-radius: 10px;
-  color: #ffffff;
-  background: #2468ed;
-  font-size: 14px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.saltbread-panel__button:hover {
-  background: #1959d1;
-}
-
-.saltbread-panel__button:disabled {
-  cursor: wait;
-  opacity: 0.65;
-}
-
-.saltbread-panel__result {
-  min-height: 38px;
-  margin: 9px 0 0;
-  padding: 10px;
-  overflow-wrap: anywhere;
-  border-radius: 9px;
-  color: #65738b;
-  background: #eef2f8;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.saltbread-panel__result[data-status="success"] {
-  color: #087a4c;
-  background: #e7f8f0;
-}
-
-.saltbread-panel__result[data-status="error"] {
-  color: #c83244;
-  background: #fff0f2;
 }
 
 @media (prefers-reduced-motion: reduce) {
