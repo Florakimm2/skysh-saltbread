@@ -102,3 +102,15 @@ export interface RiskAnalysisDoc extends RiskAnalysisResult {
   symbol: string;
   createdAt: string;
 }
+
+export interface BehaviorEventCount {
+  eventType: BehaviorEventType;
+  count: number;
+}
+
+export interface PastTrendRecord {
+  id: string;
+  detectedAt: string;
+  patterns: EmotionPattern[];
+  behaviorData: BehaviorEventCount[];
+}

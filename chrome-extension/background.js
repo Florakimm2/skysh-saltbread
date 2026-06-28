@@ -8,12 +8,15 @@ const {
 } = globalThis.SaltbreadCore;
 const {
   appUrl: APP_URL,
+  appOrigins,
   apiBaseUrl: API_BASE_URL,
   dashboardUrl: DASHBOARD_URL,
   detectPath: DETECT_PATH,
   upbitApiBaseUrl: UPBIT_API_BASE_URL,
 } = globalThis.SALTBREAD_CONFIG;
-const APP_TAB_URL_PATTERN = `${APP_URL}/*`;
+const APP_TAB_URL_PATTERNS = [...new Set([APP_URL, ...(appOrigins || [])])].map(
+  (origin) => `${origin}/*`,
+);
 const COLLECTION_ALARM = "saltbread-minute-collection";
 const CREDENTIALS_STORAGE_KEY = "upbitCredentials";
 const SESSION_KEY_STORAGE_KEY = "upbitCredentialSessionKey";
@@ -565,7 +568,7 @@ async function runMinuteCycle() {
     url: [
       "https://upbit.com/exchange*",
       "https://www.upbit.com/exchange*",
-      APP_TAB_URL_PATTERN,
+      ...APP_TAB_URL_PATTERNS,
     ],
   });
   await Promise.all(tabs.map(runMinuteCycleForTab));

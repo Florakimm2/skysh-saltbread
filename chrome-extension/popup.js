@@ -1,6 +1,14 @@
 const API_BASE_URL = globalThis.SALTBREAD_CONFIG.apiBaseUrl;
+const CONSENT_STORAGE_KEY = "behaviorDataConsent";
+const CONSENT_VERSION = 1;
+const consentView = document.querySelector("#consent-view");
 const authView = document.querySelector("#auth-view");
 const accountView = document.querySelector("#account-view");
+const acceptConsentButton = document.querySelector("#accept-consent-button");
+const declineConsentButton = document.querySelector("#decline-consent-button");
+const behaviorConsentCheckbox = document.querySelector(
+  "#behavior-consent-checkbox",
+);
 const loginTab = document.querySelector("#login-tab");
 const signupTab = document.querySelector("#signup-tab");
 const loginForm = document.querySelector("#login-form");
@@ -16,6 +24,7 @@ const saveApiKeyButton = document.querySelector("#save-api-key-button");
 const unlockApiKeyButton = document.querySelector("#unlock-api-key-button");
 const deleteApiKeyButton = document.querySelector("#delete-api-key-button");
 const popupRoot = document.documentElement;
+let hasBehaviorDataConsent = false;
 const popupFlame = new CuteIdleFlame("#popup-flame", {
   mode: "default",
   label: "현재 감정 매매 상태를 보여주는 불꽃",
@@ -45,15 +54,34 @@ function showForm(type) {
 function showAccount(user) {
   accountName.textContent = user.name || "Fireguard 사용자";
   accountEmail.textContent = user.email;
+  consentView.hidden = true;
   authView.hidden = true;
   accountView.hidden = false;
   refreshCredentialStatus();
 }
 
 function showAuth() {
+  consentView.hidden = true;
   authView.hidden = false;
   accountView.hidden = true;
   accountMessage.textContent = "";
+}
+
+function showConsent() {
+  behaviorConsentCheckbox.checked = false;
+  acceptConsentButton.disabled = true;
+  consentView.hidden = false;
+  authView.hidden = true;
+  accountView.hidden = true;
+}
+
+function showSignedOutEntry() {
+  if (hasBehaviorDataConsent) {
+    showAuth();
+    return;
+  }
+
+  showConsent();
 }
 
 function setMessage(form, text, isSuccess = false) {
@@ -95,7 +123,7 @@ async function refreshCredentialStatus() {
     apiKeyStatus.textContent = !status.configured
       ? "미설정"
       : status.unlocked
-        ? "사용 가능"
+        ? "정상 연결"
         : "잠김";
     apiKeyStatus.dataset.state = !status.configured
       ? "empty"
@@ -105,7 +133,7 @@ async function refreshCredentialStatus() {
     unlockApiKeyButton.hidden = !status.configured || status.unlocked;
     deleteApiKeyButton.hidden = !status.configured;
     saveApiKeyButton.textContent = status.configured
-      ? "새 키로 교체"
+      ? "API 키 다시 등록하기"
       : "암호화 저장";
   } catch (error) {
     setApiKeyMessage(error.message);
@@ -147,6 +175,40 @@ async function request(path, options = {}) {
 
 loginTab.addEventListener("click", () => showForm("login"));
 signupTab.addEventListener("click", () => showForm("signup"));
+
+behaviorConsentCheckbox.addEventListener("change", () => {
+  acceptConsentButton.disabled = !behaviorConsentCheckbox.checked;
+});
+
+acceptConsentButton.addEventListener("click", async () => {
+  if (!behaviorConsentCheckbox.checked) {
+    return;
+  }
+
+  acceptConsentButton.disabled = true;
+
+  try {
+    await chrome.storage.local.set({
+      [CONSENT_STORAGE_KEY]: {
+        accepted: true,
+        version: CONSENT_VERSION,
+        acceptedAt: new Date().toISOString(),
+      },
+    });
+    hasBehaviorDataConsent = true;
+    await initialize();
+
+    if (!authView.hidden) {
+      loginForm.elements.email.focus();
+    }
+  } finally {
+    acceptConsentButton.disabled = !behaviorConsentCheckbox.checked;
+  }
+});
+
+declineConsentButton.addEventListener("click", () => {
+  window.close();
+});
 
 loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -314,16 +376,26 @@ logoutButton.addEventListener("click", async () => {
     await chrome.storage.local.remove("auth");
     logoutButton.disabled = false;
     logoutButton.textContent = "로그아웃";
-    showAuth();
+    showSignedOutEntry();
   }
 });
 
 async function initialize() {
-  const { auth, flameTheme } = await chrome.storage.local.get([
-    "auth",
-    "flameTheme",
-  ]);
+  const { auth, flameTheme, behaviorDataConsent } =
+    await chrome.storage.local.get([
+      "auth",
+      "flameTheme",
+      CONSENT_STORAGE_KEY,
+    ]);
   applyFlameTheme(flameTheme?.mode);
+  hasBehaviorDataConsent =
+    behaviorDataConsent?.accepted === true &&
+    behaviorDataConsent.version === CONSENT_VERSION;
+
+  if (!hasBehaviorDataConsent) {
+    showConsent();
+    return;
+  }
 
   if (auth?.user && auth.expiresAt > Date.now()) {
     showAccount(auth.user);
@@ -354,7 +426,7 @@ async function initialize() {
   }
 
   await chrome.storage.local.remove("auth");
-  showAuth();
+  showSignedOutEntry();
 }
 
 chrome.storage.onChanged.addListener((changes, areaName) => {

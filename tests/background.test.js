@@ -7,6 +7,31 @@ const path = require("node:path");
 const vm = require("node:vm");
 const SaltbreadCore = require("../chrome-extension/data-core.js");
 
+test("앱 페이지 origin에는 배포 주소와 localhost를 모두 포함한다", () => {
+  const context = {};
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(
+    fs.readFileSync(
+      path.join(__dirname, "../chrome-extension/config.js"),
+      "utf8",
+    ),
+    context,
+  );
+
+  assert.deepEqual(
+    Array.from(context.SALTBREAD_CONFIG.appOrigins),
+    [
+      "https://skysh-saltbread.vercel.app",
+      "http://localhost:3000",
+    ],
+  );
+  assert.equal(
+    context.SALTBREAD_CONFIG.apiBaseUrl,
+    "https://skysh-saltbread.vercel.app",
+  );
+});
+
 function createStorageArea(store) {
   return {
     async get(keys) {

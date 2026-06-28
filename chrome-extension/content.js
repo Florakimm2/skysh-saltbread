@@ -1,5 +1,11 @@
 const PANEL_ID = "saltbread-extension-panel";
 const APP_URL = globalThis.SALTBREAD_CONFIG.appUrl;
+const APP_ORIGINS = new Set([
+  APP_URL,
+  ...(globalThis.SALTBREAD_CONFIG.appOrigins || []),
+]);
+const CONSENT_STORAGE_KEY = "behaviorDataConsent";
+const CONSENT_VERSION = 1;
 const {
   buildBehaviorSnapshot,
   detectOrderActionSide,
@@ -63,7 +69,7 @@ let demoDetectionTimerId = null;
 let currentPageUrl = location.href;
 
 function isAppPage() {
-  return location.origin === APP_URL;
+  return APP_ORIGINS.has(location.origin);
 }
 
 function isDashboardPage() {
@@ -116,6 +122,10 @@ function applyFlameTheme(mode) {
 
 function isLoggedIn(auth) {
   return Boolean(auth?.accessToken && auth?.user);
+}
+
+function hasBehaviorDataConsent(consent) {
+  return consent?.accepted === true && consent.version === CONSENT_VERSION;
 }
 
 function renderMetricCards() {
@@ -237,6 +247,9 @@ function createPanel(auth) {
   panel
     .querySelector(".saltbread-action-button--history")
     .addEventListener("click", openDashboard);
+  panel
+    .querySelector(".saltbread-action-button--proceed")
+    .addEventListener("click", () => setPanelCollapsed(panel, true));
 
   document.body.append(panel);
   panelFlame = new CuteIdleFlame(
@@ -977,13 +990,25 @@ function stopBehaviorTracking() {
   demoContext = null;
 }
 
-function syncPanel(auth) {
-  if (!isDashboardPage() && isLoggedIn(auth)) {
+function syncPanel(auth, behaviorDataConsent) {
+  if (
+    !isDashboardPage() &&
+    isLoggedIn(auth) &&
+    hasBehaviorDataConsent(behaviorDataConsent)
+  ) {
     createPanel(auth);
     return;
   }
 
   removePanel();
+}
+
+function refreshPanelState() {
+  return chrome.storage.local
+    .get(["auth", CONSENT_STORAGE_KEY])
+    .then(({ auth, behaviorDataConsent }) =>
+      syncPanel(auth, behaviorDataConsent),
+    );
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -1035,8 +1060,8 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     return;
   }
 
-  if (changes.auth) {
-    syncPanel(changes.auth.newValue);
+  if (changes.auth || changes[CONSENT_STORAGE_KEY]) {
+    refreshPanelState();
   }
 
   if (changes.flameTheme) {
@@ -1044,7 +1069,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
 });
 
-chrome.storage.local.get("auth").then(({ auth }) => syncPanel(auth));
+refreshPanelState();
 
 window.setInterval(() => {
   if (location.href === currentPageUrl) {
@@ -1052,5 +1077,5 @@ window.setInterval(() => {
   }
 
   currentPageUrl = location.href;
-  chrome.storage.local.get("auth").then(({ auth }) => syncPanel(auth));
+  refreshPanelState();
 }, 500);

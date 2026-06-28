@@ -57,6 +57,7 @@ export async function refresh(refreshToken: string | null) {
     accessToken: result.idToken,
     refreshToken: result.refreshToken,
     expiresIn: Number(result.expiresIn),
+    userId: result.userId,
   };
 }
 
