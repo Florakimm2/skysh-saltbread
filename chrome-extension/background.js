@@ -7,11 +7,13 @@ const {
   resolveFlameMode,
 } = globalThis.SaltbreadCore;
 const {
+  appUrl: APP_URL,
   apiBaseUrl: API_BASE_URL,
   dashboardUrl: DASHBOARD_URL,
   detectPath: DETECT_PATH,
   upbitApiBaseUrl: UPBIT_API_BASE_URL,
 } = globalThis.SALTBREAD_CONFIG;
+const APP_TAB_URL_PATTERN = `${APP_URL}/*`;
 const COLLECTION_ALARM = "saltbread-minute-collection";
 const CREDENTIALS_STORAGE_KEY = "upbitCredentials";
 const SESSION_KEY_STORAGE_KEY = "upbitCredentialSessionKey";
@@ -193,6 +195,30 @@ async function fetchJson(url, options = {}) {
   return data;
 }
 
+async function getValidBackendAuth() {
+  const { auth } = await chrome.storage.local.get("auth");
+
+  if (!auth?.accessToken || !auth?.user) {
+    return null;
+  }
+
+  if (auth.expiresAt > Date.now() + 60_000) {
+    return auth;
+  }
+
+  const refreshed = await fetchJson(`${API_BASE_URL}/api/auth/refresh`, {
+    method: "POST",
+    credentials: "include",
+  });
+  const nextAuth = {
+    ...auth,
+    accessToken: refreshed.accessToken,
+    expiresAt: Date.now() + Number(refreshed.expiresIn) * 1000,
+  };
+  await chrome.storage.local.set({ auth: nextAuth });
+  return nextAuth;
+}
+
 function wait(durationMs) {
   return new Promise((resolve) => setTimeout(resolve, durationMs));
 }
@@ -311,21 +337,31 @@ async function createJwt(accessKey, secretKey, queryString = "") {
 
 function createQueryString(entries) {
   return entries
-    .map(
-      ([key, value]) =>
-        `${encodeURIComponent(key).replaceAll("%5B", "[").replaceAll("%5D", "]")}=${encodeURIComponent(value)}`,
-    )
+    .map(([key, value]) => `${key}=${value}`)
+    .join("&");
+}
+
+function createEncodedQueryString(entries) {
+  return entries
+    .map(([key, value]) => {
+      const encodedKey = encodeURIComponent(key)
+        .replaceAll("%5B", "[")
+        .replaceAll("%5D", "]");
+
+      return `${encodedKey}=${encodeURIComponent(value)}`;
+    })
     .join("&");
 }
 
 async function fetchPrivateUpbit(path, entries, credentials) {
   const queryString = createQueryString(entries);
+  const encodedQueryString = createEncodedQueryString(entries);
   const jwt = await createJwt(
     credentials.accessKey,
     credentials.secretKey,
     queryString,
   );
-  const url = `${UPBIT_API_BASE_URL}${path}${queryString ? `?${queryString}` : ""}`;
+  const url = `${UPBIT_API_BASE_URL}${path}${encodedQueryString ? `?${encodedQueryString}` : ""}`;
 
   return fetchJson(url, {
     headers: {
@@ -337,21 +373,8 @@ async function fetchPrivateUpbit(path, entries, credentials) {
 
 async function collectOrderData(market) {
   const credentials = await decryptCredentials();
-  const endTime = new Date();
-  const startTime = new Date(endTime.getTime() - 24 * 60 * 60 * 1000);
   const [closedOrders, openOrders, accounts] = await Promise.all([
-    fetchPrivateUpbit(
-      "/v1/orders/closed",
-      [
-        ["states[]", "done"],
-        ["states[]", "cancel"],
-        ["start_time", startTime.toISOString()],
-        ["end_time", endTime.toISOString()],
-        ["limit", "1000"],
-        ["order_by", "desc"],
-      ],
-      credentials,
-    ),
+    fetchPrivateUpbit("/v1/orders/closed", [], credentials),
     fetchPrivateUpbit(
       "/v1/orders/open",
       [
@@ -362,8 +385,8 @@ async function collectOrderData(market) {
         ["order_by", "desc"],
       ],
       credentials,
-    ).catch(() => []),
-    fetchPrivateUpbit("/v1/accounts", [], credentials).catch(() => []),
+    ),
+    fetchPrivateUpbit("/v1/accounts", [], credentials),
   ]);
   const averageBuyPrices = Object.fromEntries(
     accounts.map((account) => [account.currency, account.avg_buy_price]),
@@ -402,8 +425,8 @@ async function callDetectionApi(tabId, context, marketData) {
     return null;
   }
 
-  const [{ auth }, { orderDataCache = {} }] = await Promise.all([
-    chrome.storage.local.get("auth"),
+  const [auth, { orderDataCache = {} }] = await Promise.all([
+    getValidBackendAuth(),
     chrome.storage.local.get("orderDataCache"),
   ]);
 
@@ -483,6 +506,38 @@ async function getMarketDataForDetection(market) {
   return isFresh ? cached : collectMarketData(market);
 }
 
+function getDemoMarketData(context) {
+  const currentPrice = Number(context.demoData?.currentPrice);
+  const marketData = context.demoData?.marketData;
+
+  if (
+    !Number.isFinite(currentPrice) ||
+    currentPrice <= 0 ||
+    !marketData ||
+    !Number.isFinite(marketData.price_change_rate_15m) ||
+    !Number.isFinite(marketData.volume_change_rate_1m) ||
+    typeof marketData.is_top3_volatility !== "boolean" ||
+    typeof marketData.has_warning_badge !== "boolean"
+  ) {
+    return null;
+  }
+
+  return {
+    market: context.market,
+    current_price: currentPrice,
+    market_data: marketData,
+    collected_at: new Date().toISOString(),
+    isDemo: true,
+  };
+}
+
+async function getMarketDataForContext(context) {
+  return (
+    getDemoMarketData(context) ||
+    getMarketDataForDetection(context.market)
+  );
+}
+
 async function runMinuteCycleForTab(tab) {
   const context = await sendTabMessage(tab.id, {
     type: "GET_CONTEXT_SNAPSHOT",
@@ -494,7 +549,8 @@ async function runMinuteCycleForTab(tab) {
 
   try {
     await sendTabMessage(tab.id, { type: "COLLECTION_STARTED" });
-    const marketData = await collectMarketData(context.market);
+    const marketData =
+      getDemoMarketData(context) || (await collectMarketData(context.market));
     await callDetectionApi(tab.id, context, marketData);
   } catch (error) {
     await sendTabMessage(tab.id, {
@@ -509,8 +565,7 @@ async function runMinuteCycle() {
     url: [
       "https://upbit.com/exchange*",
       "https://www.upbit.com/exchange*",
-      "http://localhost:3000/*",
-      "http://127.0.0.1:3000/*",
+      APP_TAB_URL_PATTERN,
     ],
   });
   await Promise.all(tabs.map(runMinuteCycleForTab));
@@ -570,7 +625,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
 
-    getMarketDataForDetection(context.market)
+    getMarketDataForContext(context)
       .then((marketData) =>
         callDetectionApi(sender.tab.id, context, marketData),
       )
@@ -625,9 +680,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             type: "ORDER_DATA_UPDATED",
             payload: orderData,
           });
-          const marketData = await getMarketDataForDetection(
-            message.payload.market,
-          );
+          const marketData = await getMarketDataForContext(message.payload);
           detection = await callDetectionApi(
             sender.tab.id,
             message.payload,

@@ -70,3 +70,11 @@ export async function logout(accessToken: string | null) {
     message: "로그아웃되었습니다.",
   };
 }
+
+export async function verifyAccessToken(accessToken: string) {
+  try {
+    return await adminAuth.verifyIdToken(accessToken, true);
+  } catch {
+    throw new AppError("Access Token이 유효하지 않습니다.", 401);
+  }
+}

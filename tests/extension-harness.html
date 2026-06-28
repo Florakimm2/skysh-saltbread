@@ -49,7 +49,25 @@
   <body>
     <article class="fake-order" aria-label="가상 Upbit 주문 화면">
       <h1>KRW-BTC 주문</h1>
-      <div class="fake-order__tabs">
+      <div class="fake-order__tabs" role="tablist" aria-label="주문 방향">
+        <button
+          id="test-side-buy"
+          type="button"
+          role="tab"
+          aria-selected="true"
+        >
+          매수
+        </button>
+        <button
+          id="test-side-sell"
+          type="button"
+          role="tab"
+          aria-selected="false"
+        >
+          매도
+        </button>
+      </div>
+      <div class="fake-order__tabs" role="tablist" aria-label="주문 유형">
         <button type="button" role="tab" aria-selected="true">지정가</button>
         <button type="button" role="tab" aria-selected="false">시장가</button>
       </div>
@@ -67,12 +85,31 @@
       </label>
       <div class="fake-order__actions">
         <button id="test-max" type="button">최대</button>
-        <button id="test-buy" type="button">매수</button>
-        <button id="test-sell" type="button">매도</button>
+        <button
+          id="test-buy"
+          type="button"
+          data-saltbread-order-action="BUY"
+        >
+          매수하기
+        </button>
+        <button
+          id="test-sell"
+          type="button"
+          data-saltbread-order-action="SELL"
+        >
+          매도하기
+        </button>
+        <button id="test-demo-scenario" type="button">
+          데모 시나리오 이벤트
+        </button>
+        <button id="test-detect-now" type="button">즉시 감지 이벤트</button>
+        <button id="test-demo-reset" type="button">데모 초기화 이벤트</button>
       </div>
+      <output id="test-event-status" aria-live="polite"></output>
     </article>
 
     <script src="/tests/extension-harness.js"></script>
+    <script src="/chrome-extension/config.js"></script>
     <script src="/chrome-extension/cute-idle-flame.js"></script>
     <script src="/chrome-extension/data-core.js"></script>
     <script src="/chrome-extension/content.js"></script>

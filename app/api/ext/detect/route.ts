@@ -1,8 +1,11 @@
 // app/api/ext/detect/route.ts
 
 import { NextRequest, NextResponse } from "next/server";
+import { verifyAccessToken } from "@/backend/modules/auth/service";
 import { detectEmotionTradeRequestSchema } from "@/backend/modules/ext/detect/schema";
 import { detectEmotionTrade } from "@/backend/modules/ext/detect/service";
+
+export const runtime = "nodejs";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -60,13 +63,21 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    /**
-     * MVP에서는 토큰 존재 여부만 확인.
-     * 실제 배포에서는 여기에서 기존 auth 모듈의 accessToken 검증 함수를 호출해야 함.
-     *
-     * 예:
-     * const user = await verifyAccessToken(token);
-     */
+    try {
+      await verifyAccessToken(token);
+    } catch {
+      return NextResponse.json(
+        {
+          detected: false,
+          type: null,
+          message: "Access Token이 유효하지 않습니다.",
+        },
+        {
+          status: 401,
+          headers: corsHeaders,
+        },
+      );
+    }
 
     const body = await req.json();
     const input = detectEmotionTradeRequestSchema.parse(body);

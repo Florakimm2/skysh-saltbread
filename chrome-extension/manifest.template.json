@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "permissions": ["alarms", "storage", "tabs"],
   "host_permissions": [
-    "http://localhost:3000/*",
+    "__APP_MATCH_PATTERN__",
     "https://api.upbit.com/*"
   ],
   "action": {
@@ -20,7 +20,7 @@
       "matches": [
         "https://upbit.com/exchange*",
         "https://www.upbit.com/exchange*",
-        "http://localhost:3000/*"
+        "__APP_MATCH_PATTERN__"
       ],
       "js": ["config.js", "cute-idle-flame.js", "data-core.js", "content.js"],
       "css": ["content.css"],

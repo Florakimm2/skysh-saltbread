@@ -5,10 +5,19 @@ const {
   buildBehaviorSnapshot,
   calculateAverageBuyAmount,
   calculateMarketData,
+  detectOrderActionSide,
   mapUpbitOrder,
   parseMarket,
   resolveFlameMode,
 } = require("../chrome-extension/data-core.js");
+
+test("매수하기와 매도하기를 주문 액션으로 구분한다", () => {
+  assert.equal(detectOrderActionSide("매수하기"), "BUY");
+  assert.equal(detectOrderActionSide(" 매도하기 "), "SELL");
+  assert.equal(detectOrderActionSide("매수주문"), "BUY");
+  assert.equal(detectOrderActionSide("매도"), "SELL");
+  assert.equal(detectOrderActionSide("매수 탭"), null);
+});
 
 test("Upbit URL에서 현재 마켓을 추출한다", () => {
   assert.equal(

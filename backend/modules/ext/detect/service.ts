@@ -45,11 +45,11 @@ import type {
     ORDERBOOK_CHASING_COUNT: 2,
     ORDERBOOK_CHASING_WINDOW_MINUTES: 1,
   
-    AMOUNT_SPIKE_MULTIPLIER: 2,
+    AMOUNT_SPIKE_MULTIPLIER: 3,
   
-    MACHINE_GUN_BUY_CLICK_COUNT_1M: 4,
+    MACHINE_GUN_BUY_CLICK_COUNT_1M: 3,
   
-    HIGH_RISK_HOPPING_STAY_SECONDS: 90,
+    HIGH_RISK_HOPPING_STAY_SECONDS: 30,
   };
   
   function toTimeMs(value: string | null): number | null {
@@ -231,6 +231,8 @@ import type {
   }
   
   function detectHesitation(input: DetectEmotionTradeRequest): boolean {
+    if (input.current_order.order_side !== "BUY") return false;
+
     const inputEditedTooMuch =
       input.behavior_data.input_edit_count >= RULE.HESITATION_INPUT_EDIT_COUNT;
   
@@ -242,14 +244,37 @@ import type {
   }
   
   function detectAllInImpulse(input: DetectEmotionTradeRequest): boolean {
+    const isPriceSurging =
+      input.market_data.price_change_rate_15m >=
+      RULE.FOMO_PRICE_CHANGE_RATE_15M;
+    const hasRecentLoss = input.recent_orders.some((order) => {
+      const isLossSell =
+        order.order_side === "SELL" &&
+        order.order_status === "DONE" &&
+        order.realized_loss_pct_1h !== null &&
+        order.realized_loss_pct_1h >= RULE.REVENGE_LOSS_PCT;
+
+      return (
+        isLossSell &&
+        isWithinMinutes({
+          laterTime: input.current_order.order_request_time,
+          earlierTime: order.order_request_time,
+          minutes: RULE.REVENGE_REENTRY_MINUTES,
+        })
+      );
+    });
+
     return (
       input.current_order.order_side === "BUY" &&
       input.behavior_data.is_max_button_clicked &&
-      input.current_order.order_amount > 0
+      input.current_order.order_amount > 0 &&
+      (isPriceSurging || hasRecentLoss)
     );
   }
   
   function detectAmountSpike(input: DetectEmotionTradeRequest): boolean {
+    if (input.current_order.order_side !== "BUY") return false;
+
     const avg = input.behavior_data.client_avg_buy_amount;
   
     if (avg === null || avg <= 0) return false;
