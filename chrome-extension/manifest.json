@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Fireguard",
+  "description": "Fireguard 서비스에 로그인하고 계정을 관리합니다.",
+  "version": "1.0.0",
+  "permissions": ["alarms", "storage", "tabs"],
+  "host_permissions": [
+    "http://localhost:3000/*",
+    "http://127.0.0.1:3000/*",
+    "https://api.upbit.com/*"
+  ],
+  "action": {
+    "default_title": "Fireguard",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://upbit.com/exchange*",
+        "https://www.upbit.com/exchange*",
+        "http://localhost:3000/*",
+        "http://127.0.0.1:3000/*"
+      ],
+      "js": ["cute-idle-flame.js", "data-core.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fireguard 확장 프로그램 테스트</title>
+    <link rel="stylesheet" href="/chrome-extension/content.css" />
+    <style>
+      body {
+        margin: 0;
+        padding: 48px;
+        color: #172036;
+        background: #f2f4f8;
+        font-family: Arial, sans-serif;
+      }
+
+      .fake-order {
+        width: 520px;
+        padding: 28px;
+        border-radius: 16px;
+        background: #fff;
+        box-shadow: 0 12px 30px rgb(26 39 68 / 12%);
+      }
+
+      .fake-order__tabs {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 20px;
+      }
+
+      .fake-order label {
+        display: grid;
+        gap: 6px;
+        margin: 12px 0;
+      }
+
+      .fake-order input {
+        height: 40px;
+        padding: 0 12px;
+      }
+
+      .fake-order__actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 18px;
+      }
+    </style>
+  </head>
+  <body>
+    <article class="fake-order" aria-label="가상 Upbit 주문 화면">
+      <h1>KRW-BTC 주문</h1>
+      <div class="fake-order__tabs">
+        <button type="button" role="tab" aria-selected="true">지정가</button>
+        <button type="button" role="tab" aria-selected="false">시장가</button>
+      </div>
+      <label>
+        매수가격
+        <input id="test-price" value="82000000" />
+      </label>
+      <label>
+        주문수량
+        <input id="test-volume" value="0.01" />
+      </label>
+      <label>
+        주문총액
+        <input id="test-amount" value="820000" />
+      </label>
+      <div class="fake-order__actions">
+        <button id="test-max" type="button">최대</button>
+        <button id="test-buy" type="button">매수</button>
+        <button id="test-sell" type="button">매도</button>
+      </div>
+    </article>
+
+    <script src="/tests/extension-harness.js"></script>
+    <script src="/chrome-extension/cute-idle-flame.js"></script>
+    <script src="/chrome-extension/data-core.js"></script>
+    <script src="/chrome-extension/content.js"></script>
+  </body>
+</html>
