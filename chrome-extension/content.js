@@ -1,5 +1,11 @@
 const PANEL_ID = "saltbread-extension-panel";
-const { buildBehaviorSnapshot, parseMarket, toNumber } =
+const APP_URL = globalThis.SALTBREAD_CONFIG.appUrl;
+const {
+  buildBehaviorSnapshot,
+  detectOrderActionSide,
+  parseMarket,
+  toNumber,
+} =
   globalThis.SaltbreadCore;
 const METRIC_DEFINITIONS = [
   {
@@ -54,6 +60,30 @@ let panelFlame = null;
 let collapsedPanelFlame = null;
 let demoContext = null;
 let demoDetectionTimerId = null;
+let currentPageUrl = location.href;
+
+function isAppPage() {
+  return location.origin === APP_URL;
+}
+
+function isDashboardPage() {
+  return (
+    isAppPage() &&
+    (location.pathname === "/dashboard" ||
+      location.pathname.startsWith("/dashboard/"))
+  );
+}
+
+function acknowledgePageEvent(event) {
+  const requestId = event.detail?.requestId;
+
+  if (typeof requestId === "string" && requestId) {
+    document.documentElement.setAttribute(
+      "data-saltbread-event-ack",
+      requestId,
+    );
+  }
+}
 
 function activeDemoContext() {
   if (!demoContext) {
@@ -300,13 +330,22 @@ function findOrderButton(target) {
 
   const button = target.closest("button, [role='button']");
 
-  if (!button || button.closest(`#${PANEL_ID}`)) {
+  if (
+    !button ||
+    button.closest(`#${PANEL_ID}`) ||
+    button.getAttribute("role") === "tab" ||
+    button.closest("[role='tablist']")
+  ) {
     return null;
   }
 
-  const buttonText = normalizedText(button);
-  return /^(매수|매도)(하기|주문)?$/.test(buttonText) &&
-    findOrderPanel(button)
+  const explicitSide = button.dataset.saltbreadOrderAction;
+  const orderSide =
+    ["BUY", "SELL"].includes(explicitSide) ? explicitSide : detectOrderActionSide(
+      normalizedText(button),
+    );
+
+  return orderSide && findOrderPanel(button)
     ? button
     : null;
 }
@@ -369,6 +408,36 @@ function detectOrderType(panel) {
   return "LIMIT";
 }
 
+function detectOrderSide(panel, orderButton) {
+  const explicitSide = orderButton?.dataset.saltbreadOrderAction;
+  const buttonSide =
+    ["BUY", "SELL"].includes(explicitSide)
+      ? explicitSide
+      : detectOrderActionSide(normalizedText(orderButton));
+
+  if (buttonSide) {
+    return buttonSide;
+  }
+
+  const selectedSideControl = [
+    ...panel.querySelectorAll("button, [role='tab'], [role='radio']"),
+  ].find((control) => {
+    const isSelected =
+      control.getAttribute("aria-selected") === "true" ||
+      control.getAttribute("aria-checked") === "true" ||
+      control.dataset.state === "active" ||
+      /(^|\s)(active|selected|on)(\s|$)/i.test(control.className);
+
+    return isSelected && /^(매수|매도)$/.test(normalizedText(control));
+  });
+
+  if (normalizedText(selectedSideControl) === "매도") {
+    return "SELL";
+  }
+
+  return /매도주문|매도하기/.test(normalizedText(panel)) ? "SELL" : "BUY";
+}
+
 function readOrderDraft(orderButton = null) {
   const panel =
     (orderButton && findOrderPanel(orderButton)) ||
@@ -381,13 +450,7 @@ function readOrderDraft(orderButton = null) {
     return null;
   }
 
-  const buttonText = normalizedText(orderButton);
-  const panelText = normalizedText(panel);
-  const side =
-    buttonText.startsWith("매도") ||
-    (!buttonText && /매도주문|매도하기/.test(panelText))
-      ? "SELL"
-      : "BUY";
+  const side = detectOrderSide(panel, orderButton);
   const orderType = detectOrderType(panel);
   const price = findInputValue(panel, /매수가격|매도가격|주문가격/);
   const volume = findInputValue(panel, /주문수량|매수수량|매도수량/);
@@ -422,10 +485,7 @@ function handleAmountInput(event) {
 }
 
 function handleDemoScenario(event) {
-  if (
-    !behaviorState ||
-    !["localhost", "127.0.0.1"].includes(location.hostname)
-  ) {
+  if (!behaviorState || !isAppPage()) {
     return;
   }
 
@@ -440,6 +500,7 @@ function handleDemoScenario(event) {
     return;
   }
 
+  acknowledgePageEvent(event);
   const now = Date.now();
   const market = detail.market || behaviorState.market;
   behaviorState.market = market;
@@ -473,6 +534,8 @@ function handleDemoScenario(event) {
       detail.clientAverageBuyAmount ??
       behavior.client_avg_buy_amount ??
       null,
+    currentPrice: detail.currentPrice,
+    marketData: detail.marketData || null,
   };
   renderBehaviorMetrics();
   setAnalysisStatus("데이터 수집 중...", "loading");
@@ -483,14 +546,14 @@ function handleDemoScenario(event) {
   }, 2000);
 }
 
-function handleDetectNow() {
-  if (
-    !behaviorState ||
-    !["localhost", "127.0.0.1"].includes(location.hostname)
-  ) {
+function handleDetectNow(event) {
+  if (!behaviorState || !isAppPage()) {
     return;
   }
 
+  if (event) {
+    acknowledgePageEvent(event);
+  }
   const snapshot = getContextSnapshot();
 
   if (!snapshot.market || !snapshot.currentOrder || !snapshot.behaviorData) {
@@ -517,14 +580,12 @@ function handleDetectNow() {
     );
 }
 
-function handleDemoReset() {
-  if (
-    !behaviorState ||
-    !["localhost", "127.0.0.1"].includes(location.hostname)
-  ) {
+function handleDemoReset(event) {
+  if (!behaviorState || !isAppPage()) {
     return;
   }
 
+  acknowledgePageEvent(event);
   const market = parseMarket(location.href) || behaviorState.market;
   window.clearTimeout(demoDetectionTimerId);
   demoDetectionTimerId = null;
@@ -605,6 +666,8 @@ function handleDocumentClick(event) {
           ? {
               recentOrders: demo.recentOrders,
               clientAverageBuyAmount: demo.clientAverageBuyAmount,
+              currentPrice: demo.currentPrice,
+              marketData: demo.marketData,
               type: demo.type,
               expiresAt: demo.expiresAt,
             }
@@ -817,6 +880,7 @@ function setAnalysisStatus(message, state = "loading", type = null) {
 }
 
 function getContextSnapshot() {
+  const demo = activeDemoContext();
   const currentBehavior = behaviorState ? getBehaviorData() : null;
   const hasRecentOrder =
     behaviorState?.lastOrderAt &&
@@ -833,16 +897,17 @@ function getContextSnapshot() {
     market: behaviorState?.market || parseMarket(location.href),
     behaviorData,
     currentOrder:
-      activeDemoContext()?.currentOrder ||
+      demo?.currentOrder ||
       behaviorState?.lastOrder ||
       readOrderDraft(),
-    demoData: activeDemoContext()
+    demoData: demo
       ? {
-          recentOrders: activeDemoContext().recentOrders,
-          clientAverageBuyAmount:
-            activeDemoContext().clientAverageBuyAmount,
-          type: activeDemoContext().type,
-          expiresAt: activeDemoContext().expiresAt,
+          recentOrders: demo.recentOrders,
+          clientAverageBuyAmount: demo.clientAverageBuyAmount,
+          currentPrice: demo.currentPrice,
+          marketData: demo.marketData,
+          type: demo.type,
+          expiresAt: demo.expiresAt,
         }
       : null,
   };
@@ -913,7 +978,7 @@ function stopBehaviorTracking() {
 }
 
 function syncPanel(auth) {
-  if (isLoggedIn(auth)) {
+  if (!isDashboardPage() && isLoggedIn(auth)) {
     createPanel(auth);
     return;
   }
@@ -980,3 +1045,12 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 });
 
 chrome.storage.local.get("auth").then(({ auth }) => syncPanel(auth));
+
+window.setInterval(() => {
+  if (location.href === currentPageUrl) {
+    return;
+  }
+
+  currentPageUrl = location.href;
+  chrome.storage.local.get("auth").then(({ auth }) => syncPanel(auth));
+}, 500);

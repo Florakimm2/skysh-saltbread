@@ -39,6 +39,22 @@
     return null;
   }
 
+  function detectOrderActionSide(text) {
+    const normalized = String(text || "")
+      .replace(/\s/g, "")
+      .replace(/[\u200B-\u200D\uFEFF]/g, "");
+
+    if (/^매수(하기|주문)?$/.test(normalized)) {
+      return "BUY";
+    }
+
+    if (/^매도(하기|주문)?$/.test(normalized)) {
+      return "SELL";
+    }
+
+    return null;
+  }
+
   function pruneTimestamps(timestamps, windowMs, now = Date.now()) {
     return timestamps.filter(
       (timestamp) => timestamp <= now && timestamp >= now - windowMs,
@@ -254,6 +270,7 @@
     buildBehaviorSnapshot,
     calculateAverageBuyAmount,
     calculateMarketData,
+    detectOrderActionSide,
     mapOrderSide,
     mapOrderStatus,
     mapOrderType,

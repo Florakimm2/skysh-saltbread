@@ -4,11 +4,17 @@ Manifest V3 기반의 로그인/회원가입 및 감정 매매 감지 확장 프
 
 ## Chrome에서 실행
 
-1. API 주소가 다르면 `config.js`의 `apiBaseUrl`과 `manifest.json`의
-   `host_permissions`를 수정합니다.
-2. Chrome에서 `chrome://extensions`를 열고 **개발자 모드**를 켭니다.
-3. **압축해제된 확장 프로그램을 로드합니다**를 누릅니다.
-4. `chrome-extension` 폴더를 선택합니다.
+1. 저장소 루트의 `.env.local`에 앱 origin을 설정합니다.
+   `APP_URL=https://skysh-saltbread.vercel.app`
+2. `npm run configure:extension`을 실행합니다. `npm run dev`와
+   `npm run build`를 실행할 때도 자동으로 동기화됩니다.
+3. Chrome에서 `chrome://extensions`를 열고 **개발자 모드**를 켭니다.
+4. **압축해제된 확장 프로그램을 로드합니다**를 누릅니다.
+5. `chrome-extension` 폴더를 선택합니다.
+
+`config.js`와 `manifest.json`은 `APP_URL`에서 생성되므로 직접 수정하지 않습니다.
+설정을 바꾼 뒤에는 동기화 명령을 실행하고 Chrome에서 확장 프로그램을 다시
+로드합니다.
 
 ## Upbit 거래 화면
 
@@ -38,8 +44,9 @@ Manifest V3 기반의 로그인/회원가입 및 감정 매매 감지 확장 프
 - 로컬 암호화 비밀번호는 저장하지 않습니다.
 - 복호화 키는 현재 브라우저 세션의 `chrome.storage.session`에만 보관합니다.
 - 로그아웃하거나 브라우저를 다시 시작하면 다시 잠금을 해제해야 합니다.
-- 주문 버튼이 감지되었을 때 최근 24시간의 종료 주문과 현재 종목의 미체결
-  주문을 조회합니다.
+- 주문 버튼이 감지되었을 때 Upbit의 기본 최신 종료 주문과 현재 종목의
+  미체결 주문을 조회합니다. 주문·자산 조회가 실패하면 안전한 결과로 숨기지
+  않고 오류를 표시합니다.
 - Upbit API Key에는 **주문 조회와 자산 조회에 필요한 최소 권한만** 부여하고,
   주문 실행 및 출금 권한은 부여하지 마세요.
 - Upbit Open API 관리 화면에 현재 네트워크의 공인 IP를 등록해야 합니다.
@@ -47,9 +54,9 @@ Manifest V3 기반의 로그인/회원가입 및 감정 매매 감지 확장 프
 브라우저 프로필이나 실행 중인 기기가 침해된 경우 로컬 암호화만으로 키를 완전히
 보호할 수 없습니다. 공용 PC에서는 API 키를 저장하지 마세요.
 
-**내 과거 기록 보기** 버튼은 `config.js`의 `dashboardUrl`에 설정한 대시보드를
-새 탭으로 엽니다. 로컬 대시보드와 API 기본 주소는 모두
-`npm run dev`가 실행되는 `http://localhost:3000`입니다.
+**내 과거 기록 보기** 버튼은 `APP_URL` 아래의 `/dashboard`를 새 탭으로
+엽니다. `/dashboard`와 그 하위 페이지에서는 확장 프로그램 패널을 표시하지
+않습니다.
 
 쿠키 기반 refresh token을 주고받을 수 있도록 인증 요청에
 `credentials: "include"`를 사용합니다.

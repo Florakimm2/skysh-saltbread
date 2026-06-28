@@ -1122,6 +1122,17 @@ kbd {
   font-weight: 900;
 }
 
+.trade-toast.is-error {
+  border-color: #efb7b7;
+  background: rgb(255 248 248 / 97%);
+  color: #8f3030;
+}
+
+.trade-toast.is-error span {
+  background: #fde7e7;
+  color: #c23b3b;
+}
+
 @media (max-width: 1360px) {
   .exchange-layout {
     grid-template-columns: minmax(820px, 1fr) 310px;

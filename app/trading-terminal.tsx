@@ -10,6 +10,10 @@ import {
 
 type OrderSide = "BUY" | "SELL";
 type OrderType = "LIMIT" | "MARKET";
+type Toast = {
+  message: string;
+  variant: "success" | "error";
+};
 
 type Ticker = {
   market: string;
@@ -75,6 +79,12 @@ type DemoScenario = {
     page_stay_duration: number;
   };
   recentOrders: Array<Record<string, string | number | null>>;
+  marketData: {
+    price_change_rate_15m: number;
+    volume_change_rate_1m: number;
+    is_top3_volatility: boolean;
+    has_warning_badge: boolean;
+  };
   useVolatileMarket?: boolean;
 };
 
@@ -158,6 +168,12 @@ const SCENARIOS: DemoScenario[] = [
       page_stay_duration: 32,
     },
     recentOrders: [],
+    marketData: {
+      price_change_rate_15m: 6.2,
+      volume_change_rate_1m: 340,
+      is_top3_volatility: false,
+      has_warning_badge: false,
+    },
   },
   {
     key: 2,
@@ -189,6 +205,12 @@ const SCENARIOS: DemoScenario[] = [
         order_cancel_time: null,
       },
     ],
+    marketData: {
+      price_change_rate_15m: 0.8,
+      volume_change_rate_1m: 30,
+      is_top3_volatility: false,
+      has_warning_badge: false,
+    },
   },
   {
     key: 3,
@@ -218,6 +240,12 @@ const SCENARIOS: DemoScenario[] = [
       order_request_time: `__NOW_MINUS_${index + 1}M__`,
       order_cancel_time: `__NOW_MINUS_${index + 1}M__`,
     })),
+    marketData: {
+      price_change_rate_15m: 1.1,
+      volume_change_rate_1m: 25,
+      is_top3_volatility: false,
+      has_warning_badge: false,
+    },
   },
   {
     key: 4,
@@ -236,6 +264,12 @@ const SCENARIOS: DemoScenario[] = [
       page_stay_duration: 24,
     },
     recentOrders: [],
+    marketData: {
+      price_change_rate_15m: 6.1,
+      volume_change_rate_1m: 180,
+      is_top3_volatility: false,
+      has_warning_badge: false,
+    },
   },
   {
     key: 5,
@@ -254,6 +288,12 @@ const SCENARIOS: DemoScenario[] = [
       page_stay_duration: 92,
     },
     recentOrders: [],
+    marketData: {
+      price_change_rate_15m: 0.6,
+      volume_change_rate_1m: 20,
+      is_top3_volatility: false,
+      has_warning_badge: false,
+    },
   },
   {
     key: 6,
@@ -272,6 +312,12 @@ const SCENARIOS: DemoScenario[] = [
       page_stay_duration: 58,
     },
     recentOrders: [],
+    marketData: {
+      price_change_rate_15m: 2,
+      volume_change_rate_1m: 90,
+      is_top3_volatility: false,
+      has_warning_badge: false,
+    },
   },
   {
     key: 7,
@@ -290,9 +336,33 @@ const SCENARIOS: DemoScenario[] = [
       page_stay_duration: 14,
     },
     recentOrders: [],
+    marketData: {
+      price_change_rate_15m: 3.4,
+      volume_change_rate_1m: 140,
+      is_top3_volatility: true,
+      has_warning_badge: true,
+    },
     useVolatileMarket: true,
   },
 ];
+
+function dispatchExtensionEvent(
+  type: string,
+  detail: Record<string, unknown> = {},
+) {
+  const requestId = crypto.randomUUID();
+  const ackAttribute = "data-saltbread-event-ack";
+  document.documentElement.removeAttribute(ackAttribute);
+  document.dispatchEvent(
+    new CustomEvent(type, {
+      detail: { ...detail, requestId },
+    }),
+  );
+  const handled =
+    document.documentElement.getAttribute(ackAttribute) === requestId;
+  document.documentElement.removeAttribute(ackAttribute);
+  return handled;
+}
 
 function formatNumber(value: number, maximumFractionDigits = 0) {
   return new Intl.NumberFormat("ko-KR", {
@@ -501,7 +571,8 @@ export default function TradingTerminal() {
   const [liveState, setLiveState] = useState<"loading" | "live" | "fallback">(
     "loading",
   );
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<Toast | null>(null);
+  const [activeScenario, setActiveScenario] = useState<number | null>(null);
   const [clock, setClock] = useState("");
   const orderButtonRef = useRef<HTMLButtonElement>(null);
   const marketRef = useRef("KRW-BTC");
@@ -536,6 +607,9 @@ export default function TradingTerminal() {
       .toUpperCase();
     const initialMarket =
       code && /^KRW-[A-Z0-9]+$/.test(code) ? code : "KRW-BTC";
+    url.searchParams.set("code", `CRIX.UPBIT.${initialMarket}`);
+    window.history.replaceState({}, "", url);
+    marketRef.current = initialMarket;
     const initialTimeout = window.setTimeout(
       () => void fetchMarket(initialMarket),
       0,
@@ -623,14 +697,29 @@ export default function TradingTerminal() {
         ),
         clientAverageBuyAmount:
           nextScenario.behaviorData.client_avg_buy_amount,
+        currentPrice,
+        marketData: nextScenario.marketData,
         expiresAt: Date.now() + 3 * 60_000,
       };
 
-      window.setTimeout(() => {
-        document.dispatchEvent(
-          new CustomEvent("saltbread:demo-scenario", { detail }),
-        );
-      }, 0);
+      const handled = dispatchExtensionEvent(
+        "saltbread:demo-scenario",
+        detail,
+      );
+
+      if (handled) {
+        setActiveScenario(nextScenario.key);
+        setToast({
+          message: `${nextScenario.key}번 · ${nextScenario.title} 시나리오를 실행했습니다.`,
+          variant: "success",
+        });
+      } else {
+        setToast({
+          message:
+            "확장 프로그램이 연결되지 않았습니다. Fireguard를 다시 로드해 주세요.",
+          variant: "error",
+        });
+      }
     },
     [
       market,
@@ -640,8 +729,13 @@ export default function TradingTerminal() {
   );
 
   const runDetectNow = useCallback(() => {
-    document.dispatchEvent(new CustomEvent("saltbread:detect-now"));
-    setToast("8번 · 현재 데이터로 감지 요청을 즉시 전송했습니다.");
+    const handled = dispatchExtensionEvent("saltbread:detect-now");
+    setToast({
+      message: handled
+        ? "8번 · 현재 데이터로 감지 요청을 전달했습니다."
+        : "확장 프로그램이 연결되지 않아 감지 요청을 보내지 못했습니다.",
+      variant: handled ? "success" : "error",
+    });
   }, []);
 
   const resetDemo = useCallback(() => {
@@ -653,8 +747,14 @@ export default function TradingTerminal() {
     setPrice(String(resetPrice));
     setVolume(String(resetVolume));
     setAmount(String(Math.round(resetPrice * resetVolume)));
-    document.dispatchEvent(new CustomEvent("saltbread:demo-reset"));
-    setToast("9번 · 데모 데이터와 감지 상태를 초기화했습니다.");
+    const handled = dispatchExtensionEvent("saltbread:demo-reset");
+    setActiveScenario(null);
+    setToast({
+      message: handled
+        ? "9번 · 데모 데이터와 감지 상태를 초기화했습니다."
+        : "화면은 초기화했지만 확장 프로그램이 연결되지 않았습니다.",
+      variant: handled ? "success" : "error",
+    });
   }, [marketData.ticker.trade_price]);
 
   useEffect(() => {
@@ -1086,13 +1186,15 @@ export default function TradingTerminal() {
                 ref={orderButtonRef}
                 type="button"
                 className="order-submit"
+                data-saltbread-order-action={side}
                 onClick={() =>
-                  setToast(
-                    `${marketData.korean_name} ${side === "BUY" ? "매수" : "매도"} 입력을 감지했습니다. 실제 주문은 전송되지 않습니다.`,
-                  )
+                  setToast({
+                    message: `${marketData.korean_name} ${side === "BUY" ? "매수" : "매도"} 입력을 감지했습니다. 실제 주문은 전송되지 않습니다.`,
+                    variant: "success",
+                  })
                 }
               >
-                {side === "BUY" ? "매수" : "매도"}
+                {side === "BUY" ? "매수하기" : "매도하기"}
               </button>
               <p className="order-note">
                 테스트 전용 화면입니다. 실제 자산 주문은 발생하지 않습니다.
@@ -1172,6 +1274,7 @@ export default function TradingTerminal() {
                 <button
                   type="button"
                   key={item.key}
+                  className={activeScenario === item.key ? "is-active" : ""}
                   onClick={() => runScenario(item)}
                 >
                   <kbd>{item.key}</kbd>
@@ -1208,9 +1311,12 @@ export default function TradingTerminal() {
       </div>
 
       {toast && (
-        <div className="trade-toast" role="status">
-          <span>✓</span>
-          {toast}
+        <div
+          className={`trade-toast ${toast.variant === "error" ? "is-error" : ""}`}
+          role={toast.variant === "error" ? "alert" : "status"}
+        >
+          <span>{toast.variant === "error" ? "!" : "✓"}</span>
+          {toast.message}
         </div>
       )}
     </main>

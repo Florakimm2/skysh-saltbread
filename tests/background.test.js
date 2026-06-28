@@ -47,12 +47,6 @@ function createBackgroundHarness() {
   const alarms = new Map();
   const context = {
     SaltbreadCore,
-    SALTBREAD_CONFIG: {
-      apiBaseUrl: "http://localhost:3000",
-      dashboardUrl: "http://localhost:3000",
-      detectPath: "/api/ext/detect",
-      upbitApiBaseUrl: "https://api.upbit.com",
-    },
     TextDecoder,
     TextEncoder,
     URL,
@@ -110,6 +104,8 @@ function createBackgroundHarness() {
   };
   context.globalThis = context;
   vm.createContext(context);
+  const configPath = path.join(__dirname, "../chrome-extension/config.js");
+  vm.runInContext(fs.readFileSync(configPath, "utf8"), context);
   const backgroundPath = path.join(
     __dirname,
     "../chrome-extension/background.js",
@@ -154,7 +150,11 @@ test("Upbit 키를 AES-GCM으로 암호화하고 비밀번호로 다시 잠금 �
 test("Upbit 인증용 HS512 JWT와 query_hash를 생성한다", async () => {
   const { context } = createBackgroundHarness();
   const queryString = vm.runInContext(
-    'createQueryString([["states[]", "done"], ["limit", "100"]])',
+    'createQueryString([["states[]", "done"], ["start_time", "2026-06-28T10:00:00+09:00"]])',
+    context,
+  );
+  const encodedQueryString = vm.runInContext(
+    'createEncodedQueryString([["states[]", "done"], ["start_time", "2026-06-28T10:00:00+09:00"]])',
     context,
   );
   const jwt = await vm.runInContext(
@@ -172,13 +172,66 @@ test("Upbit 인증용 HS512 JWT와 query_hash를 생성한다", async () => {
     .createHmac("sha512", "secret-key")
     .update(`${header}.${payload}`)
     .digest("base64url");
+  const expectedQueryHash = cryptoModule
+    .createHash("sha512")
+    .update(queryString)
+    .digest("hex");
 
-  assert.equal(queryString, "states[]=done&limit=100");
+  assert.equal(
+    queryString,
+    "states[]=done&start_time=2026-06-28T10:00:00+09:00",
+  );
+  assert.equal(
+    encodedQueryString,
+    "states[]=done&start_time=2026-06-28T10%3A00%3A00%2B09%3A00",
+  );
   assert.equal(decodedHeader.alg, "HS512");
   assert.equal(decodedPayload.access_key, "access-key");
   assert.equal(decodedPayload.query_hash_alg, "SHA512");
-  assert.equal(decodedPayload.query_hash.length, 128);
+  assert.equal(decodedPayload.query_hash, expectedQueryHash);
   assert.equal(signature, expectedSignature);
+});
+
+test("Upbit 인증 요청은 URL만 인코딩하고 JWT는 원본 쿼리를 해시한다", async () => {
+  const { context } = createBackgroundHarness();
+  let capturedRequest = null;
+  context.fetch = async (url, options) => {
+    capturedRequest = { url, options };
+    return {
+      ok: true,
+      async json() {
+        return [];
+      },
+    };
+  };
+
+  await vm.runInContext(
+    `fetchPrivateUpbit(
+      "/v1/orders/closed",
+      [["start_time", "2026-06-28T10:00:00+09:00"]],
+      { accessKey: "access-key", secretKey: "secret-key" }
+    )`,
+    context,
+  );
+
+  const token = capturedRequest.options.headers.Authorization.replace(
+    "Bearer ",
+    "",
+  );
+  const [, payload] = token.split(".");
+  const decodedPayload = JSON.parse(
+    Buffer.from(payload, "base64url").toString("utf8"),
+  );
+  const expectedQueryHash = cryptoModule
+    .createHash("sha512")
+    .update("start_time=2026-06-28T10:00:00+09:00")
+    .digest("hex");
+
+  assert.equal(
+    capturedRequest.url,
+    "https://api.upbit.com/v1/orders/closed?start_time=2026-06-28T10%3A00%3A00%2B09%3A00",
+  );
+  assert.equal(decodedPayload.query_hash, expectedQueryHash);
 });
 
 test("공개 API 응답을 시장 데이터 캐시에 저장한다", async () => {
@@ -246,16 +299,209 @@ test("공개 API 응답을 시장 데이터 캐시에 저장한다", async () =>
   assert.equal(marketDetailFetchCount, 1);
 });
 
+test("데모 판정은 실시간 시세 대신 시나리오 시장 데이터를 사용한다", async () => {
+  const { context } = createBackgroundHarness();
+  const result = await vm.runInContext(
+    `getMarketDataForContext({
+      market: "KRW-BTC",
+      demoData: {
+        currentPrice: 100000000,
+        marketData: {
+          price_change_rate_15m: 6.2,
+          volume_change_rate_1m: 340,
+          is_top3_volatility: false,
+          has_warning_badge: false
+        }
+      }
+    })`,
+    context,
+  );
+
+  assert.equal(result.current_price, 100_000_000);
+  assert.equal(result.market_data.price_change_rate_15m, 6.2);
+  assert.equal(result.market_data.volume_change_rate_1m, 340);
+  assert.equal(result.isDemo, true);
+});
+
+test("즉시 감지 데모 메시지는 시장 데이터 Promise 오류 없이 처리한다", async () => {
+  const { context, localStore, runtimeListeners } = createBackgroundHarness();
+  localStore.auth = {
+    accessToken: "backend-access-token",
+    expiresAt: Date.now() + 60 * 60 * 1000,
+    user: { id: "test-user" },
+  };
+  let capturedRequest = null;
+  context.fetch = async (url, options) => {
+    capturedRequest = { url, options };
+    return {
+      ok: true,
+      async json() {
+        return {
+          detected: true,
+          type: "FOMO_CHASING",
+          message: "급등 추격 매수를 시도하고 있어요.",
+        };
+      },
+    };
+  };
+
+  const response = await new Promise((resolve) => {
+    const keepsChannelOpen = runtimeListeners[0](
+      {
+        type: "RUN_DETECTION_NOW",
+        payload: {
+          market: "KRW-BTC",
+          currentOrder: {
+            market: "KRW-BTC",
+            order_side: "BUY",
+            order_status: "WAIT",
+            order_type: "LIMIT",
+            order_price: 106_500_000,
+            order_volume: 0.01127,
+            order_amount: 1_200_000,
+            realized_loss_pct_1h: null,
+            order_request_time: "2026-06-28T10:30:00+09:00",
+            order_cancel_time: null,
+          },
+          behaviorData: {
+            is_max_button_clicked: false,
+            client_avg_buy_amount: 500_000,
+            buy_click_count_1m: 2,
+            input_edit_count: 2,
+            page_stay_duration: 32,
+          },
+          demoData: {
+            recentOrders: [],
+            clientAverageBuyAmount: 500_000,
+            currentPrice: 100_000_000,
+            marketData: {
+              price_change_rate_15m: 6.2,
+              volume_change_rate_1m: 340,
+              is_top3_volatility: false,
+              has_warning_badge: false,
+            },
+            type: "FOMO_CHASING",
+            expiresAt: Date.now() + 180_000,
+          },
+        },
+      },
+      { tab: { id: 7 } },
+      resolve,
+    );
+
+    assert.equal(keepsChannelOpen, true);
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.detection.type, "FOMO_CHASING");
+  assert.equal(
+    capturedRequest.url,
+    `${context.SALTBREAD_CONFIG.apiBaseUrl}/api/ext/detect`,
+  );
+});
+
+test("매수하기와 매도하기 주문 액션은 모두 detect API를 호출한다", async () => {
+  const { context, localStore, runtimeListeners } = createBackgroundHarness();
+  localStore.auth = {
+    accessToken: "backend-access-token",
+    expiresAt: Date.now() + 60 * 60 * 1000,
+    user: { id: "test-user" },
+  };
+  const capturedRequests = [];
+  context.fetch = async (url, options) => {
+    capturedRequests.push({ url, options });
+    return {
+      ok: true,
+      async json() {
+        return {
+          detected: false,
+          type: null,
+          message: "현재 감정적 매매 패턴은 감지되지 않았어요.",
+        };
+      },
+    };
+  };
+
+  async function sendOrderAction(orderSide) {
+    return new Promise((resolve) => {
+      const keepsChannelOpen = runtimeListeners[0](
+        {
+          type: "ORDER_ACTION_DETECTED",
+          payload: {
+            market: "KRW-BTC",
+            currentOrder: {
+              market: "KRW-BTC",
+              order_side: orderSide,
+              order_status: "WAIT",
+              order_type: "LIMIT",
+              order_price: 100_000_000,
+              order_volume: 0.01,
+              order_amount: 1_000_000,
+              realized_loss_pct_1h: null,
+              order_request_time: "2026-06-28T10:30:00+09:00",
+              order_cancel_time: null,
+            },
+            behaviorData: {
+              is_max_button_clicked: false,
+              client_avg_buy_amount: 500_000,
+              buy_click_count_1m: orderSide === "BUY" ? 1 : 0,
+              input_edit_count: 1,
+              page_stay_duration: 60,
+            },
+            demoData: {
+              recentOrders: [],
+              clientAverageBuyAmount: 500_000,
+              currentPrice: 100_000_000,
+              marketData: {
+                price_change_rate_15m: 0.5,
+                volume_change_rate_1m: 20,
+                is_top3_volatility: false,
+                has_warning_badge: false,
+              },
+            },
+          },
+        },
+        { tab: { id: 7 } },
+        resolve,
+      );
+
+      assert.equal(keepsChannelOpen, true);
+    });
+  }
+
+  const buyResponse = await sendOrderAction("BUY");
+  const sellResponse = await sendOrderAction("SELL");
+  const requestBodies = capturedRequests.map(({ options }) =>
+    JSON.parse(options.body),
+  );
+
+  assert.equal(buyResponse.ok, true);
+  assert.equal(sellResponse.ok, true);
+  assert.equal(capturedRequests.length, 2);
+  assert.ok(
+    capturedRequests.every(
+      ({ url }) =>
+        url === `${context.SALTBREAD_CONFIG.apiBaseUrl}/api/ext/detect`,
+    ),
+  );
+  assert.deepEqual(
+    requestBodies.map((body) => body.current_order.order_side),
+    ["BUY", "SELL"],
+  );
+});
+
 test("주문 클릭 시 인증 주문을 조회하고 detect용 이력으로 변환한다", async () => {
   const { context } = createBackgroundHarness();
   await vm.runInContext(
     'encryptAndStoreCredentials("access-value", "secret-value", "password-123")',
     context,
   );
+  let closedOrdersRequest = null;
   context.fetch = async (url) => {
     let response;
 
     if (url.includes("/orders/closed")) {
+      closedOrdersRequest = url;
       response = [
         {
           market: "KRW-BTC",
@@ -292,11 +538,82 @@ test("주문 클릭 시 인증 주문을 조회하고 detect용 이력으로 변
   assert.equal(result.recentOrders.length, 1);
   assert.equal(result.recentOrders[0].order_side, "BUY");
   assert.equal(result.recentOrders[0].order_type, "LIMIT");
+  assert.equal(
+    closedOrdersRequest,
+    "https://api.upbit.com/v1/orders/closed",
+  );
+});
+
+test("미체결 주문이나 계좌 조회 실패를 성공으로 숨기지 않는다", async () => {
+  const { context } = createBackgroundHarness();
+  await vm.runInContext(
+    'encryptAndStoreCredentials("access-value", "secret-value", "password-123")',
+    context,
+  );
+  context.fetch = async (url) => {
+    if (url.includes("/orders/open")) {
+      return {
+        ok: false,
+        async json() {
+          return { error: { message: "주문조회 권한이 없습니다." } };
+        },
+      };
+    }
+
+    return {
+      ok: true,
+      async json() {
+        return [];
+      },
+    };
+  };
+
+  await assert.rejects(
+    vm.runInContext('collectOrderData("KRW-BTC")', context),
+    /주문조회 권한이 없습니다/,
+  );
+});
+
+test("만료된 백엔드 Access Token을 감지 전에 갱신한다", async () => {
+  const { context, localStore } = createBackgroundHarness();
+  localStore.auth = {
+    accessToken: "expired-token",
+    expiresAt: Date.now() - 1000,
+    user: { id: "test-user" },
+  };
+  let refreshRequest = null;
+  context.fetch = async (url, options) => {
+    refreshRequest = { url, options };
+    return {
+      ok: true,
+      async json() {
+        return {
+          accessToken: "refreshed-token",
+          expiresIn: 3600,
+        };
+      },
+    };
+  };
+
+  const auth = await vm.runInContext("getValidBackendAuth()", context);
+
+  assert.equal(
+    refreshRequest.url,
+    `${context.SALTBREAD_CONFIG.apiBaseUrl}/api/auth/refresh`,
+  );
+  assert.equal(refreshRequest.options.credentials, "include");
+  assert.equal(auth.accessToken, "refreshed-token");
+  assert.equal(localStore.auth.accessToken, "refreshed-token");
+  assert.ok(localStore.auth.expiresAt > Date.now());
 });
 
 test("1분 알람을 만들고 detect.md 형식으로 백엔드 판정을 요청한다", async () => {
   const { context, localStore, alarms } = createBackgroundHarness();
-  localStore.auth = { accessToken: "backend-access-token" };
+  localStore.auth = {
+    accessToken: "backend-access-token",
+    expiresAt: Date.now() + 60 * 60 * 1000,
+    user: { id: "test-user" },
+  };
   localStore.orderDataCache = {
     "KRW-BTC": {
       clientAverageBuyAmount: 500_000,
@@ -359,7 +676,7 @@ test("1분 알람을 만들고 detect.md 형식으로 백엔드 판정을 요청
   assert.equal(alarms.get("saltbread-minute-collection").periodInMinutes, 1);
   assert.equal(
     capturedRequest.url,
-    "http://localhost:3000/api/ext/detect",
+    `${context.SALTBREAD_CONFIG.apiBaseUrl}/api/ext/detect`,
   );
   assert.equal(
     capturedRequest.options.headers.Authorization,
