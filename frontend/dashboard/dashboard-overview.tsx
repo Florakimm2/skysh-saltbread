@@ -1,12 +1,80 @@
+import Link from "next/link";
+import type { PastTrendRecord } from "@/backend/modules/behavior/types";
+import type { DashboardInsightResult } from "@/backend/modules/insight/types";
 import PageHeader from "./page-header";
 import {
   EmptyBoxIcon,
   NoteIcon,
   SparklesIcon,
 } from "./icons";
+import TrendRecordList from "./trend-record-list";
 import styles from "./dashboard.module.css";
 
-export default function DashboardOverview() {
+function splitFirstSentence(text: string) {
+  const normalized = text.trim();
+  const match = normalized.match(/^[\s\S]*?[.!?。！？](?:["'”’)]*)/);
+
+  if (!match) {
+    const [firstLine, ...rest] = normalized.split(/\n+/);
+    return {
+      firstSentence: firstLine,
+      remainder: rest.join("\n").trim(),
+    };
+  }
+
+  return {
+    firstSentence: match[0].trim(),
+    remainder: normalized.slice(match[0].length).trim(),
+  };
+}
+
+function InsightPreview({ insight }: { insight: DashboardInsightResult }) {
+  if (insight.status === "empty") {
+    return (
+      <div className={styles.emptyState}>
+        <div className={styles.emptyStateInner}>
+          <span className={styles.emptyGlyph}>
+            <SparklesIcon />
+          </span>
+          <strong>최근 7일간 분석할 기록이 없습니다</strong>
+          <p>새로운 투자 경향이 쌓이면 AI 인사이트가 생성됩니다.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (insight.status === "error") {
+    return (
+      <div className={styles.emptyState}>
+        <div className={styles.emptyStateInner}>
+          <span className={styles.emptyGlyph}>
+            <SparklesIcon />
+          </span>
+          <strong>AI 인사이트를 불러오지 못했습니다</strong>
+          <p>잠시 후 페이지를 새로고침해 다시 확인해 주세요.</p>
+        </div>
+      </div>
+    );
+  }
+
+  const { firstSentence, remainder } = splitFirstSentence(insight.insight);
+
+  return (
+    <Link className={styles.insightPreview} href="/dashboard/ai-insights">
+      <strong>{firstSentence}</strong>
+      {remainder ? <p>{remainder}</p> : null}
+      <span>AI 인사이트 자세히 보기 →</span>
+    </Link>
+  );
+}
+
+export default function DashboardOverview({
+  insight,
+  trends,
+}: {
+  insight: DashboardInsightResult;
+  trends: PastTrendRecord[];
+}) {
   return (
     <>
       <PageHeader
@@ -32,15 +100,7 @@ export default function DashboardOverview() {
             </div>
             <span className={styles.panelMeta}>최근 분석</span>
           </header>
-          <div className={styles.emptyState}>
-            <div className={styles.emptyStateInner}>
-              <span className={styles.emptyGlyph}>
-                <SparklesIcon />
-              </span>
-              <strong>표시할 인사이트가 아직 없습니다</strong>
-              <p>AI가 분석한 투자 인사이트가 이곳에 표시됩니다.</p>
-            </div>
-          </div>
+          <InsightPreview insight={insight} />
         </section>
 
         <section
@@ -53,20 +113,26 @@ export default function DashboardOverview() {
                 <NoteIcon />
               </span>
               <h2 className={styles.panelTitle} id="records-panel-title">
-                나의 기록
+                과거 경향
               </h2>
             </div>
-            <span className={styles.panelMeta}>최근 기록</span>
+            <Link className={styles.panelLink} href="/dashboard/trends">
+              전체 보기
+            </Link>
           </header>
-          <div className={styles.emptyState}>
-            <div className={styles.emptyStateInner}>
-              <span className={styles.emptyGlyph}>
-                <EmptyBoxIcon />
-              </span>
-              <strong>기록이 아직 없습니다</strong>
-              <p>수집된 투자 기록이 이곳에 차곡차곡 쌓입니다.</p>
+          {trends.length > 0 ? (
+            <TrendRecordList records={trends} />
+          ) : (
+            <div className={styles.emptyState}>
+              <div className={styles.emptyStateInner}>
+                <span className={styles.emptyGlyph}>
+                  <EmptyBoxIcon />
+                </span>
+                <strong>과거 경향 기록이 아직 없습니다</strong>
+                <p>감지된 투자 패턴과 행동 데이터가 이곳에 쌓입니다.</p>
+              </div>
             </div>
-          </div>
+          )}
         </section>
       </div>
     </>

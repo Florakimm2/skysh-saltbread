@@ -10,8 +10,7 @@ Manifest V3 기반의 로그인/회원가입 및 감정 매매 감지 확장 프
 
 1. 저장소 루트의 `.env.local`에 앱 origin을 설정합니다.
    `APP_URL=https://skysh-saltbread.vercel.app`
-2. `npm run configure:extension`을 실행합니다. `npm run dev`와
-   `npm run build`를 실행할 때도 자동으로 동기화됩니다.
+2. `npm run configure:extension`을 실행합니다.
 3. Chrome에서 `chrome://extensions`를 열고 **개발자 모드**를 켭니다.
 4. **압축해제된 확장 프로그램을 로드합니다**를 누릅니다.
 5. `chrome-extension` 폴더를 선택합니다.

@@ -11,7 +11,7 @@
   },
   "permissions": ["alarms", "storage", "tabs"],
   "host_permissions": [
-    "https://localhost:3000/*",
+    "https://skysh-saltbread.vercel.app/*",
     "https://api.upbit.com/*"
   ],
   "action": {
@@ -30,7 +30,8 @@
       "matches": [
         "https://upbit.com/exchange*",
         "https://www.upbit.com/exchange*",
-        "https://localhost:3000/*"
+        "http://localhost:3000/*",
+        "https://skysh-saltbread.vercel.app/*"
       ],
       "js": ["config.js", "cute-idle-flame.js", "data-core.js", "content.js"],
       "css": ["content.css"],

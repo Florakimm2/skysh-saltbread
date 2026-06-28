@@ -1,5 +1,9 @@
 const PANEL_ID = "saltbread-extension-panel";
 const APP_URL = globalThis.SALTBREAD_CONFIG.appUrl;
+const APP_ORIGINS = new Set([
+  APP_URL,
+  ...(globalThis.SALTBREAD_CONFIG.appOrigins || []),
+]);
 const CONSENT_STORAGE_KEY = "behaviorDataConsent";
 const CONSENT_VERSION = 1;
 const {
@@ -65,7 +69,7 @@ let demoDetectionTimerId = null;
 let currentPageUrl = location.href;
 
 function isAppPage() {
-  return location.origin === APP_URL;
+  return APP_ORIGINS.has(location.origin);
 }
 
 function isDashboardPage() {

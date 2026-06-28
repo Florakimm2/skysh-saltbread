@@ -5,6 +5,7 @@ import { adminDb } from "@/backend/infrastructure/firebase/firebase-admin";
 import type {
   BehaviorEventDoc,
   BehaviorEventInput,
+  EmotionPattern,
   RiskAnalysisDoc,
   RiskAnalysisResult,
 } from "./types";
@@ -64,6 +65,34 @@ function parseOccurredAt(value?: string) {
   }
 
   return date;
+}
+
+function mapBehaviorEvent(
+  id: string,
+  data: FirebaseFirestore.DocumentData
+): ExtendedBehaviorEventDoc {
+  return {
+    id,
+    userId: data.userId,
+
+    sessionId: data.sessionId,
+
+    symbol: data.symbol,
+    eventType: data.eventType,
+
+    side: data.side ?? undefined,
+    orderType: data.orderType ?? undefined,
+
+    price: data.price ?? undefined,
+    amount: data.amount ?? undefined,
+    quantity: data.quantity ?? undefined,
+
+    pageUrl: data.pageUrl ?? undefined,
+    occurredAt: toIsoString(data.occurredAt),
+    createdAt: toIsoString(data.createdAt),
+
+    metadata: data.metadata ?? undefined,
+  } as ExtendedBehaviorEventDoc;
 }
 
 /**
@@ -156,32 +185,7 @@ export async function findRecentBehaviorEvents(params: {
     .get();
 
   return snapshot.docs
-    .map((doc) => {
-      const data = doc.data();
-
-      return {
-        id: doc.id,
-        userId: data.userId,
-
-        sessionId: data.sessionId,
-
-        symbol: data.symbol,
-        eventType: data.eventType,
-
-        side: data.side ?? undefined,
-        orderType: data.orderType ?? undefined,
-
-        price: data.price ?? undefined,
-        amount: data.amount ?? undefined,
-        quantity: data.quantity ?? undefined,
-
-        pageUrl: data.pageUrl ?? undefined,
-        occurredAt: toIsoString(data.occurredAt),
-        createdAt: toIsoString(data.createdAt),
-
-        metadata: data.metadata ?? undefined,
-      } as ExtendedBehaviorEventDoc;
-    })
+    .map((doc) => mapBehaviorEvent(doc.id, doc.data()))
     .filter((event) => {
       const eventMs = new Date(event.createdAt).getTime();
       return event.symbol === params.symbol && eventMs >= sinceMs;
@@ -204,32 +208,61 @@ export async function findBehaviorEventsByUser(params: {
     .limit(limit)
     .get();
 
-  return snapshot.docs.map((doc) => {
-    const data = doc.data();
+  return snapshot.docs.map((doc) => mapBehaviorEvent(doc.id, doc.data()));
+}
 
-    return {
-      id: doc.id,
-      userId: data.userId,
+/**
+ * 대시보드 경향 기록 조합용 전체 행동 로그 조회.
+ *
+ * userId 단일 조건만 Firestore에 전달하고 정렬은 서버에서 수행해
+ * 별도 복합 인덱스 없이도 기존 프로젝트에서 바로 동작하게 한다.
+ */
+export async function findAllBehaviorEventsByUser(
+  userId: string
+): Promise<ExtendedBehaviorEventDoc[]> {
+  const snapshot = await behaviorEventsRef.where("userId", "==", userId).get();
 
-      sessionId: data.sessionId,
+  return snapshot.docs
+    .map((doc) => mapBehaviorEvent(doc.id, doc.data()))
+    .sort(
+      (left, right) =>
+        new Date(right.createdAt).getTime() -
+        new Date(left.createdAt).getTime()
+    );
+}
 
-      symbol: data.symbol,
-      eventType: data.eventType,
+/**
+ * 대시보드에 표시할 사용자의 전체 위험 분석 기록 조회.
+ */
+export async function findRiskAnalysesByUser(
+  userId: string
+): Promise<RiskAnalysisDoc[]> {
+  const snapshot = await riskAnalysesRef.where("userId", "==", userId).get();
 
-      side: data.side ?? undefined,
-      orderType: data.orderType ?? undefined,
+  return snapshot.docs
+    .map((doc) => {
+      const data = doc.data();
 
-      price: data.price ?? undefined,
-      amount: data.amount ?? undefined,
-      quantity: data.quantity ?? undefined,
-
-      pageUrl: data.pageUrl ?? undefined,
-      occurredAt: toIsoString(data.occurredAt),
-      createdAt: toIsoString(data.createdAt),
-
-      metadata: data.metadata ?? undefined,
-    } as ExtendedBehaviorEventDoc;
-  });
+      return {
+        id: doc.id,
+        userId: data.userId,
+        symbol: data.symbol,
+        riskLevel: data.riskLevel,
+        score: data.score,
+        cooldownRequired: data.cooldownRequired,
+        cooldownSeconds: data.cooldownSeconds,
+        matchedPatterns: Array.isArray(data.matchedPatterns)
+          ? (data.matchedPatterns as EmotionPattern[])
+          : [],
+        reasons: Array.isArray(data.reasons) ? data.reasons : [],
+        createdAt: toIsoString(data.createdAt),
+      } as RiskAnalysisDoc;
+    })
+    .sort(
+      (left, right) =>
+        new Date(right.createdAt).getTime() -
+        new Date(left.createdAt).getTime()
+    );
 }
 
 /**

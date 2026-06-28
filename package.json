@@ -4,9 +4,7 @@
   "private": true,
   "scripts": {
     "configure:extension": "node scripts/sync-extension-config.mjs",
-    "predev": "npm run configure:extension",
     "dev": "next dev",
-    "prebuild": "npm run configure:extension",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
