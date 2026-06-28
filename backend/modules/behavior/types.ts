@@ -25,6 +25,9 @@ export type EmotionPattern =
   | "ORDERBOOK_CHASING";
 
 export interface BehaviorEventInput {
+  userId?: string;
+  sessionId?: string;
+
   symbol: string;
   eventType: BehaviorEventType;
   side?: OrderSide;
@@ -32,12 +35,35 @@ export interface BehaviorEventInput {
   price?: number;
   amount?: number;
   quantity?: number;
+  pageUrl?: string;
+  occurredAt?: string;
+
+  metadata?: Record<string, unknown>;
 }
 
 export interface BehaviorEventDoc extends BehaviorEventInput {
+  /*id: string;
+  userId: string;
+  createdAt: string;*/
   id: string;
   userId: string;
+  sessionId?: string;
+
+  symbol: string;
+  eventType: BehaviorEventType;
+
+  side?: OrderSide;
+  orderType?: OrderType;
+
+  price?: number;
+  amount?: number;
+  quantity?: number;
+
+  pageUrl?: string;
+  occurredAt: string;
   createdAt: string;
+
+  metadata?: Record<string, unknown>;
 }
 
 export interface CurrentOrder {
