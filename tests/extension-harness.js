@@ -57,6 +57,10 @@ globalThis.chrome = {
       async get(keys) {
         const result = {
           auth,
+          behaviorDataConsent: {
+            accepted: true,
+            version: 1,
+          },
           flameTheme: { mode: "default" },
         };
 

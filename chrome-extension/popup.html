@@ -16,7 +16,60 @@
         </div>
       </header>
 
-      <section id="auth-view" class="card">
+      <section
+        id="consent-view"
+        class="card consent-card"
+        aria-labelledby="consent-title"
+      >
+        <div class="consent-card__heading">
+          <h2 id="consent-title">행동 로그 수집 동의</h2>
+          <p>
+            Fireguard는 감정적인 주문 패턴을 감지하기 위해 주문 직전의 행동
+            신호를 분석합니다.
+          </p>
+        </div>
+
+        <div class="consent-details">
+          <p>
+            수집 항목은 주문 금액 수정 횟수, 주문 방식 변경, 매수·매도 버튼 클릭
+            시점, 취소 반복 여부, 종목 코드와 수집 시각입니다.
+          </p>
+          <p>
+            수집된 정보는 감정적 주문 경고, 쿨다운 제공, 개인 행동 분석, AI
+            인사이트 생성에만 사용됩니다.
+          </p>
+          <p>
+            Fireguard는 계좌 비밀번호, 출금 권한, 신원 확인 정보는 수집하지
+            않습니다. 읽기 전용 API 키는 조회 목적에만 사용됩니다.
+          </p>
+          <p>동의는 설정에서 언제든 철회할 수 있습니다.</p>
+        </div>
+
+        <label class="consent-checkbox" for="behavior-consent-checkbox">
+          <input id="behavior-consent-checkbox" type="checkbox" />
+          <span>행동 로그 수집 및 분석에 동의합니다.</span>
+        </label>
+
+        <div class="consent-actions">
+          <button
+            id="accept-consent-button"
+            class="primary-button"
+            type="button"
+            disabled
+          >
+            동의하고 시작하기
+          </button>
+          <button
+            id="decline-consent-button"
+            class="secondary-button"
+            type="button"
+          >
+            나중에 설정하기
+          </button>
+        </div>
+      </section>
+
+      <section id="auth-view" class="card" hidden>
         <div class="tabs" role="tablist" aria-label="인증 방식">
           <button
             id="login-tab"
@@ -113,25 +166,26 @@
       </section>
 
       <section id="account-view" class="card account-card" hidden>
-        <span class="status-badge">인증됨</span>
-        <p class="account-card__label">로그인 계정</p>
+        <span class="status-badge">계정 인증 완료</span>
+        <p class="account-card__label">연결된 계정</p>
         <h2 id="account-name"></h2>
         <p id="account-email" class="account-card__email"></p>
         <p class="account-card__description">
-          Fireguard 확장 프로그램을 사용할 준비가 되었습니다.
+          Fireguard가 이 계정에 연결되었습니다. 이제 확장 프로그램을 사용할 수
+          있습니다.
         </p>
 
         <section class="api-key-section" aria-labelledby="api-key-title">
           <div class="api-key-section__heading">
             <div>
-              <p class="account-card__label">Upbit 연동</p>
-              <h3 id="api-key-title">읽기 전용 API 키</h3>
+              <p class="account-card__label">Upbit API 연동</p>
+              <h3 id="api-key-title">읽기 전용 API 키 등록</h3>
             </div>
             <span id="api-key-status" class="api-key-status">확인 중</span>
           </div>
           <p class="api-key-section__description">
-            키는 로컬 암호화 비밀번호로 AES-GCM 암호화되어 이 브라우저에만
-            저장됩니다.
+            입력한 API 키는 사용자가 설정한 로컬 비밀번호로 암호화되며, 현재
+            브라우저에만 저장됩니다.
           </p>
 
           <form id="api-key-form" class="api-key-form">
@@ -141,7 +195,7 @@
               name="accessKey"
               type="password"
               autocomplete="off"
-              placeholder="Upbit Access Key"
+              placeholder="업비트 API Access Key를 입력하세요"
             />
 
             <label for="upbit-secret-key">Secret Key</label>
@@ -150,7 +204,7 @@
               name="secretKey"
               type="password"
               autocomplete="off"
-              placeholder="Upbit Secret Key"
+              placeholder="업비트 API Secret Key를 입력하세요"
             />
 
             <label for="api-passphrase">로컬 암호화 비밀번호</label>
@@ -160,7 +214,7 @@
               type="password"
               autocomplete="off"
               minlength="8"
-              placeholder="8자 이상"
+              placeholder="8자 이상 입력"
               required
             />
 
