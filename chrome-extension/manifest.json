@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Saltbread",
+  "description": "Saltbread 서비스에 로그인하고 계정을 관리합니다.",
+  "version": "1.0.0",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "http://localhost:8080/*",
+    "http://127.0.0.1:8080/*"
+  ],
+  "action": {
+    "default_title": "Saltbread",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://upbit.com/exchange*",
+        "https://www.upbit.com/exchange*"
+      ],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
