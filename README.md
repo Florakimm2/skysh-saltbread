@@ -176,6 +176,9 @@ Upbit API 키 연동과 브라우저 저장 방식은
 | `/api/upbit` | `GET` | 테스트 터미널용 Upbit 시세·캔들·호가 조회 |
 | `/api/insights` | `POST` | 외부 FastAPI를 통한 인사이트 생성 |
 
+확장 프로그램이 `/api/ext/detect`로 감지 요청을 보낼 때는 같은 주문
+스냅샷을 `ORDER_SUBMIT_ATTEMPT` 이벤트로 `/api/behavior/events`에도 저장합니다.
+
 ## 프로젝트 구조
 
 ```text

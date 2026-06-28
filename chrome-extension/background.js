@@ -12,6 +12,7 @@ const {
   apiBaseUrl: API_BASE_URL,
   dashboardUrl: DASHBOARD_URL,
   detectPath: DETECT_PATH,
+  behaviorEventsPath: BEHAVIOR_EVENTS_PATH,
   upbitApiBaseUrl: UPBIT_API_BASE_URL,
 } = globalThis.SALTBREAD_CONFIG;
 const APP_TAB_URL_PATTERNS = [...new Set([APP_URL, ...(appOrigins || [])])].map(
@@ -469,14 +470,40 @@ async function callDetectionApi(tabId, context, marketData) {
     recent_orders: recentOrders,
   };
 
-  const result = await fetchJson(`${API_BASE_URL}${DETECT_PATH}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${auth.accessToken}`,
-      "Content-Type": "application/json",
+  const requestHeaders = {
+    Authorization: `Bearer ${auth.accessToken}`,
+    "Content-Type": "application/json",
+  };
+  const behaviorEvent = {
+    symbol: requestBody.market,
+    eventType: "ORDER_SUBMIT_ATTEMPT",
+    side: requestBody.current_order.order_side,
+    orderType: requestBody.current_order.order_type,
+    price: requestBody.current_order.order_price,
+    amount: requestBody.current_order.order_amount,
+    quantity: requestBody.current_order.order_volume,
+    occurredAt: requestBody.current_order.order_request_time,
+    metadata: {
+      behaviorData: requestBody.behavior_data,
+      currentPrice: requestBody.current_price,
+      marketData: requestBody.market_data,
     },
-    body: JSON.stringify(requestBody),
-  });
+  };
+  const [result] = await Promise.all([
+    fetchJson(`${API_BASE_URL}${DETECT_PATH}`, {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify(requestBody),
+    }),
+    fetchJson(`${API_BASE_URL}${BEHAVIOR_EVENTS_PATH}`, {
+      method: "POST",
+      headers: {
+        ...requestHeaders,
+        "X-User-Id": auth.user.id,
+      },
+      body: JSON.stringify(behaviorEvent),
+    }),
+  ]);
   const flameMode = resolveFlameMode(
     result,
     context.currentOrder.order_side,
