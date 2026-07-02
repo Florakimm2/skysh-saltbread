@@ -1,6 +1,6 @@
 // backend/modules/insight/service.ts
 
-import type { PastTrendRecord } from "@/backend/modules/behavior/types";
+import type { BehaviorSessionRecord } from "@/backend/modules/behavior/types";
 import type {
   DashboardInsightResult,
   InsightRequestInput,
@@ -10,15 +10,6 @@ import type {
 const DEFAULT_TIMEOUT_MS = 30_000;
 const RECENT_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_INSIGHT_SUMMARIES = 50;
-
-const PATTERN_LABELS: Record<string, string> = {
-  FOMO_CHASING: "급등 추격 매수",
-  HESITATION: "주문 망설임",
-  CANCEL_REPEAT: "반복 취소",
-  ORDER_TYPE_SWITCHING: "주문 방식 반복 변경",
-  OVER_LEVERAGING: "과도한 투자 비중",
-  ORDERBOOK_CHASING: "호가 따라가기",
-};
 
 const EVENT_LABELS: Record<string, string> = {
   AMOUNT_INPUT: "주문 금액 입력",
@@ -139,18 +130,26 @@ export async function requestInsightFromFastApi(
   };
 }
 
-function toInsightSummary(record: PastTrendRecord): string {
-  const detectedAt = new Intl.DateTimeFormat("ko-KR", {
+function toInsightSummary(record: BehaviorSessionRecord): string {
+  const occurredAt = new Intl.DateTimeFormat("ko-KR", {
     dateStyle: "medium",
     timeStyle: "short",
     timeZone: "Asia/Seoul",
-  }).format(new Date(record.detectedAt));
-  const patterns =
-    record.patterns.length > 0
-      ? record.patterns
-          .map((pattern) => PATTERN_LABELS[pattern] ?? pattern)
-          .join(", ")
-      : "뚜렷한 감정 매매 패턴 없음";
+  }).format(new Date(record.occurredAt));
+  const orderDetails = [
+    record.symbol,
+    record.side === "BUY" ? "매수" : record.side === "SELL" ? "매도" : null,
+    record.orderType === "LIMIT"
+      ? "지정가"
+      : record.orderType === "MARKET"
+        ? "시장가"
+        : null,
+    record.amount !== undefined
+      ? `주문 금액 ${Math.round(record.amount).toLocaleString("ko-KR")}원`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
   const behaviors =
     record.behaviorData.length > 0
       ? record.behaviorData
@@ -161,16 +160,16 @@ function toInsightSummary(record: PastTrendRecord): string {
           .join(", ")
       : "연결된 행동 데이터 없음";
 
-  return `${detectedAt}: 감지 패턴은 ${patterns}. 행동 데이터는 ${behaviors}.`;
+  return `${occurredAt}: 주문 정보는 ${orderDetails}. 행동 데이터는 ${behaviors}.`;
 }
 
 export async function requestDashboardInsight(
-  records: PastTrendRecord[],
+  records: BehaviorSessionRecord[],
   now = new Date()
 ): Promise<DashboardInsightResult> {
   const since = now.getTime() - RECENT_WEEK_MS;
   const recentRecords = records
-    .filter((record) => new Date(record.detectedAt).getTime() >= since)
+    .filter((record) => new Date(record.occurredAt).getTime() >= since)
     .slice(0, MAX_INSIGHT_SUMMARIES);
 
   if (recentRecords.length === 0) {

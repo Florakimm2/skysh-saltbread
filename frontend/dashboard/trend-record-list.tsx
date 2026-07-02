@@ -1,18 +1,8 @@
 import type {
+  BehaviorSessionRecord,
   BehaviorEventType,
-  EmotionPattern,
-  PastTrendRecord,
 } from "@/backend/modules/behavior/types";
 import styles from "./dashboard.module.css";
-
-const PATTERN_LABELS: Record<EmotionPattern, string> = {
-  FOMO_CHASING: "급등 추격 매수",
-  HESITATION: "주문 망설임",
-  CANCEL_REPEAT: "반복 취소",
-  ORDER_TYPE_SWITCHING: "주문 방식 반복 변경",
-  OVER_LEVERAGING: "과도한 투자 비중",
-  ORDERBOOK_CHASING: "호가 따라가기",
-};
 
 const EVENT_LABELS: Record<BehaviorEventType, string> = {
   AMOUNT_INPUT: "주문 금액 입력",
@@ -36,11 +26,28 @@ const dateFormatter = new Intl.DateTimeFormat("ko-KR", {
   timeZone: "Asia/Seoul",
 });
 
+function formatOrderDetails(record: BehaviorSessionRecord) {
+  return [
+    record.symbol,
+    record.side === "BUY" ? "매수" : record.side === "SELL" ? "매도" : null,
+    record.orderType === "LIMIT"
+      ? "지정가"
+      : record.orderType === "MARKET"
+        ? "시장가"
+        : null,
+    record.amount !== undefined
+      ? `${Math.round(record.amount).toLocaleString("ko-KR")}원`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 export default function TrendRecordList({
   records,
   scrollable = false,
 }: {
-  records: PastTrendRecord[];
+  records: BehaviorSessionRecord[];
   scrollable?: boolean;
 }) {
   return (
@@ -56,27 +63,15 @@ export default function TrendRecordList({
               <div className={styles.trendDate}>
                 <dt>언제</dt>
                 <dd>
-                  <time dateTime={record.detectedAt}>
-                    {dateFormatter.format(new Date(record.detectedAt))}
+                  <time dateTime={record.occurredAt}>
+                    {dateFormatter.format(new Date(record.occurredAt))}
                   </time>
                 </dd>
               </div>
 
               <div>
-                <dt>감지 패턴</dt>
-                <dd className={styles.patternTags}>
-                  {record.patterns.length > 0 ? (
-                    record.patterns.map((pattern) => (
-                      <span key={pattern}>
-                        {PATTERN_LABELS[pattern] ?? pattern}
-                      </span>
-                    ))
-                  ) : (
-                    <span className={styles.neutralTag}>
-                      감지된 패턴 없음
-                    </span>
-                  )}
-                </dd>
+                <dt>주문 정보</dt>
+                <dd>{formatOrderDetails(record)}</dd>
               </div>
 
               <div>

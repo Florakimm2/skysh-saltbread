@@ -1,5 +1,5 @@
 import Link from "next/link";
-import type { PastTrendRecord } from "@/backend/modules/behavior/types";
+import type { BehaviorSessionRecord } from "@/backend/modules/behavior/types";
 import type { DashboardInsightResult } from "@/backend/modules/insight/types";
 import PageHeader from "./page-header";
 import {
@@ -36,8 +36,8 @@ function InsightPreview({ insight }: { insight: DashboardInsightResult }) {
           <span className={styles.emptyGlyph}>
             <SparklesIcon />
           </span>
-          <strong>최근 7일간 분석할 기록이 없습니다</strong>
-          <p>새로운 투자 경향이 쌓이면 AI 인사이트가 생성됩니다.</p>
+          <strong>최근 7일간 분석할 행동 기록이 없습니다</strong>
+          <p>새로운 주문 행동이 쌓이면 AI 인사이트가 생성됩니다.</p>
         </div>
       </div>
     );
@@ -73,7 +73,7 @@ export default function DashboardOverview({
   trends,
 }: {
   insight: DashboardInsightResult;
-  trends: PastTrendRecord[];
+  trends: BehaviorSessionRecord[];
 }) {
   return (
     <>
@@ -113,7 +113,7 @@ export default function DashboardOverview({
                 <NoteIcon />
               </span>
               <h2 className={styles.panelTitle} id="records-panel-title">
-                과거 경향
+                최근 행동 기록
               </h2>
             </div>
             <Link className={styles.panelLink} href="/dashboard/trends">
@@ -128,8 +128,8 @@ export default function DashboardOverview({
                 <span className={styles.emptyGlyph}>
                   <EmptyBoxIcon />
                 </span>
-                <strong>과거 경향 기록이 아직 없습니다</strong>
-                <p>감지된 투자 패턴과 행동 데이터가 이곳에 쌓입니다.</p>
+                <strong>주문 행동 기록이 아직 없습니다</strong>
+                <p>Extension에서 수집한 행동 데이터가 이곳에 쌓입니다.</p>
               </div>
             </div>
           )}

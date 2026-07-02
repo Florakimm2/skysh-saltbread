@@ -212,7 +212,7 @@ export async function findBehaviorEventsByUser(params: {
 }
 
 /**
- * 대시보드 경향 기록 조합용 전체 행동 로그 조회.
+ * 대시보드 행동 세션 조합용 전체 행동 로그 조회.
  *
  * userId 단일 조건만 Firestore에 전달하고 정렬은 서버에서 수행해
  * 별도 복합 인덱스 없이도 기존 프로젝트에서 바로 동작하게 한다.

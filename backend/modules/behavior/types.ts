@@ -108,9 +108,13 @@ export interface BehaviorEventCount {
   count: number;
 }
 
-export interface PastTrendRecord {
+export interface BehaviorSessionRecord {
   id: string;
-  detectedAt: string;
-  patterns: EmotionPattern[];
+  sessionId?: string;
+  occurredAt: string;
+  symbol: string;
+  side?: OrderSide;
+  orderType?: OrderType;
+  amount?: number;
   behaviorData: BehaviorEventCount[];
 }
