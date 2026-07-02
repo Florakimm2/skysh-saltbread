@@ -6,6 +6,7 @@ const APP_ORIGINS = new Set([
 ]);
 const CONSENT_STORAGE_KEY = "behaviorDataConsent";
 const CONSENT_VERSION = 1;
+const BEHAVIOR_INPUT_DEBOUNCE_MS = 650;
 const {
   buildBehaviorSnapshot,
   detectOrderActionSide,
@@ -208,6 +209,7 @@ function createPanel(auth) {
         <strong data-status-title>데이터 수집 중...</strong>
         <p data-status-message>주문 행동 변화를 확인하고 있어요.</p>
       </div>
+      <p class="saltbread-logging-status" data-logging-status hidden></p>
 
       <section class="saltbread-panel__section" aria-labelledby="saltbread-metrics-title">
         <div class="saltbread-panel__section-heading">
@@ -379,21 +381,93 @@ function isMaxButton(target) {
 }
 
 function findInputValue(panel, labelPattern) {
+  if (!panel) {
+    return null;
+  }
+
   const inputs = [...panel.querySelectorAll("input")];
 
   for (const input of inputs) {
-    let candidate = input.parentElement;
+    if (!inputMatchesLabel(input, panel, labelPattern)) {
+      continue;
+    }
 
-    for (let depth = 0; candidate && depth < 4; depth += 1) {
-      if (labelPattern.test(normalizedText(candidate))) {
-        const value = toNumber(input.value);
+    const value = readInputNumber(input);
 
-        if (value !== null) {
-          return value;
-        }
-      }
+    if (value !== null) {
+      return value;
+    }
+  }
 
-      candidate = candidate.parentElement;
+  return null;
+}
+
+function inputMatchesLabel(input, panel, labelPattern) {
+  const directLabels = [
+    input.getAttribute("aria-label"),
+    ...[...(input.labels || [])].map((label) => label.textContent),
+  ].filter(Boolean);
+  let candidate = input.parentElement;
+
+  for (const label of directLabels) {
+    if (labelPattern.test(String(label).replace(/\s/g, ""))) {
+      return true;
+    }
+  }
+
+  for (let depth = 0; candidate && candidate !== panel && depth < 4; depth += 1) {
+    if (labelPattern.test(normalizedText(candidate))) {
+      return true;
+    }
+
+    candidate = candidate.parentElement;
+  }
+
+  return false;
+}
+
+function readInputNumber(input) {
+  if (!(input instanceof HTMLInputElement) || !input.value.trim()) {
+    return null;
+  }
+
+  const value = toNumber(input.value);
+  return value !== null && value >= 0 ? value : null;
+}
+
+function getOrderInputKind(input, panel = findOrderPanel(input)) {
+  if (!(input instanceof HTMLInputElement) || !panel) {
+    return null;
+  }
+
+  const directLabels = [
+    input.getAttribute("aria-label"),
+    input.getAttribute("placeholder"),
+    ...[...(input.labels || [])].map((label) => label.textContent),
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const candidates = [directLabels];
+  let candidate = input.parentElement;
+
+  for (let depth = 0; candidate && candidate !== panel && depth < 4; depth += 1) {
+    candidates.push(candidate.textContent || "");
+    candidate = candidate.parentElement;
+  }
+
+  for (const text of candidates) {
+    const normalized = String(text).replace(/\s/g, "");
+
+    if (/주문총액|매수금액|매도금액|총주문금액/.test(normalized)) {
+      return { eventType: "AMOUNT_INPUT", field: "amount" };
+    }
+
+    if (/매수가격|매도가격|주문가격/.test(normalized)) {
+      return { eventType: "PRICE_INPUT", field: "price" };
+    }
+
+    if (/주문수량|매수수량|매도수량/.test(normalized)) {
+      return { eventType: "QUANTITY_INPUT", field: "quantity" };
     }
   }
 
@@ -401,6 +475,10 @@ function findInputValue(panel, labelPattern) {
 }
 
 function detectOrderType(panel) {
+  if (!panel) {
+    return null;
+  }
+
   const controls = [
     ...panel.querySelectorAll("button, [role='tab'], [role='radio']"),
   ];
@@ -418,10 +496,18 @@ function detectOrderType(panel) {
     return "MARKET";
   }
 
-  return "LIMIT";
+  if (normalizedText(selectedControl).includes("지정가")) {
+    return "LIMIT";
+  }
+
+  return null;
 }
 
 function detectOrderSide(panel, orderButton) {
+  if (!panel) {
+    return null;
+  }
+
   const explicitSide = orderButton?.dataset.saltbreadOrderAction;
   const buttonSide =
     ["BUY", "SELL"].includes(explicitSide)
@@ -448,7 +534,236 @@ function detectOrderSide(panel, orderButton) {
     return "SELL";
   }
 
-  return /매도주문|매도하기/.test(normalizedText(panel)) ? "SELL" : "BUY";
+  if (normalizedText(selectedSideControl) === "매수") {
+    return "BUY";
+  }
+
+  return null;
+}
+
+function createOrderSessionId() {
+  if (typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  const randomBytes = crypto.getRandomValues(new Uint8Array(16));
+  return [...randomBytes]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function startNewOrderSession() {
+  if (!behaviorState) {
+    return;
+  }
+
+  behaviorState.sessionId = createOrderSessionId();
+  behaviorState.lastLoggedInputValues.clear();
+  behaviorState.lastOrderType = null;
+}
+
+function addOrderValues(eventPayload, panel) {
+  if (!eventPayload || !panel) {
+    return { price: null, quantity: null, amount: null };
+  }
+
+  const price = findInputValue(panel, /매수가격|매도가격|주문가격/);
+  const quantity = findInputValue(
+    panel,
+    /주문수량|매수수량|매도수량/,
+  );
+  const explicitAmount = findInputValue(
+    panel,
+    /주문총액|매수금액|매도금액|총주문금액/,
+  );
+  const amount =
+    explicitAmount ??
+    (price !== null && quantity !== null ? price * quantity : null);
+
+  if (price !== null) {
+    eventPayload.price = price;
+  }
+
+  if (quantity !== null) {
+    eventPayload.quantity = quantity;
+  }
+
+  if (amount !== null) {
+    eventPayload.amount = amount;
+  }
+
+  return { price, quantity, amount };
+}
+
+function createBehaviorEvent(eventType, panel, fields = {}) {
+  const symbol = behaviorState?.market || parseMarket(location.href);
+
+  if (!symbol || !behaviorState?.sessionId) {
+    return null;
+  }
+
+  const eventPayload = {
+    sessionId: behaviorState.sessionId,
+    symbol,
+    eventType,
+    pageUrl: location.href,
+    occurredAt: new Date().toISOString(),
+  };
+  const side = detectOrderSide(panel, null);
+  const orderType = detectOrderType(panel);
+
+  if (side) {
+    eventPayload.side = side;
+  }
+
+  if (orderType) {
+    eventPayload.orderType = orderType;
+  }
+
+  return Object.assign(eventPayload, fields);
+}
+
+function setLoggingStatus(message = "") {
+  const status = document.querySelector("[data-logging-status]");
+
+  if (!status) {
+    return;
+  }
+
+  status.textContent = message;
+  status.hidden = !message;
+}
+
+function sendBehaviorEvent(eventPayload) {
+  if (!eventPayload) {
+    return;
+  }
+
+  chrome.runtime
+    .sendMessage({
+      type: "LOG_BEHAVIOR_EVENT",
+      payload: eventPayload,
+    })
+    .then((response) => {
+      setLoggingStatus(
+        response?.ok
+          ? ""
+          : response?.error || "행동 로그를 저장하지 못했습니다.",
+      );
+    })
+    .catch(() =>
+      setLoggingStatus("행동 로그 서버와 연결할 수 없습니다."),
+    );
+}
+
+function flushPendingInputEvent(input) {
+  const pending = behaviorState?.pendingInputEvents.get(input);
+
+  if (!pending) {
+    return;
+  }
+
+  window.clearTimeout(pending.timerId);
+  behaviorState.pendingInputEvents.delete(input);
+
+  if (!input.isConnected) {
+    return;
+  }
+
+  const panel = findOrderPanel(input);
+  const value = readInputNumber(input);
+
+  if (!panel || value === null) {
+    return;
+  }
+
+  const duplicateKey = [
+    behaviorState.sessionId,
+    behaviorState.market,
+    pending.eventType,
+  ].join(":");
+
+  if (behaviorState.lastLoggedInputValues.get(duplicateKey) === value) {
+    return;
+  }
+
+  const eventPayload = createBehaviorEvent(
+    pending.eventType,
+    panel,
+    { [pending.field]: value },
+  );
+
+  if (!eventPayload) {
+    return;
+  }
+
+  behaviorState.lastLoggedInputValues.set(duplicateKey, value);
+  sendBehaviorEvent(eventPayload);
+}
+
+function flushPendingInputEvents() {
+  if (!behaviorState) {
+    return;
+  }
+
+  for (const input of [...behaviorState.pendingInputEvents.keys()]) {
+    flushPendingInputEvent(input);
+  }
+}
+
+function findOrderTypeControl(target) {
+  if (!(target instanceof Element)) {
+    return null;
+  }
+
+  const control = target.closest(
+    "button, input, [role='tab'], [role='radio']",
+  );
+
+  return control &&
+    !control.closest(`#${PANEL_ID}`) &&
+    /시장가|지정가/.test(
+      `${normalizedText(control)} ${control.getAttribute("aria-label") || ""}`,
+    )
+    ? control
+    : null;
+}
+
+function syncOrderType(panel, shouldLogChange) {
+  if (!behaviorState || !panel) {
+    return;
+  }
+
+  const nextOrderType = detectOrderType(panel);
+  const previousOrderType = behaviorState.lastOrderType;
+
+  if (!nextOrderType) {
+    return;
+  }
+
+  behaviorState.lastOrderType = nextOrderType;
+
+  if (
+    !shouldLogChange ||
+    !previousOrderType ||
+    previousOrderType === nextOrderType
+  ) {
+    return;
+  }
+
+  sendBehaviorEvent(
+    createBehaviorEvent("ORDER_TYPE_CHANGE", panel, {
+      orderType: nextOrderType,
+      metadata: { previousOrderType },
+    }),
+  );
+}
+
+function syncCurrentOrderType(shouldLogChange = true) {
+  const panel = [...document.querySelectorAll("input")]
+    .map((input) => findOrderPanel(input))
+    .find(Boolean);
+  syncOrderType(panel, shouldLogChange);
 }
 
 function readOrderDraft(orderButton = null) {
@@ -472,7 +787,12 @@ function readOrderDraft(orderButton = null) {
     /주문총액|매수금액|매도금액|총주문금액/,
   );
   const amount =
-    explicitAmount ?? (price !== null && volume !== null ? price * volume : 0);
+    explicitAmount ??
+    (price !== null && volume !== null ? price * volume : null);
+
+  if (!side || !orderType || amount === null) {
+    return null;
+  }
 
   return {
     market,
@@ -494,6 +814,26 @@ function handleAmountInput(event) {
   }
 
   behaviorState.inputEditTimestamps.push(Date.now());
+  const input = event.target;
+  const inputKind = getOrderInputKind(input);
+
+  if (inputKind) {
+    const previousPending = behaviorState.pendingInputEvents.get(input);
+
+    if (previousPending) {
+      window.clearTimeout(previousPending.timerId);
+    }
+
+    const pending = {
+      ...inputKind,
+      timerId: window.setTimeout(
+        () => flushPendingInputEvent(input),
+        BEHAVIOR_INPUT_DEBOUNCE_MS,
+      ),
+    };
+    behaviorState.pendingInputEvents.set(input, pending);
+  }
+
   renderBehaviorMetrics();
 }
 
@@ -611,9 +951,12 @@ function handleDemoReset(event) {
   behaviorState.lastOrder = null;
   behaviorState.lastOrderBehavior = null;
   behaviorState.lastOrderAt = null;
+  behaviorState.lastOrderSessionId = null;
   behaviorState.visibleDurationMs = 0;
   behaviorState.visibleSince = document.hidden ? null : Date.now();
+  startNewOrderSession();
   applyFlameTheme("default");
+  setLoggingStatus();
   renderBehaviorMetrics();
   setAnalysisStatus("데이터 수집 중...", "loading");
   chrome.runtime.sendMessage({ type: "RESET_DEMO_STATE" }).catch(() => {});
@@ -622,6 +965,15 @@ function handleDemoReset(event) {
 function handleDocumentClick(event) {
   if (!behaviorState) {
     return;
+  }
+
+  const orderTypeControl = findOrderTypeControl(event.target);
+
+  if (orderTypeControl) {
+    window.setTimeout(
+      () => syncOrderType(findOrderPanel(orderTypeControl), true),
+      0,
+    );
   }
 
   if (isMaxButton(event.target)) {
@@ -636,6 +988,23 @@ function handleDocumentClick(event) {
     return;
   }
 
+  flushPendingInputEvents();
+  const orderPanel = findOrderPanel(orderButton);
+  const orderSide =
+    orderButton.dataset.saltbreadOrderAction ||
+    detectOrderActionSide(normalizedText(orderButton));
+  const clickEvent = createBehaviorEvent(
+    orderSide === "SELL" ? "SELL_CLICK" : "BUY_CLICK",
+    orderPanel,
+    { side: orderSide },
+  );
+
+  if (clickEvent && ["BUY", "SELL"].includes(orderSide)) {
+    addOrderValues(clickEvent, orderPanel);
+    sendBehaviorEvent(clickEvent);
+  }
+
+  const submittedSessionId = behaviorState.sessionId;
   const demo = activeDemoContext();
   const orderDraft = demo?.currentOrder
     ? {
@@ -645,6 +1014,20 @@ function handleDocumentClick(event) {
     : readOrderDraft(orderButton);
 
   if (!orderDraft) {
+    const orderType = detectOrderType(orderPanel);
+
+    if (orderType && ["BUY", "SELL"].includes(orderSide)) {
+      const submitEvent = createBehaviorEvent(
+        "ORDER_SUBMIT_ATTEMPT",
+        orderPanel,
+        { side: orderSide, orderType },
+      );
+      addOrderValues(submitEvent, orderPanel);
+      sendBehaviorEvent(submitEvent);
+    }
+
+    startNewOrderSession();
+    syncOrderType(orderPanel, false);
     setAnalysisStatus(
       "주문 정보를 읽지 못했습니다. 거래 화면을 새로고침해 주세요.",
       "error",
@@ -663,6 +1046,7 @@ function handleDocumentClick(event) {
   const behaviorData = getBehaviorData();
   behaviorState.lastOrderBehavior = behaviorData;
   behaviorState.lastOrderAt = Date.now();
+  behaviorState.lastOrderSessionId = submittedSessionId;
   behaviorState.maxClickedSinceLastOrder = false;
   renderBehaviorMetrics();
   applyFlameTheme("default");
@@ -673,6 +1057,8 @@ function handleDocumentClick(event) {
       type: "ORDER_ACTION_DETECTED",
       payload: {
         market: behaviorState.market,
+        sessionId: submittedSessionId,
+        pageUrl: location.href,
         currentOrder: orderDraft,
         behaviorData,
         demoData: demo
@@ -695,6 +1081,9 @@ function handleDocumentClick(event) {
     .catch(() =>
       setAnalysisStatus("확장 프로그램과 연결할 수 없습니다.", "error"),
     );
+
+  startNewOrderSession();
+  syncOrderType(orderPanel, false);
 }
 
 function updateVisibleDuration() {
@@ -731,6 +1120,7 @@ function syncCurrentMarket() {
     return;
   }
 
+  flushPendingInputEvents();
   updateVisibleDuration();
   behaviorState.market = nextMarket;
   behaviorState.visibleDurationMs = 0;
@@ -739,6 +1129,8 @@ function syncCurrentMarket() {
   behaviorState.lastOrder = null;
   behaviorState.lastOrderBehavior = null;
   behaviorState.lastOrderAt = null;
+  behaviorState.lastOrderSessionId = null;
+  startNewOrderSession();
   renderBehaviorMetrics();
   registerCurrentContext();
 }
@@ -908,6 +1300,11 @@ function getContextSnapshot() {
 
   return {
     market: behaviorState?.market || parseMarket(location.href),
+    sessionId:
+      hasRecentOrder && behaviorState.lastOrderSessionId
+        ? behaviorState.lastOrderSessionId
+        : behaviorState?.sessionId,
+    pageUrl: location.href,
     behaviorData,
     currentOrder:
       demo?.currentOrder ||
@@ -946,13 +1343,18 @@ function startBehaviorTracking() {
 
   behaviorState = {
     market: parseMarket(location.href),
+    sessionId: createOrderSessionId(),
     inputEditTimestamps: [],
+    pendingInputEvents: new Map(),
+    lastLoggedInputValues: new Map(),
+    lastOrderType: null,
     buyClicksByMarket: {},
     maxClickedSinceLastOrder: false,
     clientAvgBuyAmount: null,
     lastOrder: null,
     lastOrderBehavior: null,
     lastOrderAt: null,
+    lastOrderSessionId: null,
     visibleDurationMs: 0,
     visibleSince: document.hidden ? null : Date.now(),
   };
@@ -963,8 +1365,10 @@ function startBehaviorTracking() {
   document.addEventListener("saltbread:detect-now", handleDetectNow);
   document.addEventListener("saltbread:demo-reset", handleDemoReset);
   document.addEventListener("visibilitychange", handleVisibilityChange);
+  syncCurrentOrderType(false);
   behaviorTimerId = window.setInterval(() => {
     syncCurrentMarket();
+    syncCurrentOrderType(true);
     renderBehaviorMetrics();
   }, 1000);
   renderBehaviorMetrics();
@@ -982,6 +1386,9 @@ function stopBehaviorTracking() {
   document.removeEventListener("saltbread:detect-now", handleDetectNow);
   document.removeEventListener("saltbread:demo-reset", handleDemoReset);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
+  for (const pending of behaviorState.pendingInputEvents.values()) {
+    window.clearTimeout(pending.timerId);
+  }
   window.clearInterval(behaviorTimerId);
   window.clearTimeout(demoDetectionTimerId);
   behaviorTimerId = null;
@@ -1050,6 +1457,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "COLLECTION_ERROR") {
     applyFlameTheme("default");
     setAnalysisStatus(message.payload?.message || "데이터 수집에 실패했습니다.", "error");
+    return false;
+  }
+
+  if (message?.type === "BEHAVIOR_EVENT_STATUS") {
+    setLoggingStatus(message.payload?.message || "");
   }
 
   return false;

@@ -13,7 +13,7 @@ export default function AiInsightsPage({
       <PageHeader
         eyebrow="Intelligence"
         title="AI 인사이트"
-        description="최근 7일의 경향 기록을 바탕으로 발견한 투자 습관입니다."
+        description="최근 7일의 주문 행동을 바탕으로 발견한 투자 습관입니다."
       />
 
       <section
@@ -30,7 +30,7 @@ export default function AiInsightsPage({
             </h2>
           </div>
           <span className={styles.panelMeta}>
-            {insight.sourceCount}건의 경향 반영
+            {insight.sourceCount}건의 행동 세션 반영
           </span>
         </header>
 
@@ -53,12 +53,12 @@ export default function AiInsightsPage({
               </span>
               <strong>
                 {insight.status === "empty"
-                  ? "최근 7일간 분석할 기록이 없습니다"
+                  ? "최근 7일간 분석할 행동 기록이 없습니다"
                   : "AI 분석을 불러오지 못했습니다"}
               </strong>
               <p>
                 {insight.status === "empty"
-                  ? "새로운 경향 기록이 쌓이면 맞춤형 인사이트를 생성합니다."
+                  ? "새로운 주문 행동이 쌓이면 맞춤형 인사이트를 생성합니다."
                   : "잠시 후 페이지를 새로고침해 다시 확인해 주세요."}
               </p>
             </div>

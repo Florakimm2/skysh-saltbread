@@ -322,6 +322,18 @@
   box-shadow: 0 0 0 3px rgba(217, 138, 26, 0.13);
 }
 
+.saltbread-logging-status {
+  margin: -8px 0 14px;
+  padding: 8px 10px;
+  border: 1px solid #f2d3a8;
+  border-radius: 9px;
+  color: #8a540d;
+  background: #fff9ef;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
 .saltbread-panel__section-heading {
   display: flex;
   align-items: center;

@@ -8,7 +8,6 @@ import {
   findAllBehaviorEventsByUser,
   findBehaviorEventsByUser,
   findRecentBehaviorEvents,
-  findRiskAnalysesByUser,
 } from "./repository";
 import type {
   AnalyzeRiskInput,
@@ -16,11 +15,9 @@ import type {
   BehaviorEventDoc,
   BehaviorEventType,
   BehaviorEventInput,
-  PastTrendRecord,
+  BehaviorSessionRecord,
   RiskAnalysisResult,
 } from "./types";
-
-const ANALYSIS_BEHAVIOR_WINDOW_MS = 5 * 60 * 1000;
 
 const BEHAVIOR_EVENT_ORDER: BehaviorEventType[] = [
   "ORDER_SUBMIT_ATTEMPT",
@@ -74,33 +71,65 @@ function aggregateBehaviorEvents(
   });
 }
 
-export async function getPastTrendRecords(
+function getBehaviorEventTime(event: BehaviorEventDoc) {
+  const occurredAt = Date.parse(event.occurredAt);
+  return Number.isNaN(occurredAt) ? Date.parse(event.createdAt) : occurredAt;
+}
+
+function toBehaviorSessionRecord(
+  events: BehaviorEventDoc[]
+): BehaviorSessionRecord {
+  const sortedEvents = [...events].sort(
+    (left, right) => getBehaviorEventTime(right) - getBehaviorEventTime(left)
+  );
+  const latestEvent = sortedEvents[0];
+  const orderEvent =
+    sortedEvents.find((event) => event.eventType === "ORDER_SUBMIT_ATTEMPT") ??
+    latestEvent;
+  const side =
+    orderEvent.side ?? sortedEvents.find((event) => event.side)?.side;
+  const orderType =
+    orderEvent.orderType ??
+    sortedEvents.find((event) => event.orderType)?.orderType;
+  const amount =
+    orderEvent.amount ??
+    sortedEvents.find((event) => event.amount !== undefined)?.amount;
+
+  return {
+    id: latestEvent.sessionId
+      ? `${latestEvent.sessionId}:${latestEvent.symbol}`
+      : latestEvent.id,
+    sessionId: latestEvent.sessionId,
+    occurredAt: latestEvent.occurredAt || latestEvent.createdAt,
+    symbol: orderEvent.symbol,
+    side,
+    orderType,
+    amount,
+    behaviorData: aggregateBehaviorEvents(sortedEvents),
+  };
+}
+
+export async function getBehaviorSessionRecords(
   userId: string
-): Promise<PastTrendRecord[]> {
-  const [analyses, behaviorEvents] = await Promise.all([
-    findRiskAnalysesByUser(userId),
-    findAllBehaviorEventsByUser(userId),
-  ]);
+): Promise<BehaviorSessionRecord[]> {
+  const behaviorEvents = await findAllBehaviorEventsByUser(userId);
+  const eventGroups = new Map<string, BehaviorEventDoc[]>();
 
-  return analyses.map((analysis) => {
-    const analysisTime = new Date(analysis.createdAt).getTime();
-    const relatedEvents = behaviorEvents.filter((event) => {
-      const eventTime = new Date(event.createdAt).getTime();
+  for (const event of behaviorEvents) {
+    const groupKey = event.sessionId
+      ? `session:${event.sessionId}:${event.symbol}`
+      : `event:${event.id}`;
+    const group = eventGroups.get(groupKey) ?? [];
+    group.push(event);
+    eventGroups.set(groupKey, group);
+  }
 
-      return (
-        event.symbol === analysis.symbol &&
-        eventTime <= analysisTime &&
-        eventTime >= analysisTime - ANALYSIS_BEHAVIOR_WINDOW_MS
-      );
-    });
-
-    return {
-      id: analysis.id,
-      detectedAt: analysis.createdAt,
-      patterns: analysis.matchedPatterns,
-      behaviorData: aggregateBehaviorEvents(relatedEvents),
-    };
-  });
+  return [...eventGroups.values()]
+    .map(toBehaviorSessionRecord)
+    .sort(
+      (left, right) =>
+        Date.parse(right.occurredAt) - Date.parse(left.occurredAt)
+    );
 }
 
 export async function analyzeCurrentRisk(

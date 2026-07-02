@@ -223,6 +223,41 @@ async function getValidBackendAuth() {
   return nextAuth;
 }
 
+function createBackendHeaders(auth, includeUserId = false) {
+  const headers = {
+    Authorization: `Bearer ${auth.accessToken}`,
+    "Content-Type": "application/json",
+  };
+
+  if (includeUserId && auth.user?.id) {
+    headers["X-User-Id"] = auth.user.id;
+  }
+
+  return headers;
+}
+
+async function postDetectionRequest(requestBody, auth) {
+  return fetchJson(`${API_BASE_URL}${DETECT_PATH}`, {
+    method: "POST",
+    headers: createBackendHeaders(auth),
+    body: JSON.stringify(requestBody),
+  });
+}
+
+async function postBehaviorEvent(eventPayload, existingAuth = null) {
+  const auth = existingAuth || (await getValidBackendAuth());
+
+  if (!auth?.accessToken || !auth.user?.id) {
+    throw new Error("로그인 후 행동 로그 저장을 다시 시도해 주세요.");
+  }
+
+  return fetchJson(`${API_BASE_URL}${BEHAVIOR_EVENTS_PATH}`, {
+    method: "POST",
+    headers: createBackendHeaders(auth, true),
+    body: JSON.stringify(eventPayload),
+  });
+}
+
 function wait(durationMs) {
   return new Promise((resolve) => setTimeout(resolve, durationMs));
 }
@@ -416,6 +451,21 @@ async function collectOrderData(market) {
   return collected;
 }
 
+async function collectOrderDataForDetection(market) {
+  try {
+    const orderData = await collectOrderData(market);
+    return { ...orderData, privateDataAvailable: true };
+  } catch {
+    return {
+      market,
+      recentOrders: [],
+      clientAverageBuyAmount: null,
+      collected_at: new Date().toISOString(),
+      privateDataAvailable: false,
+    };
+  }
+}
+
 async function sendTabMessage(tabId, message) {
   try {
     return await chrome.tabs.sendMessage(tabId, message);
@@ -424,7 +474,12 @@ async function sendTabMessage(tabId, message) {
   }
 }
 
-async function callDetectionApi(tabId, context, marketData) {
+async function callDetectionApi(
+  tabId,
+  context,
+  marketData,
+  options = {},
+) {
   if (!context.currentOrder || !context.behaviorData) {
     return null;
   }
@@ -444,7 +499,7 @@ async function callDetectionApi(tabId, context, marketData) {
         clientAverageBuyAmount:
           context.demoData.clientAverageBuyAmount ?? null,
       }
-    : orderDataCache[context.market];
+    : options.orderData || orderDataCache[context.market];
   const recentOrders = orderData?.recentOrders || [];
   const lastLoss = recentOrders.find(
     (order) =>
@@ -463,18 +518,15 @@ async function callDetectionApi(tabId, context, marketData) {
     behavior_data: {
       ...context.behaviorData,
       client_avg_buy_amount:
-        orderData?.clientAverageBuyAmount ??
-        context.behaviorData.client_avg_buy_amount ??
-        null,
+        orderData
+          ? orderData.clientAverageBuyAmount ?? null
+          : context.behaviorData.client_avg_buy_amount ?? null,
     },
     recent_orders: recentOrders,
   };
 
-  const requestHeaders = {
-    Authorization: `Bearer ${auth.accessToken}`,
-    "Content-Type": "application/json",
-  };
   const behaviorEvent = {
+    ...(context.sessionId ? { sessionId: context.sessionId } : {}),
     symbol: requestBody.market,
     eventType: "ORDER_SUBMIT_ATTEMPT",
     side: requestBody.current_order.order_side,
@@ -482,6 +534,7 @@ async function callDetectionApi(tabId, context, marketData) {
     price: requestBody.current_order.order_price,
     amount: requestBody.current_order.order_amount,
     quantity: requestBody.current_order.order_volume,
+    ...(context.pageUrl ? { pageUrl: context.pageUrl } : {}),
     occurredAt: requestBody.current_order.order_request_time,
     metadata: {
       behaviorData: requestBody.behavior_data,
@@ -489,21 +542,34 @@ async function callDetectionApi(tabId, context, marketData) {
       marketData: requestBody.market_data,
     },
   };
-  const [result] = await Promise.all([
-    fetchJson(`${API_BASE_URL}${DETECT_PATH}`, {
-      method: "POST",
-      headers: requestHeaders,
-      body: JSON.stringify(requestBody),
-    }),
-    fetchJson(`${API_BASE_URL}${BEHAVIOR_EVENTS_PATH}`, {
-      method: "POST",
-      headers: {
-        ...requestHeaders,
-        "X-User-Id": auth.user.id,
-      },
-      body: JSON.stringify(behaviorEvent),
-    }),
-  ]);
+  const detectionPromise = postDetectionRequest(requestBody, auth);
+  const behaviorSaveTask =
+    options.logSubmitAttempt === false
+      ? Promise.resolve()
+      : postBehaviorEvent(behaviorEvent, auth)
+          .then(() =>
+            sendTabMessage(tabId, {
+              type: "BEHAVIOR_EVENT_STATUS",
+              payload: { message: "" },
+            }),
+          )
+          .catch((error) =>
+            sendTabMessage(tabId, {
+              type: "BEHAVIOR_EVENT_STATUS",
+              payload: {
+                message: `행동 로그 저장 실패: ${error.message}`,
+              },
+            }),
+          );
+  let result;
+
+  try {
+    result = await detectionPromise;
+  } catch (error) {
+    await behaviorSaveTask;
+    throw error;
+  }
+
   const flameMode = resolveFlameMode(
     result,
     context.currentOrder.order_side,
@@ -522,6 +588,7 @@ async function callDetectionApi(tabId, context, marketData) {
     type: "DETECTION_RESULT",
     payload: themedResult,
   });
+  await behaviorSaveTask;
   return themedResult;
 }
 
@@ -581,7 +648,9 @@ async function runMinuteCycleForTab(tab) {
     await sendTabMessage(tab.id, { type: "COLLECTION_STARTED" });
     const marketData =
       getDemoMarketData(context) || (await collectMarketData(context.market));
-    await callDetectionApi(tab.id, context, marketData);
+    await callDetectionApi(tab.id, context, marketData, {
+      logSubmitAttempt: false,
+    });
   } catch (error) {
     await sendTabMessage(tab.id, {
       type: "COLLECTION_ERROR",
@@ -634,6 +703,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === "REGISTER_MARKET_CONTEXT") {
     collectMarketData(message.payload.market)
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "LOG_BEHAVIOR_EVENT") {
+    postBehaviorEvent(message.payload)
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -698,8 +774,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             message.payload.demoData.clientAverageBuyAmount ?? null,
           collected_at: new Date().toISOString(),
           isDemo: true,
+          privateDataAvailable: true,
         })
-      : collectOrderData(message.payload.market);
+      : collectOrderDataForDetection(message.payload.market);
 
     collectOrder
       .then(async (orderData) => {
@@ -715,6 +792,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sender.tab.id,
             message.payload,
             marketData,
+            { orderData },
           );
         }
 

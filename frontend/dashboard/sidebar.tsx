@@ -9,7 +9,7 @@ import styles from "./dashboard.module.css";
 const navigation = [
   {
     href: "/dashboard/trends",
-    label: "과거 경향",
+    label: "행동 기록",
     icon: TrendIcon,
   },
   {

@@ -1,5 +1,5 @@
 import { getDashboardSession } from "@/backend/modules/auth/session";
-import { getPastTrendRecords } from "@/backend/modules/behavior/service";
+import { getBehaviorSessionRecords } from "@/backend/modules/behavior/service";
 import PastTrendsPage from "@/frontend/dashboard/past-trends-page";
 
 export default async function TrendsPage() {
@@ -9,7 +9,7 @@ export default async function TrendsPage() {
     return null;
   }
 
-  const trends = await getPastTrendRecords(session.userId);
+  const trends = await getBehaviorSessionRecords(session.userId);
 
   return <PastTrendsPage trends={trends} />;
 }
