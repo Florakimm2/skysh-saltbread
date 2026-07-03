@@ -110,6 +110,7 @@ export async function requestInsightFromFastApi(
     headers: {
       Accept: "application/json, text/plain",
       "Content-Type": "application/json",
+      "X-API-Key": process.env.FASTAPI_INSIGHT_API_KEY!,
     },
     body: JSON.stringify({
       summaries: input.summaries,
