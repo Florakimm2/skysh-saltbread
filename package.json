@@ -4,12 +4,14 @@
   "private": true,
   "scripts": {
     "configure:extension": "node scripts/sync-extension-config.mjs",
-    "dev": "next dev",
+    "dev:frontend": "next dev",
+    "dev:ai-server": "cd ai-server && .\\venv\\Scripts\\activate && uvicorn app.main:app  --port 8000",
+    "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:ai-server\"",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
     "test:extension": "node --test tests/*.test.js"
-  },
+},
   "dependencies": {
     "firebase": "^12.15.0",
     "firebase-admin": "^14.1.0",
@@ -26,6 +28,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "concurrently": "^10.0.3",
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
     "tailwindcss": "^4",
