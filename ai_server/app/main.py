@@ -14,6 +14,32 @@ from app.api.routes import router
 from app.config import Settings
 
 
+class ServicePrefixMiddleware:
+    def __init__(self, app, prefix: str) -> None:
+        self.app = app
+        self.prefix = prefix
+        self.prefix_bytes = prefix.encode()
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in {"http", "websocket"}:
+            path = scope.get("path", "")
+
+            if path == self.prefix or path.startswith(f"{self.prefix}/"):
+                scope = {
+                    **scope,
+                    "path": path[len(self.prefix):] or "/",
+                    "root_path": f"{scope.get('root_path', '')}{self.prefix}",
+                }
+
+                raw_path = scope.get("raw_path")
+                if (
+                    isinstance(raw_path, bytes)
+                    and raw_path.startswith(self.prefix_bytes)
+                ):
+                    scope["raw_path"] = raw_path[len(self.prefix_bytes):] or b"/"
+
+        await self.app(scope, receive, send)
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -32,6 +58,11 @@ def create_app(
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+    )
+
+    application.add_middleware(
+        ServicePrefixMiddleware,
+        prefix="/api/ai",
     )
 
     application.state.settings = settings or Settings.from_env()
