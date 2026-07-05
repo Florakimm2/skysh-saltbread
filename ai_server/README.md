@@ -9,10 +9,16 @@ FastAPI 서비스입니다. 기존 `hack_AI.py`의 프롬프트 로직을 서비
 Python 3.10 이상에서 다음과 같이 실행합니다.
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-dev.txt
-cp .env.example .env
+cd ai_server
+
+rm -rf venv
+python3 -m venv venv
+
+./venv/bin/python -m pip install --upgrade pip
+./venv/bin/python -m pip install -r requirements.txt
+
+cd ..
+npm run dev
 ```
 
 `.env`의 `OPENAI_API_KEY`를 실제 값으로 변경한 뒤:
@@ -66,25 +72,3 @@ curl -X POST http://localhost:8000/api/v1/insights/analyze \
 `.env`는 `.gitignore`와 `.dockerignore`에 포함됩니다. 클라우드 배포에서는 `.env`
 파일을 이미지에 복사하지 말고 플랫폼의 Secret/Environment Variable 기능으로
 주입하세요.
-
-## Docker 배포
-
-```bash
-docker build -t trading-insight-api .
-docker run --rm -p 8000:8000 \
-  -e OPENAI_API_KEY='your-key' \
-  -e SERVICE_API_KEY='your-client-key' \
-  trading-insight-api
-```
-
-## 테스트
-
-테스트는 실제 OpenAI API를 호출하지 않습니다.
-
-```bash
-python -m unittest discover -v
-```
-
-> 기존 파일에 한 번이라도 실제 키가 저장되었으므로 해당 키는 OpenAI
-> 대시보드에서 폐기하고 새 키를 발급하세요. 파일에서 지우는 것만으로는 이미
-> 노출된 키를 안전하게 만들 수 없습니다.
