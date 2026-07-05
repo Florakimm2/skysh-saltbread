@@ -1,8 +1,14 @@
 import logging
+import sys
+from pathlib import Path
 from threading import Lock
 
+AI_SERVER_ROOT = Path(__file__).resolve().parents[1]  # ai-server/
+if str(AI_SERVER_ROOT) not in sys.path:
+    sys.path.insert(0, str(AI_SERVER_ROOT))
+
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware # 1. CORS 미들웨어 불러오기 추가
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
 from app.config import Settings
