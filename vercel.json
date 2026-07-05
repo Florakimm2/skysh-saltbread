@@ -1,18 +1,28 @@
 {
-    "builds": [
-      {
-        "src": "package.json",
-        "use": "@vercel/next"
-      },
-      {
-        "src": "ai_server/app/main.py",
-        "use": "@vercel/python"
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "web": {
+      "root": ".",
+      "framework": "nextjs"
+    },
+    "ai": {
+      "root": "ai_server",
+      "framework": "fastapi",
+      "entrypoint": "app.main:app"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/ai/(.*)",
+      "destination": {
+        "service": "ai"
       }
-    ],
-    "rewrites": [
-      {
-        "source": "/api/ai/:match*",
-        "destination": "ai_server/app/main.py"
+    },
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "web"
       }
-    ]
-  }
+    }
+  ]
+}
