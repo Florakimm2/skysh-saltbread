@@ -1,0 +1,18 @@
+{
+    "builds": [
+      {
+        "src": "package.json",
+        "use": "@vercel/next"
+      },
+      {
+        "src": "ai_server/app/main.py",
+        "use": "@vercel/python"
+      }
+    ],
+    "rewrites": [
+      {
+        "source": "/api/ai/:match*",
+        "destination": "ai_server/app/main.py"
+      }
+    ]
+  }
