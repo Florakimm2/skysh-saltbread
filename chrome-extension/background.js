@@ -29,6 +29,13 @@ const textDecoder = new TextDecoder();
 let publicRequestQueue = Promise.resolve();
 let lastPublicRequestAt = 0;
 
+async function handleAuthHandoff(handoffCode) {
+  void handoffCode;
+  // TODO : handoff
+}
+
+globalThis.handleAuthHandoff = handleAuthHandoff;
+
 function bytesToBase64(bytes) {
   let binary = "";
 
@@ -193,7 +200,10 @@ async function fetchJson(url, options = {}) {
       data?.error?.message ||
       data?.message ||
       `요청에 실패했습니다. (${response.status})`;
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = response.status;
+    error.code = data?.error?.name || data?.name || null;
+    throw error;
   }
 
   return data;
@@ -408,6 +418,63 @@ async function fetchPrivateUpbit(path, entries, credentials) {
       Authorization: `Bearer ${jwt}`,
     },
   });
+}
+
+function toUpbitCredentialValidationError(error, checkLabel) {
+  if (error.code === "no_authorization_ip") {
+    return new Error(
+      "현재 네트워크의 공인 IP가 업비트 API Key에 등록되어 있지 않습니다.",
+    );
+  }
+
+  if (error.code === "out_of_scope") {
+    return new Error(
+      `${checkLabel} 권한이 없습니다. 업비트 API Key에 자산조회와 주문조회 권한을 추가해 주세요.`,
+    );
+  }
+
+  if (
+    [
+      "invalid_access_key",
+      "expired_access_key",
+      "jwt_verification",
+    ].includes(error.code) ||
+    error.status === 401
+  ) {
+    return new Error(
+      "Access Key 또는 Secret Key가 올바르지 않거나 만료되었습니다.",
+    );
+  }
+
+  return new Error(`${checkLabel} 검증에 실패했습니다. ${error.message}`);
+}
+
+async function validateUpbitCredentials(credentials) {
+  const checks = [
+    {
+      label: "자산조회",
+      path: "/v1/accounts",
+      entries: [],
+    },
+    {
+      label: "체결 대기 주문조회",
+      path: "/v1/orders/open",
+      entries: [["limit", "1"]],
+    },
+    {
+      label: "종료 주문조회",
+      path: "/v1/orders/closed",
+      entries: [["limit", "1"]],
+    },
+  ];
+
+  for (const check of checks) {
+    try {
+      await fetchPrivateUpbit(check.path, check.entries, credentials);
+    } catch (error) {
+      throw toUpbitCredentialValidationError(error, check.label);
+    }
+  }
 }
 
 async function collectOrderData(market) {
@@ -813,10 +880,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
 
-    encryptAndStoreCredentials(accessKey.trim(), secretKey.trim(), passphrase)
+    const credentials = {
+      accessKey: accessKey.trim(),
+      secretKey: secretKey.trim(),
+    };
+
+    validateUpbitCredentials(credentials)
+      .then(() =>
+        encryptAndStoreCredentials(
+          credentials.accessKey,
+          credentials.secretKey,
+          passphrase,
+        ),
+      )
       .then(() => sendResponse({ ok: true }))
-      .catch(() =>
-        sendResponse({ ok: false, error: "API 키 암호화 저장에 실패했습니다." }),
+      .catch((error) =>
+        sendResponse({
+          ok: false,
+          error: error.message || "API 키 검증 및 저장에 실패했습니다.",
+        }),
       );
     return true;
   }

@@ -4,8 +4,6 @@ const APP_ORIGINS = new Set([
   APP_URL,
   ...(globalThis.SALTBREAD_CONFIG.appOrigins || []),
 ]);
-const CONSENT_STORAGE_KEY = "behaviorDataConsent";
-const CONSENT_VERSION = 1;
 const BEHAVIOR_INPUT_DEBOUNCE_MS = 650;
 const {
   buildBehaviorSnapshot,
@@ -123,10 +121,6 @@ function applyFlameTheme(mode) {
 
 function isLoggedIn(auth) {
   return Boolean(auth?.accessToken && auth?.user);
-}
-
-function hasBehaviorDataConsent(consent) {
-  return consent?.accepted === true && consent.version === CONSENT_VERSION;
 }
 
 function renderMetricCards() {
@@ -1397,12 +1391,8 @@ function stopBehaviorTracking() {
   demoContext = null;
 }
 
-function syncPanel(auth, behaviorDataConsent) {
-  if (
-    !isDashboardPage() &&
-    isLoggedIn(auth) &&
-    hasBehaviorDataConsent(behaviorDataConsent)
-  ) {
+function syncPanel(auth) {
+  if (!isDashboardPage() && isLoggedIn(auth)) {
     createPanel(auth);
     return;
   }
@@ -1412,10 +1402,8 @@ function syncPanel(auth, behaviorDataConsent) {
 
 function refreshPanelState() {
   return chrome.storage.local
-    .get(["auth", CONSENT_STORAGE_KEY])
-    .then(({ auth, behaviorDataConsent }) =>
-      syncPanel(auth, behaviorDataConsent),
-    );
+    .get("auth")
+    .then(({ auth }) => syncPanel(auth));
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -1472,7 +1460,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     return;
   }
 
-  if (changes.auth || changes[CONSENT_STORAGE_KEY]) {
+  if (changes.auth) {
     refreshPanelState();
   }
 
