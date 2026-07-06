@@ -18,7 +18,7 @@ import {
 } from "./auth-visuals";
 import styles from "./auth-pages.module.css";
 
-export default function SignupPage() {
+export default function SignupPage({ extensionId }: { extensionId?: string }) {
   const router = useRouter();
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmation, setShowConfirmation] = useState(false);
@@ -70,7 +70,15 @@ export default function SignupPage() {
       });
 
       rememberActiveUser(loginResult.user);
-      router.replace("/onboarding");
+      if (extensionId) {
+        const params = new URLSearchParams({
+          extensionId,
+          next: "/onboarding",
+        });
+        router.replace(`/extension/connect?${params.toString()}`);
+      } else {
+        router.replace("/onboarding");
+      }
     } catch (error) {
       setMessage(
         error instanceof Error
@@ -235,7 +243,15 @@ export default function SignupPage() {
             </div>
             <p className={styles.switchPrompt}>
               이미 계정이 있으신가요?
-              <Link href="/login">로그인</Link>
+              <Link
+                href={
+                  extensionId
+                    ? `/login?extensionId=${encodeURIComponent(extensionId)}`
+                    : "/login"
+                }
+              >
+                로그인
+              </Link>
             </p>
           </section>
         </div>

@@ -156,14 +156,14 @@ function createPanel(auth) {
 
   const panel = document.createElement("aside");
   panel.id = PANEL_ID;
-  panel.setAttribute("aria-label", "Fireguard 행동 데이터");
+  panel.setAttribute("aria-label", "불씨 행동 데이터");
   panel.innerHTML = `
     <div class="saltbread-panel__collapsed-controls" aria-hidden="true">
       <div class="saltbread-panel__collapsed-flame"></div>
       <button
         class="saltbread-panel__reopen"
         type="button"
-        aria-label="Fireguard 패널 열기"
+        aria-label="불씨 패널 열기"
         aria-hidden="true"
         title="패널 열기"
       >
@@ -175,13 +175,13 @@ function createPanel(auth) {
       <div class="saltbread-panel__header">
         <div class="saltbread-panel__flame"></div>
         <div class="saltbread-panel__title">
-          <strong>Fireguard</strong>
+          <strong>불씨</strong>
           <span>행동 데이터</span>
         </div>
         <button
           class="saltbread-panel__collapse"
           type="button"
-          aria-label="Fireguard 패널 접기"
+          aria-label="불씨 패널 접기"
           title="패널 접기"
         >
           <span aria-hidden="true"></span>
@@ -259,7 +259,7 @@ function createPanel(auth) {
     panel.querySelector(".saltbread-panel__collapsed-flame"),
     {
       mode: "default",
-      label: "접힌 Fireguard의 현재 감정 매매 상태 불꽃",
+      label: "접힌 불씨의 현재 감정 매매 상태 불꽃",
     },
   );
   chrome.storage.local

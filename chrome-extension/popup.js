@@ -1,8 +1,8 @@
-const API_BASE_URL = globalThis.SALTBREAD_CONFIG.apiBaseUrl;
 const popupRoot = document.documentElement;
 const signedOutView = document.querySelector("#signed-out-view");
 const accountView = document.querySelector("#account-view");
 const openLoginButton = document.querySelector("#open-login-button");
+const openSignupButton = document.querySelector("#open-signup-button");
 const loginMessage = document.querySelector("#login-message");
 const accountGreeting = document.querySelector("#account-greeting");
 const statisticsSummary = document.querySelector("#statistics-summary");
@@ -36,7 +36,7 @@ function renderStatistics() {
 }
 
 function showAccount(user) {
-  const userName = user.name || "Fireguard 사용자";
+  const userName = user.name || "불씨 사용자";
   accountGreeting.textContent = `${userName} 님, 오늘도 좋은 하루에요.`;
   accountMessage.textContent = "";
   setPopupView("account");
@@ -94,44 +94,25 @@ async function refreshCredentialStatus() {
   }
 }
 
-async function request(path, options = {}) {
-  let response;
-
-  try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
-      credentials: "include",
-      ...options,
-      headers: {
-        ...(options.body ? { "Content-Type": "application/json" } : {}),
-        ...options.headers,
-      },
-    });
-  } catch {
-    throw new Error("서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.");
-  }
-
-  const data = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    throw new Error(data.message || "요청에 실패했습니다.");
-  }
-
-  return data;
-}
-
-openLoginButton.addEventListener("click", async () => {
-  openLoginButton.disabled = true;
+async function openAuth(mode, button) {
+  button.disabled = true;
   loginMessage.textContent = "";
 
   try {
-    // TODO : 로그인
-    await sendBackgroundMessage("OPEN_DASHBOARD");
+    await sendBackgroundMessage("OPEN_AUTH", { mode });
     window.close();
   } catch (error) {
     loginMessage.textContent = error.message;
-    openLoginButton.disabled = false;
+    button.disabled = false;
   }
-});
+}
+
+openLoginButton.addEventListener("click", () =>
+  openAuth("login", openLoginButton),
+);
+openSignupButton.addEventListener("click", () =>
+  openAuth("signup", openSignupButton),
+);
 
 apiKeyToggle.addEventListener("click", () => {
   const isExpanded = apiKeyToggle.getAttribute("aria-expanded") === "true";
@@ -219,56 +200,30 @@ logoutButton.addEventListener("click", async () => {
   accountMessage.textContent = "";
 
   try {
-    const { auth } = await chrome.storage.local.get("auth");
-
-    await request("/api/auth/logout", {
-      method: "POST",
-      headers: auth?.accessToken
-        ? { Authorization: `Bearer ${auth.accessToken}` }
-        : {},
-    });
-  } catch {
-    // 서버 세션이 이미 만료되었어도 로컬 인증 정보는 제거합니다.
-  } finally {
-    await chrome.runtime.sendMessage({ type: "LOCK_UPBIT_CREDENTIALS" });
-    await chrome.storage.local.remove("auth");
-    logoutButton.disabled = false;
+    const response = await sendBackgroundMessage("LOGOUT_EVERYWHERE");
+    if (response.serverError) {
+      accountMessage.textContent =
+        "서버 세션은 이미 만료됐지만 이 브라우저의 정보는 모두 정리했어요.";
+    }
     showSignedOut();
+  } catch (error) {
+    accountMessage.textContent = error.message;
+  } finally {
+    logoutButton.disabled = false;
   }
 });
 
 async function initialize() {
-  const { auth } = await chrome.storage.local.get("auth");
-
-  if (auth?.user && auth.expiresAt > Date.now()) {
-    showAccount(auth.user);
-    return;
-  }
-
-  if (auth?.user && auth.accessToken) {
-    try {
-      const data = await request("/api/auth/refresh", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${auth.accessToken}` },
-      });
-
-      if (data.accessToken && data.expiresIn) {
-        await chrome.storage.local.set({
-          auth: {
-            ...auth,
-            accessToken: data.accessToken,
-            expiresAt: Date.now() + data.expiresIn * 1000,
-          },
-        });
-        showAccount(auth.user);
-        return;
-      }
-    } catch {
-      // refresh token까지 만료된 경우 아래에서 로컬 인증 정보를 제거합니다.
+  try {
+    const { auth } = await sendBackgroundMessage("GET_AUTH_STATE");
+    if (auth?.user) {
+      showAccount(auth.user);
+      return;
     }
+  } catch {
+    // 만료된 세션은 background에서 정리하고 비로그인 화면을 표시합니다.
   }
 
-  await chrome.storage.local.remove("auth");
   showSignedOut();
 }
 

@@ -1,28 +1,38 @@
 import { NextResponse } from "next/server";
-import { clearRefreshTokenCookie } from "@/backend/common/cookies";
-import { handleRouteError } from "@/backend/common/errors";
+import {
+  clearRefreshTokenCookie,
+  getCookieValue,
+  REFRESH_TOKEN_COOKIE_NAME,
+} from "@/backend/common/cookies";
 import { getBearerToken } from "@/backend/common/http";
-import { logout } from "@/backend/modules/auth/service";
+import { logout, refresh } from "@/backend/modules/auth/service";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
+  let accessToken = getBearerToken(request);
+
   try {
-    const accessToken = getBearerToken(request);
+    if (!accessToken) {
+      const refreshToken = getCookieValue(
+        request,
+        REFRESH_TOKEN_COOKIE_NAME,
+      );
 
-    const result = await logout(accessToken);
+      if (refreshToken) {
+        accessToken = (await refresh(refreshToken)).accessToken;
+      }
+    }
 
-    const response = NextResponse.json(
-      {
-        message: result.message,
-      },
-      { status: 200 }
-    );
-
-    clearRefreshTokenCookie(response);
-
-    return response;
-  } catch (error) {
-    return handleRouteError(error);
+    await logout(accessToken);
+  } catch {
+    // 이미 만료되거나 폐기된 세션이어도 로그아웃은 멱등하게 처리합니다.
   }
+
+  const response = NextResponse.json(
+    { message: "로그아웃되었습니다." },
+    { status: 200 },
+  );
+  clearRefreshTokenCookie(response);
+  return response;
 }

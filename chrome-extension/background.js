@@ -10,17 +10,23 @@ const {
   appUrl: APP_URL,
   appOrigins,
   apiBaseUrl: API_BASE_URL,
-  dashboardUrl: DASHBOARD_URL,
   detectPath: DETECT_PATH,
   behaviorEventsPath: BEHAVIOR_EVENTS_PATH,
   upbitApiBaseUrl: UPBIT_API_BASE_URL,
 } = globalThis.SALTBREAD_CONFIG;
-const APP_TAB_URL_PATTERNS = [...new Set([APP_URL, ...(appOrigins || [])])].map(
-  (origin) => `${origin}/*`,
-);
+const DEVELOPMENT_APP_HOSTNAMES = new Set(["localhost", "127.0.0.1"]);
+const ALLOWED_APP_ORIGINS = [
+  ...new Set([APP_URL, ...(appOrigins || [])]),
+];
+const APP_TAB_URL_PATTERNS = [
+  ...ALLOWED_APP_ORIGINS.map((origin) => `${origin}/*`),
+  "http://localhost/*",
+  "http://127.0.0.1/*",
+];
 const COLLECTION_ALARM = "saltbread-minute-collection";
 const CREDENTIALS_STORAGE_KEY = "upbitCredentials";
 const SESSION_KEY_STORAGE_KEY = "upbitCredentialSessionKey";
+const REFRESH_TOKEN_COOKIE_NAME = "refreshToken";
 const PUBLIC_REQUEST_INTERVAL_MS = 10_100;
 const MARKET_DETAILS_CACHE_MS = 10 * 60 * 1000;
 const DETECTION_MARKET_CACHE_MS = 2 * 60 * 1000;
@@ -29,9 +35,123 @@ const textDecoder = new TextDecoder();
 let publicRequestQueue = Promise.resolve();
 let lastPublicRequestAt = 0;
 
-async function handleAuthHandoff(handoffCode) {
-  void handoffCode;
-  // TODO : handoff
+function normalizeAllowedAppOrigin(value) {
+  if (!value || typeof value !== "string") {
+    return null;
+  }
+
+  try {
+    const url = new URL(value);
+    const origin = url.origin;
+    const isDevelopmentOrigin =
+      url.protocol === "http:" &&
+      DEVELOPMENT_APP_HOSTNAMES.has(url.hostname);
+
+    return ALLOWED_APP_ORIGINS.includes(origin) || isDevelopmentOrigin
+      ? origin
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function getSenderOrigin(sender) {
+  return normalizeAllowedAppOrigin(sender?.origin || sender?.url || "");
+}
+
+function getAuthApiBase(auth) {
+  return normalizeAllowedAppOrigin(auth?.appOrigin) || API_BASE_URL;
+}
+
+async function resolveCurrentAppOrigin() {
+  const activeTabs = await chrome.tabs.query({
+    active: true,
+    currentWindow: true,
+  });
+  const activeOrigin = normalizeAllowedAppOrigin(activeTabs[0]?.url);
+
+  if (activeOrigin) {
+    return activeOrigin;
+  }
+
+  const appTabs = await chrome.tabs.query({ url: APP_TAB_URL_PATTERNS });
+  const mostRecentOrigin = [...appTabs]
+    .sort((left, right) => (right.lastAccessed || 0) - (left.lastAccessed || 0))
+    .map((tab) => normalizeAllowedAppOrigin(tab.url))
+    .find(Boolean);
+
+  return mostRecentOrigin || normalizeAllowedAppOrigin(APP_URL) || APP_URL;
+}
+
+async function readRefreshCookie(appOrigin) {
+  if (!chrome.cookies?.get) {
+    throw new Error("확장 프로그램의 쿠키 권한을 확인해 주세요.");
+  }
+
+  return chrome.cookies.get({
+    url: `${appOrigin}/`,
+    name: REFRESH_TOKEN_COOKIE_NAME,
+  });
+}
+
+async function rotateRefreshCookie(appOrigin, refreshToken) {
+  if (!refreshToken || !chrome.cookies?.set) {
+    return;
+  }
+
+  await chrome.cookies.set({
+    url: `${appOrigin}/`,
+    name: REFRESH_TOKEN_COOKIE_NAME,
+    value: refreshToken,
+    path: "/",
+    httpOnly: true,
+    secure: appOrigin.startsWith("https://"),
+    sameSite: "lax",
+  });
+}
+
+async function refreshAuthForOrigin(appOrigin, currentAuth = {}) {
+  const cookie = await readRefreshCookie(appOrigin);
+
+  if (!cookie?.value) {
+    throw new Error("웹 로그인 세션을 찾지 못했어요. 다시 로그인해 주세요.");
+  }
+
+  const refreshed = await fetchJson(
+    `${appOrigin}/api/auth/extension/refresh`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refreshToken: cookie.value }),
+    },
+  );
+
+  if (!refreshed?.accessToken || !refreshed?.refreshToken || !refreshed?.user) {
+    throw new Error("서버에서 올바른 로그인 정보를 받지 못했어요.");
+  }
+
+  await rotateRefreshCookie(appOrigin, refreshed.refreshToken);
+
+  const auth = {
+    ...currentAuth,
+    accessToken: refreshed.accessToken,
+    expiresAt: Date.now() + Number(refreshed.expiresIn) * 1000,
+    user: refreshed.user,
+    appOrigin,
+  };
+  await chrome.storage.local.set({ auth });
+  return auth;
+}
+
+async function handleAuthHandoff(appOrigin, sender = {}) {
+  const normalizedAppOrigin = normalizeAllowedAppOrigin(appOrigin);
+  const senderOrigin = getSenderOrigin(sender);
+
+  if (!normalizedAppOrigin || senderOrigin !== normalizedAppOrigin) {
+    throw new Error("허용되지 않은 앱 주소에서 보낸 연결 요청입니다.");
+  }
+
+  return refreshAuthForOrigin(normalizedAppOrigin);
 }
 
 globalThis.handleAuthHandoff = handleAuthHandoff;
@@ -191,6 +311,13 @@ async function removeCredentials() {
   ]);
 }
 
+async function clearExtensionSession() {
+  await Promise.all([
+    chrome.storage.local.remove("auth"),
+    removeCredentials(),
+  ]);
+}
+
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, options);
   const data = await response.json().catch(() => null);
@@ -220,6 +347,17 @@ async function getValidBackendAuth() {
     return auth;
   }
 
+  const appOrigin = normalizeAllowedAppOrigin(auth.appOrigin);
+
+  if (appOrigin) {
+    try {
+      return await refreshAuthForOrigin(appOrigin, auth);
+    } catch (error) {
+      await clearExtensionSession();
+      throw error;
+    }
+  }
+
   const refreshed = await fetchJson(`${API_BASE_URL}/api/auth/refresh`, {
     method: "POST",
     credentials: "include",
@@ -231,6 +369,55 @@ async function getValidBackendAuth() {
   };
   await chrome.storage.local.set({ auth: nextAuth });
   return nextAuth;
+}
+
+async function removeRefreshCookie(appOrigin) {
+  if (!chrome.cookies?.remove) {
+    return;
+  }
+
+  await chrome.cookies.remove({
+    url: `${appOrigin}/`,
+    name: REFRESH_TOKEN_COOKIE_NAME,
+  });
+}
+
+async function redirectAppTabsToLogin(appOrigin) {
+  const tabs = await chrome.tabs.query({ url: [`${appOrigin}/*`] });
+
+  await Promise.all(
+    tabs
+      .filter((tab) => typeof tab.id === "number")
+      .map((tab) => chrome.tabs.update?.(tab.id, { url: `${appOrigin}/login` })),
+  );
+}
+
+async function logoutEverywhere() {
+  const { auth } = await chrome.storage.local.get("auth");
+  const appOrigin =
+    normalizeAllowedAppOrigin(auth?.appOrigin) ||
+    (await resolveCurrentAppOrigin());
+  let serverError = null;
+
+  try {
+    await fetchJson(`${appOrigin}/api/auth/logout`, {
+      method: "POST",
+      credentials: "include",
+      headers: auth?.accessToken
+        ? { Authorization: `Bearer ${auth.accessToken}` }
+        : {},
+    });
+  } catch (error) {
+    serverError = error.message;
+  } finally {
+    await Promise.all([
+      removeRefreshCookie(appOrigin),
+      clearExtensionSession(),
+    ]);
+    await redirectAppTabsToLogin(appOrigin);
+  }
+
+  return { appOrigin, serverError };
 }
 
 function createBackendHeaders(auth, includeUserId = false) {
@@ -247,7 +434,7 @@ function createBackendHeaders(auth, includeUserId = false) {
 }
 
 async function postDetectionRequest(requestBody, auth) {
-  return fetchJson(`${API_BASE_URL}${DETECT_PATH}`, {
+  return fetchJson(`${getAuthApiBase(auth)}${DETECT_PATH}`, {
     method: "POST",
     headers: createBackendHeaders(auth),
     body: JSON.stringify(requestBody),
@@ -261,7 +448,7 @@ async function postBehaviorEvent(eventPayload, existingAuth = null) {
     throw new Error("로그인 후 행동 로그 저장을 다시 시도해 주세요.");
   }
 
-  return fetchJson(`${API_BASE_URL}${BEHAVIOR_EVENTS_PATH}`, {
+  return fetchJson(`${getAuthApiBase(auth)}${BEHAVIOR_EVENTS_PATH}`, {
     method: "POST",
     headers: createBackendHeaders(auth, true),
     body: JSON.stringify(eventPayload),
@@ -758,13 +945,49 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 ensureCollectionAlarm();
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "OPEN_AUTH") {
+    const mode = message.payload?.mode === "signup" ? "signup" : "login";
+
+    resolveCurrentAppOrigin()
+      .then((appOrigin) => {
+        const url = new URL(`/${mode}`, appOrigin);
+        if (chrome.runtime.id) {
+          url.searchParams.set("extensionId", chrome.runtime.id);
+        }
+        return chrome.tabs.create({ url: url.toString() });
+      })
+      .then(() => sendResponse({ ok: true }))
+      .catch(() =>
+        sendResponse({ ok: false, error: "로그인 페이지를 열 수 없습니다." }),
+      );
+    return true;
+  }
+
   if (message?.type === "OPEN_DASHBOARD") {
-    chrome.tabs
-      .create({ url: DASHBOARD_URL })
+    resolveCurrentAppOrigin()
+      .then((appOrigin) =>
+        chrome.tabs.create({ url: `${appOrigin}/dashboard` }),
+      )
       .then(() => sendResponse({ ok: true }))
       .catch(() =>
         sendResponse({ ok: false, error: "대시보드를 열 수 없습니다." }),
       );
+    return true;
+  }
+
+  if (message?.type === "GET_AUTH_STATE") {
+    getValidBackendAuth()
+      .then((auth) => sendResponse({ ok: true, auth }))
+      .catch((error) =>
+        sendResponse({ ok: false, error: error.message }),
+      );
+    return true;
+  }
+
+  if (message?.type === "LOGOUT_EVERYWHERE") {
+    logoutEverywhere()
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
 
@@ -944,4 +1167,48 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   return false;
+});
+
+chrome.runtime.onMessageExternal?.addListener(
+  (message, sender, sendResponse) => {
+    if (message?.type !== "AUTH_HANDOFF") {
+      return false;
+    }
+
+    handleAuthHandoff(message.payload?.appOrigin, sender)
+      .then((auth) =>
+        sendResponse({
+          ok: true,
+          auth: {
+            expiresAt: auth.expiresAt,
+            user: auth.user,
+            appOrigin: auth.appOrigin,
+          },
+        }),
+      )
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  },
+);
+
+chrome.cookies?.onChanged?.addListener((changeInfo) => {
+  if (
+    !changeInfo.removed ||
+    changeInfo.cause === "overwrite" ||
+    changeInfo.cookie?.name !== REFRESH_TOKEN_COOKIE_NAME
+  ) {
+    return;
+  }
+
+  chrome.storage.local.get("auth").then(({ auth }) => {
+    const appOrigin = normalizeAllowedAppOrigin(auth?.appOrigin);
+
+    if (
+      appOrigin &&
+      new URL(appOrigin).hostname ===
+        String(changeInfo.cookie.domain || "").replace(/^\./, "")
+    ) {
+      void clearExtensionSession().catch(() => {});
+    }
+  });
 });

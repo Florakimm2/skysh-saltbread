@@ -36,6 +36,94 @@
   box-shadow: 0 16px 44px rgb(40 36 32 / 11%);
 }
 
+.connectCard {
+  display: flex;
+  flex-direction: column;
+}
+
+.connectPanel {
+  display: flex;
+  width: min(620px, 100%);
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto;
+  padding: 30px 20px 70px;
+  text-align: center;
+}
+
+.connectFlame {
+  margin-bottom: 8px;
+  filter: drop-shadow(0 18px 13px rgb(235 76 24 / 18%));
+}
+
+.connectPanel h1 {
+  margin: 0;
+  font-size: clamp(34px, 4vw, 56px);
+  font-weight: 830;
+  letter-spacing: -0.07em;
+}
+
+.connectMessage {
+  max-width: 520px;
+  min-height: 52px;
+  margin: 20px 0 22px;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1.65;
+}
+
+.connectStatus {
+  display: inline-flex;
+  min-height: 48px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 18px;
+  border: 1px solid #f0dfd6;
+  border-radius: 999px;
+  background: #fff8f4;
+  color: var(--orange-dark);
+  font-size: 14px;
+  font-weight: 740;
+}
+
+.connectStatus[data-status="success"] {
+  border-color: #cce8d8;
+  background: #f4fbf7;
+  color: #24734a;
+}
+
+.connectStatus[data-status="error"] {
+  border-color: #f0d0cd;
+  background: #fff6f5;
+  color: #b83c32;
+}
+
+.connectStatus svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.connectSpinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgb(255 84 21 / 22%);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+}
+
+.connectPanel .primaryButton {
+  width: min(330px, 100%);
+  margin-top: 22px;
+}
+
 .header {
   position: relative;
   z-index: 5;

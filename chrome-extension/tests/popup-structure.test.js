@@ -18,16 +18,18 @@ const contentScript = fs.readFileSync(
   "utf8",
 );
 
-test("비로그인 팝업은 아이콘, 서비스명, 로그인 버튼만 제공한다", () => {
+test("비로그인 팝업은 불씨 브랜드와 분리된 로그인·회원가입 버튼을 제공한다", () => {
   const signedOutView = popupHtml.match(
     /<section id="signed-out-view"[\s\S]*?<\/section>/,
   )?.[0];
 
   assert.ok(signedOutView);
   assert.match(signedOutView, /icon-128\.png/);
-  assert.match(signedOutView, /<h1>Fireguard<\/h1>/);
-  assert.match(signedOutView, /로그인 \/ 회원가입/);
+  assert.match(signedOutView, /<h1>불씨<\/h1>/);
+  assert.match(signedOutView, /id="open-login-button"[\s\S]*?>\s*로그인/);
+  assert.match(signedOutView, /id="open-signup-button"[\s\S]*?>\s*회원가입/);
   assert.doesNotMatch(popupHtml, /consent-view|login-form|signup-form/);
+  assert.doesNotMatch(popupScript, /TODO\s*:\s*로그인/);
 });
 
 test("통계 기본값과 TODO 주석을 두 개씩 유지한다", () => {

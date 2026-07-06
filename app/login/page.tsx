@@ -11,14 +11,30 @@ export const metadata: Metadata = {
 export default async function LoginRoute({
   searchParams,
 }: {
-  searchParams: Promise<{ next?: string | string[] }>;
+  searchParams: Promise<{
+    extensionId?: string | string[];
+    next?: string | string[];
+  }>;
 }) {
+  const params = await searchParams;
+  const extensionId =
+    typeof params.extensionId === "string" &&
+    /^[a-p]{32}$/.test(params.extensionId)
+      ? params.extensionId
+      : undefined;
+  const nextPath = typeof params.next === "string" ? params.next : undefined;
+
   if (await getDashboardSession()) {
+    if (extensionId) {
+      const connectParams = new URLSearchParams({
+        extensionId,
+        next: nextPath ?? "/dashboard",
+      });
+      redirect(`/extension/connect?${connectParams.toString()}`);
+    }
+
     redirect("/dashboard");
   }
 
-  const params = await searchParams;
-  const nextPath = typeof params.next === "string" ? params.next : undefined;
-
-  return <LoginPage nextPath={nextPath} />;
+  return <LoginPage extensionId={extensionId} nextPath={nextPath} />;
 }

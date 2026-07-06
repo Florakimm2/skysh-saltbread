@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { BehaviorSessionRecord } from "@/backend/modules/behavior/types";
 import type { DashboardInsightResult } from "@/backend/modules/insight/types";
+import FlameMascot from "@/frontend/auth/flame-mascot";
 import PageHeader from "./page-header";
 import {
   EmptyBoxIcon,
@@ -71,9 +72,11 @@ function InsightPreview({ insight }: { insight: DashboardInsightResult }) {
 export default function DashboardOverview({
   insight,
   trends,
+  isDataUnavailable = false,
 }: {
   insight: DashboardInsightResult;
   trends: BehaviorSessionRecord[];
+  isDataUnavailable?: boolean;
 }) {
   return (
     <>
@@ -85,6 +88,28 @@ export default function DashboardOverview({
       />
 
       <div className={styles.dashboardGrid}>
+        <section className={styles.welcomeCard}>
+          <div className={styles.welcomeCopy}>
+            <p>오늘도 불씨와 함께</p>
+            <h2>
+              서두르지 않아도 괜찮아요.
+              <br />
+              차분한 투자를 이어가 볼까요?
+            </h2>
+            <span>행동 기록과 맞춤 인사이트를 한곳에서 확인해요.</span>
+          </div>
+          <div className={styles.welcomeVisual} aria-hidden="true">
+            <span className={styles.welcomeGlow} />
+            <FlameMascot
+              className={styles.welcomeFlame}
+              label=""
+              mode="curious"
+              size="clamp(118px, 14vw, 178px)"
+              speed="slow"
+            />
+          </div>
+        </section>
+
         <section
           className={`${styles.panel} ${styles.insightPanel}`}
           aria-labelledby="insight-panel-title"
@@ -128,8 +153,16 @@ export default function DashboardOverview({
                 <span className={styles.emptyGlyph}>
                   <EmptyBoxIcon />
                 </span>
-                <strong>주문 행동 기록이 아직 없습니다</strong>
-                <p>Extension에서 수집한 행동 데이터가 이곳에 쌓입니다.</p>
+                <strong>
+                  {isDataUnavailable
+                    ? "행동 기록을 불러오지 못했습니다"
+                    : "주문 행동 기록이 아직 없습니다"}
+                </strong>
+                <p>
+                  {isDataUnavailable
+                    ? "데이터 사용량이 복구된 뒤 다시 확인해 주세요."
+                    : "Extension에서 수집한 행동 데이터가 이곳에 쌓입니다."}
+                </p>
               </div>
             </div>
           )}

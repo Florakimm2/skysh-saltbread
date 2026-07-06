@@ -19,7 +19,13 @@ import {
 } from "./auth-visuals";
 import styles from "./auth-pages.module.css";
 
-export default function LoginPage({ nextPath }: { nextPath?: string }) {
+export default function LoginPage({
+  nextPath,
+  extensionId,
+}: {
+  nextPath?: string;
+  extensionId?: string;
+}) {
   const router = useRouter();
   const [showPassword, setShowPassword] = useState(false);
   const [message, setMessage] = useState("");
@@ -39,7 +45,16 @@ export default function LoginPage({ nextPath }: { nextPath?: string }) {
       });
 
       rememberActiveUser(result.user);
-      router.replace(getSafeNextPath(nextPath));
+      const safeNextPath = getSafeNextPath(nextPath);
+      if (extensionId) {
+        const params = new URLSearchParams({
+          extensionId,
+          next: safeNextPath,
+        });
+        router.replace(`/extension/connect?${params.toString()}`);
+      } else {
+        router.replace(safeNextPath);
+      }
     } catch (error) {
       setMessage(
         error instanceof Error
@@ -146,7 +161,15 @@ export default function LoginPage({ nextPath }: { nextPath?: string }) {
             </div>
             <p className={styles.switchPrompt}>
               계정이 없으신가요?
-              <Link href="/signup">회원가입</Link>
+              <Link
+                href={
+                  extensionId
+                    ? `/signup?extensionId=${encodeURIComponent(extensionId)}`
+                    : "/signup"
+                }
+              >
+                회원가입
+              </Link>
             </p>
           </section>
         </div>

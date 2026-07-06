@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Fireguard</title>
+    <title>불씨</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
@@ -12,14 +12,23 @@
         <img
           class="signed-out-view__icon"
           src="icon-128.png"
-          alt="Fireguard 서비스 아이콘"
+          alt="불씨 서비스 아이콘"
           width="80"
           height="80"
         />
-        <h1>Fireguard</h1>
-        <button id="open-login-button" class="primary-button" type="button">
-          로그인 / 회원가입
-        </button>
+        <h1>불씨</h1>
+        <div class="auth-actions">
+          <button id="open-login-button" class="primary-button" type="button">
+            로그인
+          </button>
+          <button
+            id="open-signup-button"
+            class="secondary-button"
+            type="button"
+          >
+            회원가입
+          </button>
+        </div>
         <p id="login-message" class="message" aria-live="polite"></p>
       </section>
 
@@ -27,7 +36,7 @@
         <header class="account-header">
           <div class="account-header__brand">
             <img src="icon-48.png" alt="" width="38" height="38" />
-            <span>Fireguard</span>
+            <span>불씨</span>
           </div>
           <span class="status-badge">계정 인증 완료</span>
         </header>
@@ -35,7 +44,7 @@
         <h1 id="account-greeting" class="account-greeting"></h1>
 
         <section class="summary-card" aria-labelledby="summary-title">
-          <p class="card-eyebrow">MY FIREGUARD</p>
+          <p class="card-eyebrow">나의 불씨</p>
           <h2 id="summary-title">오늘까지 쌓인 기록</h2>
           <p id="statistics-summary" class="summary-card__message"></p>
         </section>
