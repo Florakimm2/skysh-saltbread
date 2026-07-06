@@ -1,6 +1,15 @@
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
+from dotenv import load_dotenv
+
+
+AI_SERVER_ROOT = Path(__file__).resolve().parents[1]
+ENV_PATH = AI_SERVER_ROOT / ".env"
+
+# 이미 운영 환경변수가 있으면 그것을 우선한다.
+load_dotenv(ENV_PATH, override=False)
 
 def _read_float(name: str, default: float, minimum: float, maximum: float) -> float:
     raw_value = os.getenv(name)
