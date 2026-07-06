@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { redirect } from "next/navigation";
 import { getDashboardSession } from "@/backend/modules/auth/session";
-import AuthPanel from "@/frontend/auth/auth-panel";
 import DashboardShell from "@/frontend/dashboard/dashboard-shell";
 
 export const metadata: Metadata = {
@@ -15,7 +15,7 @@ export default async function DashboardLayout({
   children: ReactNode;
 }) {
   if (!(await getDashboardSession())) {
-    return <AuthPanel />;
+    redirect("/login?next=/dashboard");
   }
 
   return <DashboardShell>{children}</DashboardShell>;
