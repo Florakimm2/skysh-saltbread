@@ -441,6 +441,15 @@ async function postDetectionRequest(requestBody, auth) {
   });
 }
 
+async function postDemoDetectionRequest(requestBody, pageUrl) {
+  const origin = normalizeAllowedAppOrigin(pageUrl) || API_BASE_URL;
+  return fetchJson(`${origin}/api/demo/detect`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(requestBody),
+  });
+}
+
 async function postBehaviorEvent(eventPayload, existingAuth = null) {
   const auth = existingAuth || (await getValidBackendAuth());
 
@@ -743,7 +752,15 @@ async function callDetectionApi(
     chrome.storage.local.get("orderDataCache"),
   ]);
 
-  if (!auth?.accessToken) {
+  const isDemoPage = (() => {
+    try {
+      return new URL(context.pageUrl).pathname === "/demo";
+    } catch {
+      return false;
+    }
+  })();
+
+  if (!isDemoPage && !auth?.accessToken) {
     return null;
   }
 
@@ -796,9 +813,11 @@ async function callDetectionApi(
       marketData: requestBody.market_data,
     },
   };
-  const detectionPromise = postDetectionRequest(requestBody, auth);
+  const detectionPromise = isDemoPage
+    ? postDemoDetectionRequest(requestBody, context.pageUrl)
+    : postDetectionRequest(requestBody, auth);
   const behaviorSaveTask =
-    options.logSubmitAttempt === false
+    options.logSubmitAttempt === false || isDemoPage
       ? Promise.resolve()
       : postBehaviorEvent(behaviorEvent, auth)
           .then(() =>

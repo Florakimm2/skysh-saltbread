@@ -172,8 +172,9 @@ Upbit API 키 연동과 브라우저 저장 방식은
 | `/api/ext/detect` | `POST` | 인증된 확장 프로그램의 감정 매매 판정 |
 | `/api/behavior/events` | `GET`, `POST` | 행동 이벤트 조회 및 저장 |
 | `/api/behavior/analyze` | `POST` | 최근 행동과 시장 데이터 기반 위험 분석 |
-| `/api/market/snapshot` | `GET` | 종목별 시장 스냅샷 조회 |
-| `/api/upbit` | `GET` | 테스트 터미널용 Upbit 시세·캔들·호가 조회 |
+| `/api/demo/market/snapshot` | `GET` | 데모 종목별 시장 스냅샷 조회 |
+| `/api/demo/upbit` | `GET` | 모의투자 데모용 Upbit 시세·캔들·호가 조회 |
+| `/api/demo/detect` | `POST` | 데모 주문 가드레일 판정 및 규칙 ID 조회 |
 | `/api/insights` | `POST` | 외부 FastAPI를 통한 인사이트 생성 |
 
 확장 프로그램이 `/api/ext/detect`로 감지 요청을 보낼 때는 같은 주문

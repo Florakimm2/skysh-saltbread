@@ -106,6 +106,8 @@ test("문서 기준의 정상 주문은 감정 매매로 감지하지 않는다"
 
   assert.equal(result.detected, false);
   assert.equal(result.type, null);
+  assert.deepEqual(Array.from(result.matchedRuleIds), []);
+  assert.equal(result.primaryRuleId, null);
   assert.equal(
     result.message,
     "현재 감정적 매매 패턴은 감지되지 않았어요.",
@@ -128,6 +130,8 @@ test("FOMO는 급등·공격적 매수·빠른 진입이 모두 있어야 한다
   );
 
   assert.equal(detected.type, "FOMO_CHASING");
+  assert.deepEqual(Array.from(detected.matchedRuleIds), ["CHASE_BUY_V1"]);
+  assert.equal(detected.primaryRuleId, "CHASE_BUY_V1");
   assert.equal(notSurging.detected, false);
 });
 

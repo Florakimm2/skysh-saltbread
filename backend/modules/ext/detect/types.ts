@@ -62,6 +62,8 @@ export interface DetectEmotionTradeResponse {
   detected: boolean;
   type: EmotionTradeType | null;
   message: string;
+  matchedRuleIds: string[];
+  primaryRuleId: string | null;
 }
 
 export interface DetectionCandidate {

@@ -499,3 +499,94 @@
     transition: none;
   }
 }
+
+#saltbread-guardrail-dialog,
+#saltbread-feedback-dialog {
+  position: fixed;
+  z-index: 2147483646;
+  right: 28px;
+  bottom: 28px;
+  display: grid;
+  width: 350px;
+  gap: 12px;
+  padding: 24px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 18px;
+  color: #f7f9fd;
+  background: linear-gradient(145deg, #172036, #101624);
+  box-shadow: 0 24px 70px rgb(5 10 20 / 45%);
+  font-family:
+    Arial, "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic",
+    sans-serif;
+}
+
+#saltbread-guardrail-dialog > span,
+#saltbread-feedback-dialog > span {
+  color: #79aef7;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+}
+
+#saltbread-guardrail-dialog > strong,
+#saltbread-feedback-dialog > strong {
+  font-size: 19px;
+  line-height: 1.4;
+}
+
+#saltbread-guardrail-dialog > p {
+  margin: 0;
+  color: #b6c0d0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+#saltbread-guardrail-dialog > div {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-top: 6px;
+}
+
+#saltbread-guardrail-dialog button,
+#saltbread-feedback-dialog button {
+  min-height: 42px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 9px;
+  color: #dbe4f1;
+  background: #293348;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+#saltbread-guardrail-dialog [data-reaction="PROCEED"],
+#saltbread-feedback-dialog [data-assessment="PLANNED"] {
+  color: #fff;
+  background: #246ed5;
+}
+
+#saltbread-feedback-dialog [data-assessment="EMOTIONAL"] {
+  color: #fff;
+  background: #d84f5b;
+}
+
+#saltbread-feedback-dialog [data-assessment="DISMISSED"] {
+  color: #9da9bc;
+  background: transparent;
+}
+
+#saltbread-guardrail-dialog .saltbread-guardrail__close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 30px;
+  min-height: 30px;
+  padding: 0;
+  border-radius: 50%;
+  color: #9ba7ba;
+  background: transparent;
+  font-size: 20px;
+}
