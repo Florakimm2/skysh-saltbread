@@ -1,7 +1,7 @@
 import { getDashboardSession } from "@/backend/modules/auth/session";
-import { getBehaviorSessionRecords } from "@/backend/modules/behavior/service";
 import { requestDashboardInsight } from "@/backend/modules/insight/service";
 import AiInsightsPage from "@/frontend/dashboard/ai-insights-page";
+import { loadDashboardBehaviorData } from "../load-dashboard-data";
 
 export default async function AiInsightRoutePage() {
   const session = await getDashboardSession();
@@ -10,8 +10,11 @@ export default async function AiInsightRoutePage() {
     return null;
   }
 
-  const trends = await getBehaviorSessionRecords(session.userId);
-  const insight = await requestDashboardInsight(trends);
+  const behaviorData = await loadDashboardBehaviorData(session.userId);
+  const insight =
+    behaviorData.status === "ready"
+      ? await requestDashboardInsight(behaviorData.records)
+      : { status: "error" as const, sourceCount: 0 };
 
   return <AiInsightsPage insight={insight} />;
 }

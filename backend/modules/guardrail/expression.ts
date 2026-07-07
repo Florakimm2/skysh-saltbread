@@ -32,8 +32,6 @@ const COMPARISON_OPERATORS: RuleOperator[] = [
   "NOT_IN",
 ];
 
-const ORDER_OPERATORS: RuleOperator[] = ["GT", "GTE", "LT", "LTE"];
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

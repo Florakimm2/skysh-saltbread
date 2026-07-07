@@ -1,10 +1,12 @@
 # Fireguard Chrome Extension
 
-Manifest V3 기반의 로그인/회원가입 및 감정 매매 감지 확장 프로그램입니다.
+Manifest V3 기반의 계정 연결 및 감정 매매 감지 확장 프로그램입니다.
 
-로그인 전에 투자 성향 분석에 사용하는 행동 데이터 수집 동의를 받습니다.
-동의 내용은 브라우저의 로컬 저장소에 보관되며, 동의하지 않으면 팝업이
-닫힙니다.
+로그아웃 상태의 팝업은 **로그인 / 회원가입** 버튼만 표시합니다. 버튼을 누르면
+웹 대시보드의 로그인 화면을 새 탭으로 엽니다. 웹 로그인 완료 후 일회용
+handoff code를 교환하는 로직은 `background.js`의 `handleAuthHandoff`에 후속
+구현할 예정입니다. 현재는 기존에 `chrome.storage.local.auth`에 저장된 인증
+정보가 있을 때 계정 연결 화면과 Upbit 패널이 활성화됩니다.
 
 ## Chrome에서 실행
 
@@ -39,11 +41,18 @@ Manifest V3 기반의 로그인/회원가입 및 감정 매매 감지 확장 프
 
 ## Upbit API 키
 
-로그인 후 팝업의 **Upbit 연동** 영역에서 Access Key, Secret Key, 로컬 암호화
-비밀번호를 입력합니다.
+로그인 후 팝업의 **Upbit Open API** 카드를 펼쳐 Access Key, Secret Key, 로컬
+암호화 비밀번호를 입력합니다. 키를 저장하기 전에 다음 API를 직접 호출해
+등록 IP와 필수 권한을 검증합니다.
+
+- `/v1/accounts`: 자산조회 권한
+- `/v1/orders/open?limit=1`: 주문조회 권한
+- `/v1/orders/closed?limit=1`: 주문조회 권한
 
 - 키는 PBKDF2로 만든 키를 이용해 AES-GCM으로 암호화한 뒤
   `chrome.storage.local`에 저장합니다.
+- 세 검증 요청이 모두 성공한 경우에만 새 키를 저장합니다. 검증이 실패하면
+  기존에 저장한 키는 변경하지 않습니다.
 - 로컬 암호화 비밀번호는 저장하지 않습니다.
 - 복호화 키는 현재 브라우저 세션의 `chrome.storage.session`에만 보관합니다.
 - 로그아웃하거나 브라우저를 다시 시작하면 다시 잠금을 해제해야 합니다.
@@ -57,7 +66,7 @@ Manifest V3 기반의 로그인/회원가입 및 감정 매매 감지 확장 프
 브라우저 프로필이나 실행 중인 기기가 침해된 경우 로컬 암호화만으로 키를 완전히
 보호할 수 없습니다. 공용 PC에서는 API 키를 저장하지 마세요.
 
-**내 과거 기록 보기** 버튼은 `APP_URL` 아래의 `/dashboard`를 새 탭으로
+팝업의 **로그인 / 회원가입** 버튼은 `APP_URL` 아래의 `/dashboard`를 새 탭으로
 엽니다. `/dashboard`와 그 하위 페이지에서는 확장 프로그램 패널을 표시하지
 않습니다.
 
@@ -70,6 +79,7 @@ Manifest V3 기반의 로그인/회원가입 및 감정 매매 감지 확장 프
 
 ```bash
 npm run test:extension
+node --test chrome-extension/tests/*.test.js
 npm run lint
 ```
 

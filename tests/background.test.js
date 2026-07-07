@@ -73,6 +73,7 @@ function createBackgroundHarness() {
   const localStore = {};
   const sessionStore = {};
   const runtimeListeners = [];
+  const sentTabMessages = [];
   const alarms = new Map();
   const context = {
     SaltbreadCore,
@@ -112,7 +113,8 @@ function createBackgroundHarness() {
         async query() {
           return [];
         },
-        async sendMessage() {
+        async sendMessage(tabId, message) {
+          sentTabMessages.push({ tabId, message });
           return null;
         },
         async create() {
@@ -141,7 +143,14 @@ function createBackgroundHarness() {
   );
   vm.runInContext(fs.readFileSync(backgroundPath, "utf8"), context);
 
-  return { context, localStore, sessionStore, runtimeListeners, alarms };
+  return {
+    context,
+    localStore,
+    sessionStore,
+    runtimeListeners,
+    alarms,
+    sentTabMessages,
+  };
 }
 
 test("Upbit 키를 AES-GCM으로 암호화하고 비밀번호로 다시 잠금 해제한다", async () => {
@@ -293,6 +302,13 @@ test("공개 API 응답을 시장 데이터 캐시에 저장한다", async () =>
         { market: "KRW-ETH", signed_change_rate: 0.2 },
         { market: "KRW-XRP", signed_change_rate: -0.15 },
       ];
+    } else if (url.includes("/orderbook")) {
+      response = [
+        {
+          market: "KRW-BTC",
+          orderbook_units: [{ ask_price: 107, bid_price: 105 }],
+        },
+      ];
     } else {
       marketDetailFetchCount += 1;
       response = [
@@ -319,17 +335,30 @@ test("공개 API 응답을 시장 데이터 캐시에 저장한다", async () =>
   assert.equal(result.market, "KRW-BTC");
   assert.equal(result.current_price, 106);
   assert.equal(result.market_data.has_warning_badge, true);
+  assert.equal(result.spreadRate, Number(((107 - 105) / 107).toFixed(8)));
   assert.deepEqual(
     JSON.parse(JSON.stringify(localStore.marketDataCache["KRW-BTC"])),
     JSON.parse(JSON.stringify(result)),
   );
   await vm.runInContext('collectMarketData("KRW-BTC")', context);
-  assert.equal(fetchCount, 5);
+  assert.equal(fetchCount, 7);
   assert.equal(marketDetailFetchCount, 1);
 });
 
-test("데모 판정은 실시간 시세 대신 시나리오 시장 데이터를 사용한다", async () => {
-  const { context } = createBackgroundHarness();
+test("시장 데이터 조회는 demoData를 무시하고 실제 Upbit 캐시를 사용한다", async () => {
+  const { context, localStore } = createBackgroundHarness();
+  localStore.marketDataCache = {
+    "KRW-BTC": {
+      current_price: 82_000_000,
+      market_data: {
+        price_change_rate_15m: 1.2,
+        volume_change_rate_1m: 30,
+        is_top3_volatility: false,
+        has_warning_badge: false,
+      },
+      collected_at: new Date().toISOString(),
+    },
+  };
   const result = await vm.runInContext(
     `getMarketDataForContext({
       market: "KRW-BTC",
@@ -346,13 +375,11 @@ test("데모 판정은 실시간 시세 대신 시나리오 시장 데이터를 
     context,
   );
 
-  assert.equal(result.current_price, 100_000_000);
-  assert.equal(result.market_data.price_change_rate_15m, 6.2);
-  assert.equal(result.market_data.volume_change_rate_1m, 340);
-  assert.equal(result.isDemo, true);
+  assert.equal(result.current_price, 82_000_000);
+  assert.equal(result.market_data.price_change_rate_15m, 1.2);
 });
 
-test("즉시 감지 데모 메시지는 시장 데이터 Promise 오류 없이 처리한다", async () => {
+test("즉시 감지 데모 메시지는 background 수집을 실행하지 않는다", async () => {
   const { context, localStore, runtimeListeners } = createBackgroundHarness();
   localStore.auth = {
     accessToken: "backend-access-token",
@@ -384,6 +411,7 @@ test("즉시 감지 데모 메시지는 시장 데이터 Promise 오류 없이 �
         type: "RUN_DETECTION_NOW",
         payload: {
           market: "KRW-BTC",
+          pageUrl: "http://localhost:3000/demo",
           currentOrder: {
             market: "KRW-BTC",
             order_side: "BUY",
@@ -425,23 +453,29 @@ test("즉시 감지 데모 메시지는 시장 데이터 Promise 오류 없이 �
     assert.equal(keepsChannelOpen, true);
   });
 
-  assert.equal(response.ok, true);
-  assert.equal(response.detection.type, "FOMO_CHASING");
-  assert.deepEqual(
-    capturedRequests.map(({ url }) => url),
-    [
-      `${context.SALTBREAD_CONFIG.apiBaseUrl}/api/ext/detect`,
-      `${context.SALTBREAD_CONFIG.apiBaseUrl}/api/behavior/events`,
-    ],
-  );
+  assert.equal(response.ok, false);
+  assert.match(response.error, /실제 Upbit 거래 화면/);
+  assert.equal(capturedRequests.length, 0);
 });
 
-test("매수하기와 매도하기 주문 액션은 모두 detect API를 호출한다", async () => {
+test("실제 Upbit 주문 액션은 모두 detect API를 호출한다", async () => {
   const { context, localStore, runtimeListeners } = createBackgroundHarness();
   localStore.auth = {
     accessToken: "backend-access-token",
     expiresAt: Date.now() + 60 * 60 * 1000,
     user: { id: "test-user" },
+  };
+  localStore.marketDataCache = {
+    "KRW-BTC": {
+      current_price: 100_000_000,
+      market_data: {
+        price_change_rate_15m: 0.5,
+        volume_change_rate_1m: 20,
+        is_top3_volatility: false,
+        has_warning_badge: false,
+      },
+      collected_at: new Date().toISOString(),
+    },
   };
   const capturedRequests = [];
   context.fetch = async (url, options) => {
@@ -465,6 +499,7 @@ test("매수하기와 매도하기 주문 액션은 모두 detect API를 호출�
           type: "ORDER_ACTION_DETECTED",
           payload: {
             market: "KRW-BTC",
+            pageUrl: "https://upbit.com/exchange?code=CRIX.UPBIT.KRW-BTC",
             currentOrder: {
               market: "KRW-BTC",
               order_side: orderSide,
@@ -484,17 +519,7 @@ test("매수하기와 매도하기 주문 액션은 모두 detect API를 호출�
               input_edit_count: 1,
               page_stay_duration: 60,
             },
-            demoData: {
-              recentOrders: [],
-              clientAverageBuyAmount: 500_000,
-              currentPrice: 100_000_000,
-              marketData: {
-                price_change_rate_15m: 0.5,
-                volume_change_rate_1m: 20,
-                is_top3_volatility: false,
-                has_warning_badge: false,
-              },
-            },
+            demoData: null,
           },
         },
         { tab: { id: 7 } },
@@ -522,9 +547,15 @@ test("매수하기와 매도하기 주문 액션은 모두 detect API를 호출�
 
   assert.equal(buyResponse.ok, true);
   assert.equal(sellResponse.ok, true);
-  assert.equal(capturedRequests.length, 4);
+  assert.equal(capturedRequests.length, 6);
   assert.equal(detectRequests.length, 2);
   assert.equal(behaviorRequests.length, 2);
+  assert.equal(
+    capturedRequests.filter(({ url }) =>
+      url.endsWith("/api/me/guardrail-rules"),
+    ).length,
+    2,
+  );
   assert.deepEqual(
     detectRequestBodies.map((body) => body.current_order.order_side),
     ["BUY", "SELL"],
@@ -536,6 +567,145 @@ test("매수하기와 매도하기 주문 액션은 모두 detect API를 호출�
   assert.ok(
     behaviorRequestBodies.every(
       (body) => body.eventType === "ORDER_SUBMIT_ATTEMPT",
+    ),
+  );
+});
+
+test("사용자 가드레일 규칙이 매칭되면 detect fallback을 건너뛴다", async () => {
+  const { context, localStore, runtimeListeners, sentTabMessages } =
+    createBackgroundHarness();
+  localStore.auth = {
+    accessToken: "backend-access-token",
+    expiresAt: Date.now() + 60 * 60 * 1000,
+    user: { id: "test-user" },
+  };
+  localStore.marketDataCache = {
+    "KRW-BTC": {
+      current_price: 100_000_000,
+      market_data: {
+        price_change_rate_15m: 0.5,
+        volume_change_rate_1m: 20,
+        is_top3_volatility: false,
+        has_warning_badge: false,
+      },
+      collected_at: new Date().toISOString(),
+    },
+  };
+  const capturedRequests = [];
+  context.fetch = async (url, options) => {
+    capturedRequests.push({ url, options });
+    return {
+      ok: true,
+      async json() {
+        if (url.endsWith("/api/me/guardrail-rules")) {
+          return {
+            ok: true,
+            data: [
+              {
+                ruleId: "high-allocation",
+                isEnabled: true,
+                priority: 1,
+                riskLevel: "HIGH",
+                visualMode: "SCARED",
+                warningTitle: "고비중 시장가 매수",
+                warningMessage: "가용 자산 대부분을 쓰는 주문입니다.",
+                expression: {
+                  nodeType: "GROUP",
+                  operator: "AND",
+                  children: [
+                    {
+                      nodeType: "CONDITION",
+                      leftField: "side",
+                      operator: "EQ",
+                      rightOperand: {
+                        operandType: "LITERAL",
+                        value: "BUY",
+                      },
+                    },
+                    {
+                      nodeType: "CONDITION",
+                      leftField: "requestedBalanceRatio",
+                      operator: "GTE",
+                      rightOperand: {
+                        operandType: "LITERAL",
+                        value: 0.7,
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          };
+        }
+
+        if (url.endsWith("/api/behavior/events")) {
+          return { ok: true };
+        }
+
+        throw new Error(`Unexpected fallback request: ${url}`);
+      },
+    };
+  };
+
+  const response = await new Promise((resolve) => {
+    const keepsChannelOpen = runtimeListeners[0](
+      {
+          type: "ORDER_ACTION_DETECTED",
+          payload: {
+            market: "KRW-BTC",
+            pageUrl: "https://upbit.com/exchange?code=CRIX.UPBIT.KRW-BTC",
+            currentOrder: {
+            market: "KRW-BTC",
+            order_side: "BUY",
+            order_status: "WAIT",
+            order_type: "MARKET",
+            order_price: null,
+            order_volume: null,
+            order_amount: 800_000,
+            realized_loss_pct_1h: null,
+            order_request_time: "2026-06-28T10:30:00+09:00",
+            order_cancel_time: null,
+          },
+          behaviorData: {
+            is_max_button_clicked: true,
+            client_avg_buy_amount: 500_000,
+            buy_click_count_1m: 1,
+            input_edit_count: 1,
+            page_stay_duration: 20,
+          },
+          orderContextSnapshot: {
+            snapshotId: "snapshot-1",
+            attemptId: "attempt-1",
+            snapshotTrigger: "ORDER_INTENT_CLICK",
+            capturedAt: "2026-06-28T01:30:00.000Z",
+            market: "KRW-BTC",
+            side: "BUY",
+            orderMode: "MARKET",
+            requestedBalanceRatio: 0.8,
+          },
+            demoData: null,
+          },
+      },
+      { tab: { id: 8 } },
+      resolve,
+    );
+
+    assert.equal(keepsChannelOpen, true);
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.detection.type, "USER_GUARDRAIL_RULE");
+  assert.equal(response.detection.primaryRuleId, "high-allocation");
+  assert.equal(response.detection.visualMode, "SCARED");
+  assert.equal(
+    capturedRequests.some(({ url }) => url.endsWith("/api/ext/detect")),
+    false,
+  );
+  assert.ok(
+    sentTabMessages.some(
+      ({ message }) =>
+        message.type === "DTO_DEBUG_SNAPSHOT" &&
+        message.payload.orderContext.primaryShownRuleId === "high-allocation",
     ),
   );
 });
@@ -694,6 +864,7 @@ test("1분 알람을 만들고 detect.md 형식으로 백엔드 판정을 요청
       1,
       {
         market: "KRW-BTC",
+        pageUrl: "https://upbit.com/exchange?code=CRIX.UPBIT.KRW-BTC",
         currentOrder: {
           order_side: "BUY",
           order_status: "WAIT",
@@ -761,6 +932,7 @@ test("1분 알람을 만들고 detect.md 형식으로 백엔드 판정을 요청
     price: null,
     amount: 1_500_000,
     quantity: null,
+    pageUrl: "https://upbit.com/exchange?code=CRIX.UPBIT.KRW-BTC",
     occurredAt: "2026-06-28T10:25:00+09:00",
     metadata: {
       behaviorData: {

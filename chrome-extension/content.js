@@ -4,8 +4,6 @@ const APP_ORIGINS = new Set([
   APP_URL,
   ...(globalThis.SALTBREAD_CONFIG.appOrigins || []),
 ]);
-const CONSENT_STORAGE_KEY = "behaviorDataConsent";
-const CONSENT_VERSION = 1;
 const BEHAVIOR_INPUT_DEBOUNCE_MS = 650;
 const {
   buildBehaviorSnapshot,
@@ -65,9 +63,10 @@ let behaviorState = null;
 let behaviorTimerId = null;
 let panelFlame = null;
 let collapsedPanelFlame = null;
-let demoContext = null;
-let demoDetectionTimerId = null;
 let currentPageUrl = location.href;
+let pendingAttempt = null;
+let activeGuardrailSnapshotId = null;
+let activeDetectionResult = null;
 
 function isAppPage() {
   return APP_ORIGINS.has(location.origin);
@@ -81,6 +80,35 @@ function isDashboardPage() {
   );
 }
 
+function isDemoPage() {
+  return isAppPage() && location.pathname === "/demo";
+}
+
+function emitExtensionDebug(category, kind, payload, occurredAt = null) {
+  document.dispatchEvent(
+    new CustomEvent("saltbread:extension-debug", {
+      detail: {
+        category,
+        kind,
+        payload,
+        occurredAt: occurredAt || new Date().toISOString(),
+      },
+    }),
+  );
+}
+
+function createUuid() {
+  return typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : createOrderSessionId();
+}
+
+function decimalString(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = toNumber(value);
+  return numeric === null ? null : String(numeric);
+}
+
 function acknowledgePageEvent(event) {
   const requestId = event.detail?.requestId;
 
@@ -92,21 +120,26 @@ function acknowledgePageEvent(event) {
   }
 }
 
-function activeDemoContext() {
-  if (!demoContext) {
-    return null;
-  }
-
-  if (Date.now() >= demoContext.expiresAt) {
-    demoContext = null;
-    return null;
-  }
-
-  return demoContext;
-}
-
 function normalizeFlameMode(mode) {
-  return ["default", "blue", "pink"].includes(mode) ? mode : "default";
+  const normalized = String(mode || "DEFAULT").trim().toUpperCase();
+  const aliases = {
+    DEFAULT: "DEFAULT",
+    AUTO: "DEFAULT",
+    BLUE: "SAD",
+    PINK: "SCARED",
+  };
+  const resolved = aliases[normalized] || normalized;
+
+  return [
+    "DEFAULT",
+    "CURIOUS",
+    "SURPRISED",
+    "FAST_BURN",
+    "SCARED",
+    "SAD",
+  ].includes(resolved)
+    ? resolved
+    : "DEFAULT";
 }
 
 function applyFlameTheme(mode) {
@@ -114,7 +147,7 @@ function applyFlameTheme(mode) {
   const panel = document.getElementById(PANEL_ID);
 
   if (panel) {
-    panel.dataset.flameMode = normalizedMode;
+    panel.dataset.flameMode = normalizedMode.toLowerCase();
   }
 
   panelFlame?.setMode(normalizedMode);
@@ -123,10 +156,6 @@ function applyFlameTheme(mode) {
 
 function isLoggedIn(auth) {
   return Boolean(auth?.accessToken && auth?.user);
-}
-
-function hasBehaviorDataConsent(consent) {
-  return consent?.accepted === true && consent.version === CONSENT_VERSION;
 }
 
 function renderMetricCards() {
@@ -162,14 +191,15 @@ function createPanel(auth) {
 
   const panel = document.createElement("aside");
   panel.id = PANEL_ID;
-  panel.setAttribute("aria-label", "Fireguard 행동 데이터");
+  panel.dataset.authenticated = String(isLoggedIn(auth));
+  panel.setAttribute("aria-label", "불씨 행동 데이터");
   panel.innerHTML = `
     <div class="saltbread-panel__collapsed-controls" aria-hidden="true">
       <div class="saltbread-panel__collapsed-flame"></div>
       <button
         class="saltbread-panel__reopen"
         type="button"
-        aria-label="Fireguard 패널 열기"
+        aria-label="불씨 패널 열기"
         aria-hidden="true"
         title="패널 열기"
       >
@@ -181,13 +211,13 @@ function createPanel(auth) {
       <div class="saltbread-panel__header">
         <div class="saltbread-panel__flame"></div>
         <div class="saltbread-panel__title">
-          <strong>Fireguard</strong>
+          <strong>불씨</strong>
           <span>행동 데이터</span>
         </div>
         <button
           class="saltbread-panel__collapse"
           type="button"
-          aria-label="Fireguard 패널 접기"
+          aria-label="불씨 패널 접기"
           title="패널 접기"
         >
           <span aria-hidden="true"></span>
@@ -239,7 +269,7 @@ function createPanel(auth) {
   `;
 
   panel.querySelector(".saltbread-panel__account").textContent =
-    auth.user.email;
+    auth?.user?.email || "DEMO SESSION · 서버 저장 안 함";
   panel
     .querySelector(".saltbread-panel__collapse")
     .addEventListener("click", () => setPanelCollapsed(panel, true));
@@ -251,7 +281,10 @@ function createPanel(auth) {
     .addEventListener("click", openDashboard);
   panel
     .querySelector(".saltbread-action-button--proceed")
-    .addEventListener("click", () => setPanelCollapsed(panel, true));
+    .addEventListener("click", () => {
+      closeGuardrail("PROCEED");
+      setPanelCollapsed(panel, true);
+    });
 
   document.body.append(panel);
   panelFlame = new CuteIdleFlame(
@@ -265,7 +298,7 @@ function createPanel(auth) {
     panel.querySelector(".saltbread-panel__collapsed-flame"),
     {
       mode: "default",
-      label: "접힌 Fireguard의 현재 감정 매매 상태 불꽃",
+      label: "접힌 불씨의 현재 감정 매매 상태 불꽃",
     },
   );
   chrome.storage.local
@@ -354,13 +387,15 @@ function findOrderButton(target) {
     return null;
   }
 
+  const buttonText = normalizedText(button);
   const explicitSide = button.dataset.saltbreadOrderAction;
   const orderSide =
     ["BUY", "SELL"].includes(explicitSide) ? explicitSide : detectOrderActionSide(
-      normalizedText(button),
+      buttonText,
     );
+  const isConfirmAction = /^(매수확인|매도확인)$/.test(buttonText);
 
-  return orderSide && findOrderPanel(button)
+  return orderSide && (findOrderPanel(button) || isConfirmAction)
     ? button
     : null;
 }
@@ -504,10 +539,6 @@ function detectOrderType(panel) {
 }
 
 function detectOrderSide(panel, orderButton) {
-  if (!panel) {
-    return null;
-  }
-
   const explicitSide = orderButton?.dataset.saltbreadOrderAction;
   const buttonSide =
     ["BUY", "SELL"].includes(explicitSide)
@@ -516,6 +547,10 @@ function detectOrderSide(panel, orderButton) {
 
   if (buttonSide) {
     return buttonSide;
+  }
+
+  if (!panel) {
+    return null;
   }
 
   const selectedSideControl = [
@@ -559,7 +594,23 @@ function startNewOrderSession() {
 
   behaviorState.sessionId = createOrderSessionId();
   behaviorState.lastLoggedInputValues.clear();
+  behaviorState.inputValueHistoryByField = {
+    price: new Set(),
+    quantity: new Set(),
+    amount: new Set(),
+  };
   behaviorState.lastOrderType = null;
+  behaviorState.draftStartedAt = null;
+  behaviorState.lastEditAt = null;
+  behaviorState.draftEditCount = 0;
+  behaviorState.firstAmount = null;
+  behaviorState.firstPrice = null;
+  behaviorState.lastPriceValue = null;
+  behaviorState.lastPriceDirection = null;
+  behaviorState.inputRevertCount = 0;
+  behaviorState.priceDirectionChangeCount = 0;
+  behaviorState.lastOrderbookClickAt = null;
+  behaviorState.allocationPresetPercent = null;
 }
 
 function addOrderValues(eventPayload, panel) {
@@ -639,6 +690,17 @@ function sendBehaviorEvent(eventPayload) {
     return;
   }
 
+  emitExtensionDebug(
+    "behavior",
+    eventPayload.eventType || "BEHAVIOR_EVENT",
+    eventPayload,
+    eventPayload.occurredAt,
+  );
+
+  if (isDemoPage() && !isLoggedInContext()) {
+    return;
+  }
+
   chrome.runtime
     .sendMessage({
       type: "LOG_BEHAVIOR_EVENT",
@@ -654,6 +716,10 @@ function sendBehaviorEvent(eventPayload) {
     .catch(() =>
       setLoggingStatus("행동 로그 서버와 연결할 수 없습니다."),
     );
+}
+
+function isLoggedInContext() {
+  return Boolean(document.getElementById(PANEL_ID)?.dataset.authenticated === "true");
 }
 
 function flushPendingInputEvent(input) {
@@ -751,6 +817,8 @@ function syncOrderType(panel, shouldLogChange) {
     return;
   }
 
+  behaviorState.orderModeChangeTimestamps.push(Date.now());
+
   sendBehaviorEvent(
     createBehaviorEvent("ORDER_TYPE_CHANGE", panel, {
       orderType: nextOrderType,
@@ -813,11 +881,60 @@ function handleAmountInput(event) {
     return;
   }
 
-  behaviorState.inputEditTimestamps.push(Date.now());
+  const editedAt = Date.now();
+  behaviorState.inputEditTimestamps.push(editedAt);
+  behaviorState.draftStartedAt ||= editedAt;
+  behaviorState.lastEditAt = editedAt;
+  behaviorState.draftEditCount += 1;
   const input = event.target;
   const inputKind = getOrderInputKind(input);
 
   if (inputKind) {
+    const value = readInputNumber(input);
+    const fieldTimestamps =
+      behaviorState.inputEditTimestampsByField[inputKind.field] || [];
+    fieldTimestamps.push(editedAt);
+    behaviorState.inputEditTimestampsByField[inputKind.field] = fieldTimestamps;
+
+    if (value !== null) {
+      const history = behaviorState.inputValueHistoryByField[inputKind.field];
+      const lastValue = behaviorState.lastInputValueByField[inputKind.field];
+
+      if (lastValue !== value && history?.has(value)) {
+        behaviorState.inputRevertCount += 1;
+      }
+
+      history?.add(value);
+      behaviorState.lastInputValueByField[inputKind.field] = value;
+
+      if (inputKind.field === "price") {
+        behaviorState.firstPrice ??= value;
+
+        if (behaviorState.lastPriceValue !== null) {
+          const direction =
+            value > behaviorState.lastPriceValue
+              ? "UP"
+              : value < behaviorState.lastPriceValue
+                ? "DOWN"
+                : null;
+
+          if (
+            direction &&
+            behaviorState.lastPriceDirection &&
+            behaviorState.lastPriceDirection !== direction
+          ) {
+            behaviorState.priceDirectionChangeCount += 1;
+          }
+
+          if (direction) {
+            behaviorState.lastPriceDirection = direction;
+          }
+        }
+
+        behaviorState.lastPriceValue = value;
+      }
+    }
+
     const previousPending = behaviorState.pendingInputEvents.get(input);
 
     if (previousPending) {
@@ -842,61 +959,11 @@ function handleDemoScenario(event) {
     return;
   }
 
-  const detail = event.detail;
-  const behavior = detail?.behaviorData;
-
-  if (
-    !detail?.currentOrder ||
-    !behavior ||
-    !Number.isFinite(detail.expiresAt)
-  ) {
-    return;
-  }
-
   acknowledgePageEvent(event);
-  const now = Date.now();
-  const market = detail.market || behaviorState.market;
-  behaviorState.market = market;
-  behaviorState.inputEditTimestamps = Array.from(
-    { length: Math.max(0, behavior.input_edit_count || 0) },
-    (_, index) => now - index * 1000,
+  setAnalysisStatus(
+    "데모 페이지에서는 확장 프로그램 수집을 실행하지 않습니다.",
+    "safe",
   );
-  behaviorState.buyClicksByMarket[market] = Array.from(
-    { length: Math.max(0, behavior.buy_click_count_1m || 0) },
-    (_, index) => now - index * 1000,
-  );
-  behaviorState.maxClickedSinceLastOrder = Boolean(
-    behavior.is_max_button_clicked,
-  );
-  behaviorState.clientAvgBuyAmount =
-    behavior.client_avg_buy_amount ?? null;
-  behaviorState.visibleDurationMs = Math.max(
-    0,
-    Number(behavior.page_stay_duration || 0) * 1000,
-  );
-  behaviorState.visibleSince = document.hidden ? null : now;
-  demoContext = {
-    type: detail.type || null,
-    title: detail.title || "데모 시나리오",
-    expiresAt: detail.expiresAt,
-    currentOrder: detail.currentOrder,
-    recentOrders: Array.isArray(detail.recentOrders)
-      ? detail.recentOrders
-      : [],
-    clientAverageBuyAmount:
-      detail.clientAverageBuyAmount ??
-      behavior.client_avg_buy_amount ??
-      null,
-    currentPrice: detail.currentPrice,
-    marketData: detail.marketData || null,
-  };
-  renderBehaviorMetrics();
-  setAnalysisStatus("데이터 수집 중...", "loading");
-  window.clearTimeout(demoDetectionTimerId);
-  demoDetectionTimerId = window.setTimeout(() => {
-    demoDetectionTimerId = null;
-    handleDetectNow();
-  }, 2000);
 }
 
 function handleDetectNow(event) {
@@ -907,6 +974,15 @@ function handleDetectNow(event) {
   if (event) {
     acknowledgePageEvent(event);
   }
+
+  if (isDemoPage()) {
+    setAnalysisStatus(
+      "데모 페이지에서는 확장 프로그램 수집을 실행하지 않습니다.",
+      "safe",
+    );
+    return;
+  }
+
   const snapshot = getContextSnapshot();
 
   if (!snapshot.market || !snapshot.currentOrder || !snapshot.behaviorData) {
@@ -940,12 +1016,19 @@ function handleDemoReset(event) {
 
   acknowledgePageEvent(event);
   const market = parseMarket(location.href) || behaviorState.market;
-  window.clearTimeout(demoDetectionTimerId);
-  demoDetectionTimerId = null;
-  demoContext = null;
   behaviorState.market = market;
   behaviorState.inputEditTimestamps = [];
+  behaviorState.inputEditTimestampsByField = {
+    price: [],
+    quantity: [],
+    amount: [],
+  };
   behaviorState.buyClicksByMarket = market ? { [market]: [] } : {};
+  behaviorState.orderIntentTimestamps = [];
+  behaviorState.sameSideIntentTimestamps = {
+    BUY: [],
+    SELL: [],
+  };
   behaviorState.maxClickedSinceLastOrder = false;
   behaviorState.clientAvgBuyAmount = null;
   behaviorState.lastOrder = null;
@@ -962,9 +1045,273 @@ function handleDemoReset(event) {
   chrome.runtime.sendMessage({ type: "RESET_DEMO_STATE" }).catch(() => {});
 }
 
+function buildOrderContextSnapshot(orderButton, snapshotTrigger) {
+  const panel = findOrderPanel(orderButton);
+  const draft = readOrderDraft(orderButton);
+  const capturedAt = new Date().toISOString();
+  const now = Date.now();
+  const market = draft?.market || behaviorState?.market || parseMarket(location.href);
+  const side = draft?.order_side || detectOrderSide(panel, orderButton) || "UNKNOWN";
+  const orderMode = draft?.order_type || detectOrderType(panel) || "UNKNOWN";
+  const amount = draft?.order_amount ?? null;
+  const quantity = draft?.order_volume ?? null;
+  const recentFieldEdits = (field) =>
+    (behaviorState?.inputEditTimestampsByField?.[field] || []).filter(
+      (timestamp) => timestamp >= now - 3 * 60_000,
+    ).length;
+  const recentIntentCount =
+    (behaviorState?.orderIntentTimestamps || []).filter(
+      (timestamp) => timestamp >= now - 60_000,
+    ).length + 1;
+  const recentSameSideIntentCount =
+    (behaviorState?.sameSideIntentTimestamps?.[side] || []).filter(
+      (timestamp) => timestamp >= now - 60_000,
+    ).length + 1;
+
+  if (behaviorState && behaviorState.firstAmount === null && amount !== null) {
+    behaviorState.firstAmount = amount;
+  }
+
+  return {
+    snapshotId: createUuid(),
+    attemptId:
+      snapshotTrigger === "ORDER_INTENT_CLICK" ? createUuid() : null,
+    snapshotTrigger,
+    capturedAt,
+    market: market || "UNKNOWN",
+    side,
+    orderMode,
+    entryPoint: "NORMAL",
+    intentPrice: decimalString(draft?.order_price),
+    intentQuantity: decimalString(quantity),
+    intentAmount: decimalString(amount),
+    requestedBalanceRatio: null,
+    draftDurationMs: behaviorState?.draftStartedAt
+      ? now - behaviorState.draftStartedAt
+      : null,
+    lastEditToSnapshotMs: behaviorState?.lastEditAt
+      ? now - behaviorState.lastEditAt
+      : null,
+    draftEditCount: behaviorState?.draftEditCount ?? null,
+    amountChangeRate:
+      behaviorState?.firstAmount && amount !== null
+        ? (amount - behaviorState.firstAmount) / behaviorState.firstAmount
+        : null,
+    modeChangedToMarket: orderMode === "MARKET"
+      ? (behaviorState?.orderModeChangeTimestamps?.length || 0) > 0
+      : false,
+    orderbookClickToSnapshotMs: behaviorState?.lastOrderbookClickAt
+      ? now - behaviorState.lastOrderbookClickAt
+      : null,
+    orderIntentCount1m: recentIntentCount,
+    actualOrderCreatedCount10m: null,
+    sameSideIntentCount1m: recentSameSideIntentCount,
+    marketChangeCount5m: (behaviorState?.marketChangeTimestamps || []).filter(
+      (timestamp) => timestamp >= now - 5 * 60_000,
+    ).length,
+    sideChangeCount3m: (behaviorState?.sideChangeTimestamps || []).filter(
+      (timestamp) => timestamp >= now - 3 * 60_000,
+    ).length,
+    priceEditCount3m: recentFieldEdits("price"),
+    quantityEditCount3m: recentFieldEdits("quantity"),
+    amountEditCount3m: recentFieldEdits("amount"),
+    inputRevertCount: behaviorState?.inputRevertCount ?? 0,
+    priceDirectionChangeCount:
+      behaviorState?.priceDirectionChangeCount ?? 0,
+    priceChangeRate:
+      behaviorState?.firstPrice && price !== null
+        ? (price - behaviorState.firstPrice) / behaviorState.firstPrice
+        : null,
+    orderModeChangeCount3m: (
+      behaviorState?.orderModeChangeTimestamps || []
+    ).filter((timestamp) => timestamp >= now - 3 * 60_000).length,
+    allocationPresetPercent:
+      behaviorState?.allocationPresetPercent ?? null,
+    draftResetCount3m: 0,
+    matchedRuleIdsAtSnapshot: [],
+    primaryShownRuleId: null,
+    shownRuleIds: [],
+    tradePriceAtSnapshot: null,
+    shortTermReturn5m: null,
+    signedChangeRate: null,
+    spreadRate: null,
+    marketRiskFlags: [],
+    pricePositionIn5mRange: null,
+    volumeSpikeRatio5m: null,
+    baseAssetAvgBuyPriceBeforeSnapshot: null,
+    priceVsAvgBuyRateAtSnapshot: null,
+  };
+}
+
+function emitOrderContextSnapshot(snapshot, detection = null) {
+  const matchedRuleIds = detection?.matchedRuleIds || [];
+  const primaryRuleId = detection?.primaryRuleId || null;
+  const payload = {
+    ...snapshot,
+    matchedRuleIdsAtSnapshot: matchedRuleIds,
+    primaryShownRuleId: primaryRuleId,
+    shownRuleIds: primaryRuleId ? [primaryRuleId] : [],
+  };
+  emitExtensionDebug(
+    "behavior",
+    "OrderContextSnapshotDTO",
+    payload,
+    payload.capturedAt,
+  );
+  return payload;
+}
+
+function beginOrderAttempt(orderButton) {
+  if (pendingAttempt && !pendingAttempt.snapshotEmitted) {
+    emitOrderContextSnapshot(pendingAttempt.snapshot, activeDetectionResult);
+    pendingAttempt.snapshotEmitted = true;
+  }
+  const snapshot = buildOrderContextSnapshot(
+    orderButton,
+    "ORDER_INTENT_CLICK",
+  );
+  pendingAttempt = {
+    attemptId: snapshot.attemptId,
+    snapshot,
+    snapshotEmitted: false,
+    feedbackShownAt: null,
+  };
+  window.setTimeout(() => {
+    if (pendingAttempt?.attemptId === snapshot.attemptId && !pendingAttempt.snapshotEmitted) {
+      emitOrderContextSnapshot(snapshot, activeDetectionResult);
+      pendingAttempt.snapshotEmitted = true;
+    }
+  }, 2500);
+}
+
+function closeGuardrail(action) {
+  const dialog = document.getElementById("saltbread-guardrail-dialog");
+  const snapshotId = activeGuardrailSnapshotId;
+  if (snapshotId) {
+    emitExtensionDebug("behavior", "GuardrailReactionDTO", {
+      reactionId: createUuid(),
+      snapshotId,
+      action,
+      reactedAt: new Date().toISOString(),
+      reactionUiVersion: "v1",
+    });
+  }
+  activeGuardrailSnapshotId = null;
+  dialog?.remove();
+  if (action === "REVIEW") {
+    document.dispatchEvent(new CustomEvent("saltbread:demo-review-order"));
+  }
+}
+
+function showGuardrail(result, snapshotId) {
+  document.getElementById("saltbread-guardrail-dialog")?.remove();
+  const dialog = document.createElement("aside");
+  dialog.id = "saltbread-guardrail-dialog";
+  dialog.setAttribute("aria-label", "불씨 주문 가드레일");
+  dialog.innerHTML = `
+    <button class="saltbread-guardrail__close" type="button" aria-label="닫기">×</button>
+    <span>FIREGUARD · ${result.primaryRuleId || "RISK_RULE"}</span>
+    <strong>${DETECTION_TITLES[result.type] || "주문 전 확인"}</strong>
+    <p>${result.message || "이 주문을 한 번 더 확인해 보세요."}</p>
+    <div>
+      <button type="button" data-reaction="REVIEW">주문 내용 다시 보기</button>
+      <button type="button" data-reaction="PROCEED">계속 주문하기</button>
+    </div>
+  `;
+  dialog
+    .querySelector("[data-reaction='REVIEW']")
+    .addEventListener("click", () => closeGuardrail("REVIEW"));
+  dialog
+    .querySelector("[data-reaction='PROCEED']")
+    .addEventListener("click", () => closeGuardrail("PROCEED"));
+  dialog
+    .querySelector(".saltbread-guardrail__close")
+    .addEventListener("click", () => closeGuardrail("CLOSE"));
+  document.body.append(dialog);
+  activeGuardrailSnapshotId = snapshotId;
+}
+
+function showTradeFeedback() {
+  if (!pendingAttempt?.attemptId) return;
+  const feedbackAttempt = pendingAttempt;
+  feedbackAttempt.feedbackShownAt = new Date().toISOString();
+  document.getElementById("saltbread-feedback-dialog")?.remove();
+  const dialog = document.createElement("aside");
+  dialog.id = "saltbread-feedback-dialog";
+  dialog.setAttribute("aria-label", "거래 자기평가");
+  dialog.innerHTML = `
+    <span>TRADE FEEDBACK</span>
+    <strong>이번 거래는 어떤 거래였나요?</strong>
+    <button type="button" data-assessment="PLANNED">계획된 거래였어요</button>
+    <button type="button" data-assessment="EMOTIONAL">감정적인 거래였어요</button>
+    <button type="button" data-assessment="DISMISSED">건너뛰기</button>
+  `;
+  dialog.querySelectorAll("[data-assessment]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const assessment = button.dataset.assessment;
+      emitExtensionDebug("behavior", "TradeFeedbackDTO", {
+        feedbackId: createUuid(),
+        attemptId: feedbackAttempt.attemptId,
+        feedbackStatus:
+          assessment === "DISMISSED" ? "DISMISSED" : "ANSWERED",
+        selfAssessment:
+          assessment === "DISMISSED" ? null : assessment,
+        feedbackShownAt: feedbackAttempt.feedbackShownAt,
+        respondedAt: new Date().toISOString(),
+        feedbackUiVersion: "v1",
+      });
+      dialog.remove();
+    });
+  });
+  document.body.append(dialog);
+}
+
+function handleDemoContext(event) {
+  if (!isDemoPage()) return;
+  acknowledgePageEvent(event);
+}
+
+function handleDemoOrderEvent(event) {
+  if (!isDemoPage()) return;
+  acknowledgePageEvent(event);
+}
+
 function handleDocumentClick(event) {
   if (!behaviorState) {
     return;
+  }
+
+  const confirmButton = event.target instanceof Element
+    ? event.target.closest("[data-saltbread-order-confirm]")
+    : null;
+  if (confirmButton) {
+    if (!isDemoPage()) {
+      showTradeFeedback();
+    }
+    return;
+  }
+
+  if (isDemoPage()) {
+    return;
+  }
+
+  const orderbookTarget = event.target instanceof Element
+    ? event.target.closest("[data-saltbread-orderbook-price]")
+    : null;
+  if (orderbookTarget) {
+    behaviorState.lastOrderbookClickAt = Date.now();
+  }
+
+  const clickedControl = event.target instanceof Element
+    ? event.target.closest("button, [role='tab']")
+    : null;
+  const clickedText = normalizedText(clickedControl);
+  if (/^(10%|25%|50%|100%|최대)$/.test(clickedText)) {
+    behaviorState.allocationPresetPercent =
+      clickedText === "최대" ? 100 : Number(clickedText.replace("%", ""));
+  }
+  if (/^(매수|매도)$/.test(clickedText)) {
+    behaviorState.sideChangeTimestamps.push(Date.now());
   }
 
   const orderTypeControl = findOrderTypeControl(event.target);
@@ -988,11 +1335,18 @@ function handleDocumentClick(event) {
     return;
   }
 
+  beginOrderAttempt(orderButton);
+
   flushPendingInputEvents();
   const orderPanel = findOrderPanel(orderButton);
   const orderSide =
     orderButton.dataset.saltbreadOrderAction ||
     detectOrderActionSide(normalizedText(orderButton));
+  if (["BUY", "SELL"].includes(orderSide)) {
+    const clickedAt = Date.now();
+    behaviorState.orderIntentTimestamps.push(clickedAt);
+    behaviorState.sameSideIntentTimestamps[orderSide].push(clickedAt);
+  }
   const clickEvent = createBehaviorEvent(
     orderSide === "SELL" ? "SELL_CLICK" : "BUY_CLICK",
     orderPanel,
@@ -1005,13 +1359,7 @@ function handleDocumentClick(event) {
   }
 
   const submittedSessionId = behaviorState.sessionId;
-  const demo = activeDemoContext();
-  const orderDraft = demo?.currentOrder
-    ? {
-        ...demo.currentOrder,
-        order_request_time: new Date().toISOString(),
-      }
-    : readOrderDraft(orderButton);
+  const orderDraft = readOrderDraft(orderButton);
 
   if (!orderDraft) {
     const orderType = detectOrderType(orderPanel);
@@ -1061,16 +1409,8 @@ function handleDocumentClick(event) {
         pageUrl: location.href,
         currentOrder: orderDraft,
         behaviorData,
-        demoData: demo
-          ? {
-              recentOrders: demo.recentOrders,
-              clientAverageBuyAmount: demo.clientAverageBuyAmount,
-              currentPrice: demo.currentPrice,
-              marketData: demo.marketData,
-              type: demo.type,
-              expiresAt: demo.expiresAt,
-            }
-          : null,
+        orderContextSnapshot: pendingAttempt?.snapshot || null,
+        demoData: null,
       },
     })
     .then((response) => {
@@ -1122,6 +1462,7 @@ function syncCurrentMarket() {
 
   flushPendingInputEvents();
   updateVisibleDuration();
+  behaviorState.marketChangeTimestamps.push(Date.now());
   behaviorState.market = nextMarket;
   behaviorState.visibleDurationMs = 0;
   behaviorState.visibleSince = document.hidden ? null : Date.now();
@@ -1241,7 +1582,7 @@ function renderBehaviorMetrics() {
   setMetric("dwell-time", formatDuration(behavior.page_stay_duration));
 }
 
-function setAnalysisStatus(message, state = "loading", type = null) {
+function setAnalysisStatus(message, state = "loading", type = null, title = null) {
   const status = document.querySelector(".saltbread-analysis-status");
   const badgeElement = status?.querySelector("[data-status-badge]");
   const titleElement = status?.querySelector("[data-status-title]");
@@ -1260,7 +1601,7 @@ function setAnalysisStatus(message, state = "loading", type = null) {
   if (state === "detected") {
     badgeElement.textContent = "주의";
     titleElement.textContent =
-      DETECTION_TITLES[type] || type || "감정 매매 패턴 감지";
+      title || DETECTION_TITLES[type] || type || "감정 매매 패턴 감지";
     messageElement.textContent = message;
     return;
   }
@@ -1285,7 +1626,6 @@ function setAnalysisStatus(message, state = "loading", type = null) {
 }
 
 function getContextSnapshot() {
-  const demo = activeDemoContext();
   const currentBehavior = behaviorState ? getBehaviorData() : null;
   const hasRecentOrder =
     behaviorState?.lastOrderAt &&
@@ -1307,19 +1647,10 @@ function getContextSnapshot() {
     pageUrl: location.href,
     behaviorData,
     currentOrder:
-      demo?.currentOrder ||
       behaviorState?.lastOrder ||
       readOrderDraft(),
-    demoData: demo
-      ? {
-          recentOrders: demo.recentOrders,
-          clientAverageBuyAmount: demo.clientAverageBuyAmount,
-          currentPrice: demo.currentPrice,
-          marketData: demo.marketData,
-          type: demo.type,
-          expiresAt: demo.expiresAt,
-        }
-      : null,
+    orderContextSnapshot: pendingAttempt?.snapshot || null,
+    demoData: null,
   };
 }
 
@@ -1345,10 +1676,26 @@ function startBehaviorTracking() {
     market: parseMarket(location.href),
     sessionId: createOrderSessionId(),
     inputEditTimestamps: [],
+    inputEditTimestampsByField: {
+      price: [],
+      quantity: [],
+      amount: [],
+    },
+    inputValueHistoryByField: {
+      price: new Set(),
+      quantity: new Set(),
+      amount: new Set(),
+    },
+    lastInputValueByField: {},
     pendingInputEvents: new Map(),
     lastLoggedInputValues: new Map(),
     lastOrderType: null,
     buyClicksByMarket: {},
+    orderIntentTimestamps: [],
+    sameSideIntentTimestamps: {
+      BUY: [],
+      SELL: [],
+    },
     maxClickedSinceLastOrder: false,
     clientAvgBuyAmount: null,
     lastOrder: null,
@@ -1357,6 +1704,20 @@ function startBehaviorTracking() {
     lastOrderSessionId: null,
     visibleDurationMs: 0,
     visibleSince: document.hidden ? null : Date.now(),
+    draftStartedAt: null,
+    lastEditAt: null,
+    draftEditCount: 0,
+    firstAmount: null,
+    firstPrice: null,
+    lastPriceValue: null,
+    lastPriceDirection: null,
+    inputRevertCount: 0,
+    priceDirectionChangeCount: 0,
+    lastOrderbookClickAt: null,
+    marketChangeTimestamps: [],
+    sideChangeTimestamps: [],
+    orderModeChangeTimestamps: [],
+    allocationPresetPercent: null,
   };
 
   document.addEventListener("input", handleAmountInput, true);
@@ -1364,6 +1725,8 @@ function startBehaviorTracking() {
   document.addEventListener("saltbread:demo-scenario", handleDemoScenario);
   document.addEventListener("saltbread:detect-now", handleDetectNow);
   document.addEventListener("saltbread:demo-reset", handleDemoReset);
+  document.addEventListener("saltbread:demo-context", handleDemoContext);
+  document.addEventListener("saltbread:demo-order-event", handleDemoOrderEvent);
   document.addEventListener("visibilitychange", handleVisibilityChange);
   syncCurrentOrderType(false);
   behaviorTimerId = window.setInterval(() => {
@@ -1372,7 +1735,9 @@ function startBehaviorTracking() {
     renderBehaviorMetrics();
   }, 1000);
   renderBehaviorMetrics();
-  registerCurrentContext();
+  if (!isDemoPage()) {
+    registerCurrentContext();
+  }
 }
 
 function stopBehaviorTracking() {
@@ -1385,24 +1750,22 @@ function stopBehaviorTracking() {
   document.removeEventListener("saltbread:demo-scenario", handleDemoScenario);
   document.removeEventListener("saltbread:detect-now", handleDetectNow);
   document.removeEventListener("saltbread:demo-reset", handleDemoReset);
+  document.removeEventListener("saltbread:demo-context", handleDemoContext);
+  document.removeEventListener("saltbread:demo-order-event", handleDemoOrderEvent);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   for (const pending of behaviorState.pendingInputEvents.values()) {
     window.clearTimeout(pending.timerId);
   }
   window.clearInterval(behaviorTimerId);
-  window.clearTimeout(demoDetectionTimerId);
   behaviorTimerId = null;
-  demoDetectionTimerId = null;
   behaviorState = null;
-  demoContext = null;
+  pendingAttempt = null;
+  activeDetectionResult = null;
+  activeGuardrailSnapshotId = null;
 }
 
-function syncPanel(auth, behaviorDataConsent) {
-  if (
-    !isDashboardPage() &&
-    isLoggedIn(auth) &&
-    hasBehaviorDataConsent(behaviorDataConsent)
-  ) {
+function syncPanel(auth) {
+  if (!isDashboardPage() && (isLoggedIn(auth) || isDemoPage())) {
     createPanel(auth);
     return;
   }
@@ -1412,10 +1775,8 @@ function syncPanel(auth, behaviorDataConsent) {
 
 function refreshPanelState() {
   return chrome.storage.local
-    .get(["auth", CONSENT_STORAGE_KEY])
-    .then(({ auth, behaviorDataConsent }) =>
-      syncPanel(auth, behaviorDataConsent),
-    );
+    .get("auth")
+    .then(({ auth }) => syncPanel(auth));
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -1439,15 +1800,46 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "DETECTION_RESULT") {
     const result = message.payload;
-    applyFlameTheme(result?.flameMode);
+    applyFlameTheme(result?.visualMode || result?.flameMode);
+    activeDetectionResult = result?.detected ? result : null;
 
     if (result?.detected) {
+      let snapshot;
+      if (result.orderContextSnapshot) {
+        snapshot = emitOrderContextSnapshot(result.orderContextSnapshot, result);
+        if (pendingAttempt) {
+          pendingAttempt.snapshotEmitted = true;
+        }
+      } else if (pendingAttempt && !pendingAttempt.snapshotEmitted) {
+        snapshot = emitOrderContextSnapshot(pendingAttempt.snapshot, result);
+        pendingAttempt.snapshotEmitted = true;
+      } else if (pendingAttempt?.snapshot) {
+        snapshot = pendingAttempt.snapshot;
+      } else if (!activeGuardrailSnapshotId && isDemoPage()) {
+        snapshot = emitOrderContextSnapshot(
+          buildOrderContextSnapshot(null, "GUARDRAIL_SHOWN"),
+          result,
+        );
+      }
+      if (isDemoPage() && snapshot) {
+        showGuardrail(result, snapshot.snapshotId);
+      }
+      if (snapshot?.snapshotId) {
+        activeGuardrailSnapshotId = snapshot.snapshotId;
+      }
+      const panel = document.getElementById(PANEL_ID);
+      if (panel) {
+        setPanelCollapsed(panel, false);
+      }
       setAnalysisStatus(
         result.message || `${result.type} 감정 매매 타입을 감지했어요.`,
         "detected",
         result.type,
+        result.warningTitle || result.primaryRule?.warningTitle || null,
       );
     } else {
+      activeGuardrailSnapshotId = null;
+      document.getElementById("saltbread-guardrail-dialog")?.remove();
       setAnalysisStatus(result?.message || "데이터 수집 중...", "safe");
     }
 
@@ -1464,6 +1856,25 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     setLoggingStatus(message.payload?.message || "");
   }
 
+  if (message?.type === "DEBUG_DATA_UPDATED") {
+    emitExtensionDebug(
+      message.payload?.category || "market",
+      message.payload?.kind || "COLLECTED_DATA",
+      message.payload?.data,
+      message.payload?.occurredAt,
+    );
+  }
+
+  if (message?.type === "DTO_DEBUG_SNAPSHOT") {
+    console.log("[Saltbread DTO Debug]", message.payload);
+    emitExtensionDebug(
+      "behavior",
+      "DTO_DEBUG_SNAPSHOT",
+      message.payload,
+      message.payload?.collectedAt,
+    );
+  }
+
   return false;
 });
 
@@ -1472,7 +1883,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     return;
   }
 
-  if (changes.auth || changes[CONSENT_STORAGE_KEY]) {
+  if (changes.auth) {
     refreshPanelState();
   }
 

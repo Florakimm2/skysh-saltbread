@@ -1,6 +1,6 @@
 import { getDashboardSession } from "@/backend/modules/auth/session";
-import { getBehaviorSessionRecords } from "@/backend/modules/behavior/service";
 import PastTrendsPage from "@/frontend/dashboard/past-trends-page";
+import { loadDashboardBehaviorData } from "../load-dashboard-data";
 
 export default async function TrendsPage() {
   const session = await getDashboardSession();
@@ -9,7 +9,12 @@ export default async function TrendsPage() {
     return null;
   }
 
-  const trends = await getBehaviorSessionRecords(session.userId);
+  const behaviorData = await loadDashboardBehaviorData(session.userId);
 
-  return <PastTrendsPage trends={trends} />;
+  return (
+    <PastTrendsPage
+      trends={behaviorData.records}
+      isDataUnavailable={behaviorData.status === "unavailable"}
+    />
+  );
 }

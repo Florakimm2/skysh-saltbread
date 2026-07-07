@@ -7,6 +7,21 @@ import {
   useRef,
   useState,
 } from "react";
+import RawDebugPanel, {
+  type DebugCategory,
+  type DebugRecord,
+} from "./raw-debug-panel";
+import {
+  cancelOrder,
+  createInitialPortfolio,
+  settleOpenOrders,
+  submitOrder,
+  toUpbitAccounts,
+  validateOrder,
+  type DemoOrder,
+  type OrderDraft,
+  type Quote,
+} from "./trading-engine";
 
 type OrderSide = "BUY" | "SELL";
 type OrderType = "LIMIT" | "MARKET";
@@ -14,6 +29,19 @@ type Toast = {
   message: string;
   variant: "success" | "error";
 };
+
+type DemoModal =
+  | { type: "confirm"; draft: OrderDraft }
+  | {
+      type: "notice";
+      title: string;
+      message: string;
+    }
+  | {
+      type: "receipt";
+      order: DemoOrder;
+    }
+  | null;
 
 type Ticker = {
   market: string;
@@ -364,6 +392,86 @@ function dispatchExtensionEvent(
   return handled;
 }
 
+function quoteFromPayload(payload: MarketPayload): Quote {
+  const firstUnit = payload.orderbook?.orderbook_units[0];
+  const currentPrice = payload.ticker.trade_price || 1;
+
+  return {
+    bestAsk: firstUnit?.ask_price || currentPrice,
+    bestBid: firstUnit?.bid_price || currentPrice,
+    askSize: firstUnit?.ask_size || Number.POSITIVE_INFINITY,
+    bidSize: firstUnit?.bid_size || Number.POSITIVE_INFINITY,
+  };
+}
+
+function selectMarketFromPayload(
+  payload: MarketPayload,
+  nextMarket: string,
+): MarketPayload {
+  const selected = payload.top_markets.find(
+    (item) => item.market === nextMarket,
+  );
+
+  if (!selected) {
+    return {
+      ...payload,
+      market: nextMarket,
+    };
+  }
+
+  return {
+    ...payload,
+    market: selected.market,
+    korean_name: selected.korean_name,
+    ticker: {
+      ...payload.ticker,
+      ...selected,
+    },
+  };
+}
+
+function marketContextFromPayload(payload: MarketPayload) {
+  const candles = payload.candles.slice(-6);
+  const first = candles[0]?.trade_price || payload.ticker.trade_price;
+  const lows = candles.map((candle) => candle.low_price);
+  const highs = candles.map((candle) => candle.high_price);
+  const min = Math.min(...lows, payload.ticker.trade_price);
+  const max = Math.max(...highs, payload.ticker.trade_price);
+  const quote = quoteFromPayload(payload);
+  const previousVolumes = payload.candles
+    .slice(-16, -1)
+    .map((candle) => candle.candle_acc_trade_volume);
+  const averageVolume =
+    previousVolumes.reduce((sum, value) => sum + value, 0) /
+      Math.max(1, previousVolumes.length) || 0;
+  const latestVolume =
+    payload.candles.at(-1)?.candle_acc_trade_volume || 0;
+
+  return {
+    market: payload.market,
+    tradePriceAtSnapshot: String(payload.ticker.trade_price),
+    shortTermReturn5m: first ? (payload.ticker.trade_price - first) / first : 0,
+    signedChangeRate: payload.ticker.signed_change_rate,
+    spreadRate:
+      quote.bestAsk > 0
+        ? (quote.bestAsk - quote.bestBid) / quote.bestAsk
+        : null,
+    marketRiskFlags: payload.top_markets.find(
+      (item) => item.market === payload.market,
+    )?.has_warning_badge
+      ? ["WARNING"]
+      : [],
+    pricePositionIn5mRange:
+      max > min ? (payload.ticker.trade_price - min) / (max - min) : 0.5,
+    volumeSpikeRatio5m:
+      averageVolume > 0 ? latestVolume / averageVolume : null,
+    ticker: payload.ticker,
+    candles: payload.candles,
+    orderbook: payload.orderbook,
+    collectedAt: payload.updated_at,
+  };
+}
+
 function formatNumber(value: number, maximumFractionDigits = 0) {
   return new Intl.NumberFormat("ko-KR", {
     maximumFractionDigits,
@@ -547,6 +655,14 @@ function Icon({ name }: { name: string }) {
         <path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A8 8 0 0 0 14.8 6l-.3-2.5h-4L10.2 6a8 8 0 0 0-1.8 1.1L6 6.1 4 9.5 6.1 11a7 7 0 0 0 0 2L4 14.5l2 3.4 2.4-1a8 8 0 0 0 1.8 1.1l.3 2.5h4l.3-2.5a8 8 0 0 0 1.8-1.1l2.4 1 2-3.4-2.1-1.5a7 7 0 0 0 .1-1Z" />
       </>
     ),
+    refresh: (
+      <>
+        <path d="M20 11a8 8 0 0 0-14.6-4.5L4 8" />
+        <path d="M4 4v4h4" />
+        <path d="M4 13a8 8 0 0 0 14.6 4.5L20 16" />
+        <path d="M20 20v-4h-4" />
+      </>
+    ),
   };
 
   return (
@@ -559,6 +675,10 @@ function Icon({ name }: { name: string }) {
 export default function TradingTerminal() {
   const [marketData, setMarketData] =
     useState<MarketPayload>(FALLBACK_PAYLOAD);
+  const [portfolio, setPortfolio] = useState(createInitialPortfolio);
+  const [modal, setModal] = useState<DemoModal>(null);
+  const [debugRecords, setDebugRecords] = useState<DebugRecord[]>([]);
+  const [extensionConnected, setExtensionConnected] = useState(false);
   const [market, setMarket] = useState("KRW-BTC");
   const [side, setSide] = useState<OrderSide>("BUY");
   const [orderType, setOrderType] = useState<OrderType>("LIMIT");
@@ -576,28 +696,96 @@ export default function TradingTerminal() {
   const [clock, setClock] = useState("");
   const orderButtonRef = useRef<HTMLButtonElement>(null);
   const marketRef = useRef("KRW-BTC");
+  const previousOrdersRef = useRef<Record<string, string>>({});
 
-  const fetchMarket = useCallback(async (selectedMarket: string) => {
+  const addDebugRecord = useCallback(
+    (
+      source: DebugRecord["source"],
+      category: DebugCategory,
+      kind: string,
+      payload: unknown,
+      occurredAt = new Date().toISOString(),
+    ) => {
+      setDebugRecords((current) => {
+        const next: DebugRecord[] = [
+          {
+            id: crypto.randomUUID(),
+            source,
+            category,
+            kind,
+            occurredAt,
+            payload,
+          },
+          ...current,
+        ];
+        const categoryCount = new Map<string, number>();
+
+        return next.filter((record) => {
+          const key = `${record.source}:${record.category}`;
+          const count = categoryCount.get(key) || 0;
+          categoryCount.set(key, count + 1);
+          return count < 100;
+        });
+      });
+    },
+    [],
+  );
+
+  const refreshDemoApis = useCallback(async (
+    selectedMarket: string,
+    reason: "initial" | "manual" = "manual",
+  ) => {
+    setLiveState("loading");
     try {
-      const response = await fetch(
-        `/api/upbit?market=${encodeURIComponent(selectedMarket)}`,
-        { cache: "no-store" },
-      );
+      const [upbitResponse, marketSnapshotResponse] = await Promise.all([
+        fetch(`/api/demo/upbit?market=${encodeURIComponent(selectedMarket)}`, {
+          cache: "no-store",
+        }),
+        fetch(
+          `/api/demo/market/snapshot?symbol=${encodeURIComponent(selectedMarket)}`,
+          { cache: "no-store" },
+        ),
+      ]);
 
-      if (!response.ok) {
+      if (!upbitResponse.ok || !marketSnapshotResponse.ok) {
         throw new Error("market fetch failed");
       }
 
-      const nextData = (await response.json()) as MarketPayload;
+      const nextData = (await upbitResponse.json()) as MarketPayload;
+      const marketSnapshotJson = await marketSnapshotResponse.json();
+      const marketSnapshot =
+        typeof marketSnapshotJson === "object" &&
+        marketSnapshotJson !== null &&
+        "data" in marketSnapshotJson
+          ? marketSnapshotJson.data
+          : marketSnapshotJson;
       setMarketData(nextData);
       setMarket(nextData.market);
       marketRef.current = nextData.market;
       setPrice(String(nextData.ticker.trade_price));
+      addDebugRecord("page", "market", "DEMO_API_REFRESH", {
+        reason,
+        upbit: marketContextFromPayload(nextData),
+        marketSnapshot,
+      });
+      setPortfolio((current) =>
+        settleOpenOrders(
+          current,
+          nextData.market,
+          quoteFromPayload(nextData),
+        ),
+      );
       setLiveState("live");
-    } catch {
+    } catch (error) {
       setLiveState("fallback");
+      addDebugRecord("page", "market", "DEMO_API_REFRESH_FAILED", {
+        reason,
+        market: selectedMarket,
+        message:
+          error instanceof Error ? error.message : "market fetch failed",
+      });
     }
-  }, []);
+  }, [addDebugRecord]);
 
   useEffect(() => {
     const url = new URL(window.location.href);
@@ -611,19 +799,13 @@ export default function TradingTerminal() {
     window.history.replaceState({}, "", url);
     marketRef.current = initialMarket;
     const initialTimeout = window.setTimeout(
-      () => void fetchMarket(initialMarket),
+      () => void refreshDemoApis(initialMarket, "initial"),
       0,
-    );
-
-    const interval = window.setInterval(
-      () => void fetchMarket(marketRef.current),
-      15_000,
     );
     return () => {
       window.clearTimeout(initialTimeout);
-      window.clearInterval(interval);
     };
-  }, [fetchMarket]);
+  }, [refreshDemoApis]);
 
   useEffect(() => {
     const updateClock = () => {
@@ -642,17 +824,114 @@ export default function TradingTerminal() {
     return () => window.clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    const handleExtensionDebug = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+
+      if (
+        !detail ||
+        !["behavior", "market", "personal"].includes(detail.category)
+      ) {
+        return;
+      }
+
+      setExtensionConnected(true);
+      addDebugRecord(
+        "extension",
+        detail.category,
+        detail.kind || "EXTENSION_EVENT",
+        detail.payload,
+        detail.occurredAt,
+      );
+    };
+    const handleReviewOrder = () => {
+      setModal(null);
+      orderButtonRef.current?.focus();
+    };
+
+    document.addEventListener(
+      "saltbread:extension-debug",
+      handleExtensionDebug,
+    );
+    document.addEventListener(
+      "saltbread:demo-review-order",
+      handleReviewOrder,
+    );
+    return () => {
+      document.removeEventListener(
+        "saltbread:extension-debug",
+        handleExtensionDebug,
+      );
+      document.removeEventListener(
+        "saltbread:demo-review-order",
+        handleReviewOrder,
+      );
+    };
+  }, [addDebugRecord]);
+
+  useEffect(() => {
+    const context = marketContextFromPayload(marketData);
+    const timeout = window.setTimeout(
+      () => addDebugRecord("page", "market", "MARKET_SNAPSHOT", context),
+      0,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [addDebugRecord, marketData]);
+
+  useEffect(() => {
+    const accounts = toUpbitAccounts(portfolio);
+    const payload = {
+      market,
+      accounts,
+      orders: portfolio.orders,
+      collectedAt: new Date().toISOString(),
+    };
+    const newRecords: Array<{ kind: string; order: DemoOrder }> = [];
+    for (const order of portfolio.orders) {
+      const previousState = previousOrdersRef.current[order.uuid];
+      const signature = [
+        order.state,
+        order.executed_volume,
+        order.remaining_volume,
+        order.paid_fee,
+      ].join(":");
+
+      if (previousState !== signature) {
+        const kind = previousState ? "ORDER_UPDATED" : "ORDER_CREATED";
+        newRecords.push({ kind, order });
+        previousOrdersRef.current[order.uuid] = signature;
+      }
+    }
+    const timeout = window.setTimeout(() => {
+      addDebugRecord("page", "personal", "ACCOUNT_SNAPSHOT", payload);
+      for (const record of newRecords) {
+        addDebugRecord(
+          "page",
+          "personal",
+          record.kind,
+          record.order,
+          record.order.created_at,
+        );
+      }
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [addDebugRecord, market, marketData, portfolio]);
+
   const chooseMarket = useCallback(
     (nextMarket: string) => {
+      const nextData = selectMarketFromPayload(marketData, nextMarket);
       setMarket(nextMarket);
       marketRef.current = nextMarket;
       const url = new URL(window.location.href);
       url.searchParams.set("code", `CRIX.UPBIT.${nextMarket}`);
       window.history.replaceState({}, "", url);
-      setLiveState("loading");
-      void fetchMarket(nextMarket);
+      setMarketData(nextData);
+      setPrice(String(nextData.ticker.trade_price));
+      setPortfolio((current) =>
+        settleOpenOrders(current, nextData.market, quoteFromPayload(nextData)),
+      );
     },
-    [fetchMarket],
+    [marketData],
   );
 
   const runScenario = useCallback(
@@ -660,6 +939,7 @@ export default function TradingTerminal() {
       const targetMarket = nextScenario.useVolatileMarket
         ? marketData.volatile_market
         : market;
+      const nextData = selectMarketFromPayload(marketData, targetMarket);
       const currentPrice = marketData.ticker.trade_price || 1;
       const nextPrice = Math.round(
         currentPrice * nextScenario.priceMultiplier,
@@ -671,26 +951,21 @@ export default function TradingTerminal() {
         (nextAmount / Math.max(nextPrice, 1)).toFixed(8),
       );
 
-      const currentOrder = {
-        market: targetMarket,
-        order_side: nextScenario.orderSide,
-        order_status: "WAIT",
-        order_type: nextScenario.orderType,
-        order_price:
-          nextScenario.orderType === "MARKET" ? null : nextPrice,
-        order_volume: nextVolume,
-        order_amount: nextAmount,
-        realized_loss_pct_1h: null,
-        order_request_time: new Date().toISOString(),
-        order_cancel_time: null,
-      };
-      const detail = {
+      setMarketData(nextData);
+      setMarket(targetMarket);
+      marketRef.current = targetMarket;
+      setSide(nextScenario.orderSide);
+      setOrderType(nextScenario.orderType);
+      setPrice(String(nextPrice));
+      setVolume(String(nextVolume));
+      setAmount(String(nextAmount));
+      setActiveScenario(nextScenario.key);
+      addDebugRecord("page", "behavior", "DEMO_SCENARIO_SELECTED", {
         id: nextScenario.key,
         type: nextScenario.type,
         title: nextScenario.title,
         market: targetMarket,
         behaviorData: nextScenario.behaviorData,
-        currentOrder,
         recentOrders: normalizeRecentOrders(
           nextScenario.recentOrders,
           targetMarket,
@@ -699,42 +974,19 @@ export default function TradingTerminal() {
           nextScenario.behaviorData.client_avg_buy_amount,
         currentPrice,
         marketData: nextScenario.marketData,
-        expiresAt: Date.now() + 3 * 60_000,
-      };
-
-      const handled = dispatchExtensionEvent(
-        "saltbread:demo-scenario",
-        detail,
-      );
-
-      if (handled) {
-        setActiveScenario(nextScenario.key);
-        setToast({
-          message: `${nextScenario.key}번 · ${nextScenario.title} 시나리오를 실행했습니다.`,
-          variant: "success",
-        });
-      } else {
-        setToast({
-          message:
-            "확장 프로그램이 연결되지 않았습니다. Fireguard를 다시 로드해 주세요.",
-          variant: "error",
-        });
-      }
+      });
+      setToast({
+        message: `${nextScenario.key}번 · ${nextScenario.title} 입력값을 세팅했습니다.`,
+        variant: "success",
+      });
     },
-    [
-      market,
-      marketData.ticker.trade_price,
-      marketData.volatile_market,
-    ],
+    [addDebugRecord, market, marketData],
   );
 
   const runDetectNow = useCallback(() => {
-    const handled = dispatchExtensionEvent("saltbread:detect-now");
     setToast({
-      message: handled
-        ? "8번 · 현재 데이터로 감지 요청을 전달했습니다."
-        : "확장 프로그램이 연결되지 않아 감지 요청을 보내지 못했습니다.",
-      variant: handled ? "success" : "error",
+      message: "데모 페이지에서는 확장 프로그램 감지를 실행하지 않습니다.",
+      variant: "error",
     });
   }, []);
 
@@ -747,6 +999,9 @@ export default function TradingTerminal() {
     setPrice(String(resetPrice));
     setVolume(String(resetVolume));
     setAmount(String(Math.round(resetPrice * resetVolume)));
+    setPortfolio(createInitialPortfolio());
+    setModal(null);
+    previousOrdersRef.current = {};
     const handled = dispatchExtensionEvent("saltbread:demo-reset");
     setActiveScenario(null);
     setToast({
@@ -805,16 +1060,26 @@ export default function TradingTerminal() {
   }, [toast]);
 
   const selectPercentage = (percentage: number) => {
-    const availableKrw = 9_842_630;
-    const nextAmount = Math.floor((availableKrw * percentage) / 100);
-    setAmount(String(nextAmount));
-    setVolume(
-      String(
-        Number(
-          (nextAmount / Math.max(Number(price), 1)).toFixed(8),
+    if (side === "BUY") {
+      const nextAmount = Math.floor(
+        (portfolio.krw.balance * percentage) / 100 / 1.0005,
+      );
+      setAmount(String(nextAmount));
+      setVolume(
+        String(
+          Number(
+            (nextAmount / Math.max(Number(price), 1)).toFixed(8),
+          ),
         ),
-      ),
-    );
+      );
+      return;
+    }
+
+    const availableVolume =
+      portfolio.assets[market.split("-")[1]]?.balance || 0;
+    const nextVolume = (availableVolume * percentage) / 100;
+    setVolume(String(Number(nextVolume.toFixed(8))));
+    setAmount(String(Math.round(nextVolume * Math.max(Number(price), 1))));
   };
 
   const filteredMarkets = useMemo(() => {
@@ -835,6 +1100,68 @@ export default function TradingTerminal() {
   const rise = ticker.signed_change_rate >= 0;
   const coinSymbol = market.split("-")[1] || "BTC";
   const orderUnits = marketData.orderbook?.orderbook_units || [];
+  const currentAsset = portfolio.assets[coinSymbol] || {
+    balance: 0,
+    locked: 0,
+    avgBuyPrice: 0,
+  };
+  const quote = quoteFromPayload(marketData);
+
+  const createDraft = (): OrderDraft => ({
+    market,
+    side,
+    orderType,
+    price: Number(price),
+    volume: Number(volume),
+    amount: Number(amount),
+  });
+
+  const requestOrder = () => {
+    const draft = createDraft();
+    const validation = validateOrder(portfolio, draft, quote);
+    addDebugRecord("page", "behavior", "ORDER_INTENT_CLICK", {
+      market,
+      side,
+      orderType,
+      price: Number(price) || null,
+      volume: Number(volume) || null,
+      amount: Number(amount) || null,
+      valid: validation.ok,
+      occurredAt: new Date().toISOString(),
+    });
+
+    if (!validation.ok) {
+      setModal({
+        type: "notice",
+        title: side === "BUY" ? "매수 주문 안내" : "매도 주문 안내",
+        message:
+          validation.reason === "KRW_SHORTAGE"
+            ? "주문 가능 금액이 부족합니다."
+            : validation.reason === "ASSET_SHORTAGE"
+              ? "주문 가능 수량이 부족합니다."
+              : "최소 주문금액은 5,000 KRW입니다.",
+      });
+      return;
+    }
+
+    setModal({ type: "confirm", draft });
+  };
+
+  const confirmOrder = () => {
+    if (modal?.type !== "confirm") return;
+    const result = submitOrder(portfolio, modal.draft, quote);
+    setPortfolio(result.portfolio);
+    setModal({ type: "receipt", order: result.order });
+    setToast({
+      message: `${marketData.korean_name} ${side === "BUY" ? "매수" : "매도"} 주문이 접수되었습니다.`,
+      variant: "success",
+    });
+  };
+
+  const cancelOpenOrder = (orderUuid: string) => {
+    setPortfolio((current) => cancelOrder(current, orderUuid));
+    setToast({ message: "미체결 주문을 취소했습니다.", variant: "success" });
+  };
 
   return (
     <main className="exchange-shell">
@@ -876,7 +1203,7 @@ export default function TradingTerminal() {
                     aria-hidden="true"
                   />
                   {liveState === "live"
-                    ? "UPbit API 실시간"
+                    ? "UPbit API 최신"
                     : liveState === "loading"
                       ? "시세 연결 중"
                       : "데모 시세"}
@@ -921,8 +1248,15 @@ export default function TradingTerminal() {
                 </strong>
               </div>
             </div>
-            <button className="summary-settings" aria-label="시세 설정">
-              <Icon name="settings" />
+            <button
+              className="summary-refresh"
+              type="button"
+              aria-label="API 새로고침"
+              disabled={liveState === "loading"}
+              onClick={() => void refreshDemoApis(marketRef.current, "manual")}
+            >
+              <Icon name="refresh" />
+              <span>API</span>
             </button>
           </div>
 
@@ -993,7 +1327,19 @@ export default function TradingTerminal() {
               </div>
               <div className="orderbook-list">
                 {[...orderUnits].reverse().slice(0, 7).map((unit) => (
-                  <div className="orderbook-row ask" key={`a-${unit.ask_price}`}>
+                  <div
+                    className="orderbook-row ask"
+                    data-saltbread-orderbook-price={unit.ask_price}
+                    key={`a-${unit.ask_price}`}
+                    onClick={() => {
+                      setPrice(String(unit.ask_price));
+                      addDebugRecord("page", "behavior", "ORDERBOOK_CLICK", {
+                        market,
+                        price: unit.ask_price,
+                        side: "ASK",
+                      });
+                    }}
+                  >
                     <span
                       className="depth"
                       style={{
@@ -1005,7 +1351,19 @@ export default function TradingTerminal() {
                   </div>
                 ))}
                 {orderUnits.slice(0, 7).map((unit) => (
-                  <div className="orderbook-row bid" key={`b-${unit.bid_price}`}>
+                  <div
+                    className="orderbook-row bid"
+                    data-saltbread-orderbook-price={unit.bid_price}
+                    key={`b-${unit.bid_price}`}
+                    onClick={() => {
+                      setPrice(String(unit.bid_price));
+                      addDebugRecord("page", "behavior", "ORDERBOOK_CLICK", {
+                        market,
+                        price: unit.bid_price,
+                        side: "BID",
+                      });
+                    }}
+                  >
                     <span
                       className="depth"
                       style={{
@@ -1022,6 +1380,7 @@ export default function TradingTerminal() {
             <section
               className={`order-panel ${side === "BUY" ? "buy-mode" : "sell-mode"}`}
               aria-label="주문"
+              data-saltbread-order-panel
             >
               <div className="order-side-tabs" role="tablist">
                 <button
@@ -1047,7 +1406,9 @@ export default function TradingTerminal() {
               <div className="order-balance">
                 <span>주문가능</span>
                 <strong>
-                  {side === "BUY" ? "9,842,630 KRW" : `0.084215 ${coinSymbol}`}
+                  {side === "BUY"
+                    ? `${formatNumber(portfolio.krw.balance, 0)} KRW`
+                    : `${formatNumber(currentAsset.balance, 8)} ${coinSymbol}`}
                 </strong>
               </div>
 
@@ -1187,20 +1548,96 @@ export default function TradingTerminal() {
                 type="button"
                 className="order-submit"
                 data-saltbread-order-action={side}
-                onClick={() =>
-                  setToast({
-                    message: `${marketData.korean_name} ${side === "BUY" ? "매수" : "매도"} 입력을 감지했습니다. 실제 주문은 전송되지 않습니다.`,
-                    variant: "success",
-                  })
-                }
+                onClick={requestOrder}
               >
                 {side === "BUY" ? "매수하기" : "매도하기"}
               </button>
               <p className="order-note">
-                테스트 전용 화면입니다. 실제 자산 주문은 발생하지 않습니다.
+                가상 자산 주문입니다. 실제 거래소 주문은 발생하지 않습니다.
               </p>
             </section>
           </div>
+
+          <section className="demo-orders">
+            <div className="demo-orders__heading">
+              <div>
+                <span>DEMO ACCOUNT</span>
+                <strong>가상 자산 · 주문내역</strong>
+              </div>
+              <p>
+                총 평가금{" "}
+                <b>
+                  {formatNumber(
+                    portfolio.krw.balance +
+                      portfolio.krw.locked +
+                      Object.entries(portfolio.assets).reduce(
+                        (sum, [symbol, asset]) => {
+                          const item = marketData.top_markets.find(
+                            (candidate) =>
+                              candidate.market === `KRW-${symbol}`,
+                          );
+                          return (
+                            sum +
+                            (asset.balance + asset.locked) *
+                              (item?.trade_price ||
+                                (symbol === coinSymbol
+                                  ? ticker.trade_price
+                                  : asset.avgBuyPrice))
+                          );
+                        },
+                        0,
+                      ),
+                  )}{" "}
+                  KRW
+                </b>
+              </p>
+            </div>
+            <div className="demo-assets">
+              <article>
+                <span>KRW</span>
+                <strong>{formatNumber(portfolio.krw.balance)} KRW</strong>
+                <em>주문 중 {formatNumber(portfolio.krw.locked)} KRW</em>
+              </article>
+              {Object.entries(portfolio.assets).map(([symbol, asset]) => (
+                <article key={symbol}>
+                  <span>{symbol}</span>
+                  <strong>{formatNumber(asset.balance, 8)}</strong>
+                  <em>평균 매수가 {formatNumber(asset.avgBuyPrice)} KRW</em>
+                </article>
+              ))}
+            </div>
+            <div className="demo-order-list">
+              {portfolio.orders.length === 0 ? (
+                <p>아직 주문내역이 없습니다.</p>
+              ) : (
+                portfolio.orders.map((order) => (
+                  <article key={order.uuid}>
+                    <div>
+                      <strong>
+                        {order.market} · {order.side === "bid" ? "매수" : "매도"}
+                      </strong>
+                      <span>{order.ord_type.toUpperCase()}</span>
+                    </div>
+                    <div>
+                      <b>{order.state}</b>
+                      <span>
+                        체결 {order.executed_volume} / 잔량{" "}
+                        {order.remaining_volume}
+                      </span>
+                    </div>
+                    {["wait", "trade"].includes(order.state) && (
+                      <button
+                        type="button"
+                        onClick={() => cancelOpenOrder(order.uuid)}
+                      >
+                        주문 취소
+                      </button>
+                    )}
+                  </article>
+                ))
+              )}
+            </div>
+          </section>
         </section>
 
         <aside className="market-sidebar">
@@ -1267,7 +1704,7 @@ export default function TradingTerminal() {
               <kbd>1–9</kbd>
             </div>
             <p>
-              1–7은 시나리오, 8은 즉시 감지, 9는 초기화입니다.
+              1–7은 입력 세팅, 8은 확장 감지 차단 확인, 9는 초기화입니다.
             </p>
             <div className="scenario-list">
               {SCENARIOS.map((item) => (
@@ -1289,8 +1726,8 @@ export default function TradingTerminal() {
               <button type="button" onClick={runDetectNow}>
                 <kbd>8</kbd>
                 <span>
-                  <strong>지금 감지 실행</strong>
-                  <em>DETECT_NOW</em>
+                  <strong>감지 차단 확인</strong>
+                  <em>NO_DEMO_EXTENSION_DATA</em>
                 </span>
               </button>
               <button type="button" onClick={resetDemo}>
@@ -1304,11 +1741,131 @@ export default function TradingTerminal() {
             <div className="demo-current">
               <span>API 전용 데모</span>
               <strong>화면 입력값은 변경되지 않습니다</strong>
-              <p>1–7 선택 시 시나리오 데이터만 감지 API로 전송합니다.</p>
+              <p>1–7 선택 시 화면 입력값만 바꾸고 확장에는 데이터를 보내지 않습니다.</p>
             </div>
           </section>
         </aside>
       </div>
+
+      <RawDebugPanel
+        records={debugRecords}
+        extensionConnected={extensionConnected}
+        onClear={() => setDebugRecords([])}
+      />
+
+      {modal && (
+        <div
+          className="demo-modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setModal(null);
+          }}
+        >
+          <section
+            className="demo-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={
+              modal.type === "confirm"
+                ? `${side === "BUY" ? "매수" : "매도"}주문 확인`
+                : modal.type === "notice"
+                  ? modal.title
+                  : `${side === "BUY" ? "매수" : "매도"}주문 접수`
+            }
+          >
+            {modal.type === "confirm" && (
+              <>
+                <span className="demo-modal__eyebrow">주문 확인</span>
+                <h2>{side === "BUY" ? "매수주문 확인" : "매도주문 확인"}</h2>
+                <dl>
+                  <div>
+                    <dt>주문유형</dt>
+                    <dd>
+                      {modal.draft.orderType === "MARKET"
+                        ? `시장가 ${side === "BUY" ? "매수" : "매도"}`
+                        : `지정가 ${side === "BUY" ? "매수" : "매도"}`}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>마켓</dt>
+                    <dd>
+                      {coinSymbol}/KRW
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{side === "BUY" ? "총액" : "주문수량"}</dt>
+                    <dd>
+                      {side === "BUY"
+                        ? `${formatNumber(modal.draft.amount)} KRW`
+                        : `${formatNumber(modal.draft.volume, 8)} ${coinSymbol}`}
+                    </dd>
+                  </div>
+                </dl>
+                <div className="demo-modal__actions">
+                  <button type="button" onClick={() => setModal(null)}>
+                    취소
+                  </button>
+                  <button
+                    type="button"
+                    className={side === "BUY" ? "is-buy" : "is-sell"}
+                    data-saltbread-order-confirm={side}
+                    onClick={confirmOrder}
+                  >
+                    {side === "BUY" ? "매수 확인" : "매도 확인"}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {modal.type === "notice" && (
+              <>
+                <span className="demo-modal__eyebrow">주문 안내</span>
+                <h2>{modal.title}</h2>
+                <p className="demo-modal__message">{modal.message}</p>
+                <div className="demo-modal__actions">
+                  <button
+                    type="button"
+                    className="is-primary"
+                    onClick={() => setModal(null)}
+                  >
+                    확인
+                  </button>
+                </div>
+              </>
+            )}
+
+            {modal.type === "receipt" && (
+              <>
+                <span className="demo-modal__eyebrow">주문 접수</span>
+                <h2>
+                  {modal.order.side === "bid" ? "매수주문" : "매도주문"}이
+                  정상 접수되었습니다.
+                </h2>
+                <p className="demo-modal__uuid">{modal.order.uuid}</p>
+                <dl>
+                  <div>
+                    <dt>주문 상태</dt>
+                    <dd>{modal.order.state}</dd>
+                  </div>
+                  <div>
+                    <dt>체결수량</dt>
+                    <dd>{modal.order.executed_volume}</dd>
+                  </div>
+                </dl>
+                <div className="demo-modal__actions">
+                  <button
+                    type="button"
+                    className="is-primary"
+                    onClick={() => setModal(null)}
+                  >
+                    확인
+                  </button>
+                </div>
+              </>
+            )}
+          </section>
+        </div>
+      )}
 
       {toast && (
         <div

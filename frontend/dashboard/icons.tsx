@@ -60,6 +60,24 @@ export function EmptyBoxIcon(props: IconProps) {
   );
 }
 
+export function UserIcon(props: IconProps) {
+  return (
+    <svg {...defaultProps} {...props}>
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4.5 21a7.5 7.5 0 0 1 15 0" />
+    </svg>
+  );
+}
+
+export function GuardrailIcon(props: IconProps) {
+  return (
+    <svg {...defaultProps} {...props}>
+      <path d="M12 3 5 6v5.5c0 4.1 2.8 7.9 7 9.5 4.2-1.6 7-5.4 7-9.5V6l-7-3Z" />
+      <path d="M9 12h6M12 9v6" />
+    </svg>
+  );
+}
+
 export function BrandIcon(props: IconProps) {
   return (
     <svg {...defaultProps} {...props} strokeWidth={2}>

@@ -34,6 +34,7 @@
   transition: transform 240ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+#saltbread-extension-panel[data-flame-mode="sad"],
 #saltbread-extension-panel[data-flame-mode="blue"] {
   --flame-primary: #3478f6;
   --flame-deep: #1e5ed4;
@@ -44,6 +45,37 @@
   --flame-shadow: rgba(52, 120, 246, 0.2);
 }
 
+#saltbread-extension-panel[data-flame-mode="curious"] {
+  --flame-primary: #ff6d28;
+  --flame-deep: #df4c11;
+  --flame-soft: #fff5ec;
+  --flame-soft-strong: #ffe5cf;
+  --flame-border: #f2c29f;
+  --flame-focus: rgba(255, 109, 40, 0.24);
+  --flame-shadow: rgba(222, 78, 18, 0.19);
+}
+
+#saltbread-extension-panel[data-flame-mode="surprised"] {
+  --flame-primary: #ff8a1f;
+  --flame-deep: #d86211;
+  --flame-soft: #fff6df;
+  --flame-soft-strong: #ffe8a8;
+  --flame-border: #ecc36c;
+  --flame-focus: rgba(255, 138, 31, 0.25);
+  --flame-shadow: rgba(216, 98, 17, 0.2);
+}
+
+#saltbread-extension-panel[data-flame-mode="fast_burn"] {
+  --flame-primary: #f04444;
+  --flame-deep: #c92c2c;
+  --flame-soft: #fff0ef;
+  --flame-soft-strong: #ffd7d3;
+  --flame-border: #efaaa4;
+  --flame-focus: rgba(240, 68, 68, 0.24);
+  --flame-shadow: rgba(201, 44, 44, 0.2);
+}
+
+#saltbread-extension-panel[data-flame-mode="scared"],
 #saltbread-extension-panel[data-flame-mode="pink"] {
   --flame-primary: #f23f91;
   --flame-deep: #cf2673;
@@ -498,4 +530,95 @@
   .saltbread-panel__reopen {
     transition: none;
   }
+}
+
+#saltbread-guardrail-dialog,
+#saltbread-feedback-dialog {
+  position: fixed;
+  z-index: 2147483646;
+  right: 28px;
+  bottom: 28px;
+  display: grid;
+  width: 350px;
+  gap: 12px;
+  padding: 24px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 18px;
+  color: #f7f9fd;
+  background: linear-gradient(145deg, #172036, #101624);
+  box-shadow: 0 24px 70px rgb(5 10 20 / 45%);
+  font-family:
+    Arial, "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic",
+    sans-serif;
+}
+
+#saltbread-guardrail-dialog > span,
+#saltbread-feedback-dialog > span {
+  color: #79aef7;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+}
+
+#saltbread-guardrail-dialog > strong,
+#saltbread-feedback-dialog > strong {
+  font-size: 19px;
+  line-height: 1.4;
+}
+
+#saltbread-guardrail-dialog > p {
+  margin: 0;
+  color: #b6c0d0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+#saltbread-guardrail-dialog > div {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-top: 6px;
+}
+
+#saltbread-guardrail-dialog button,
+#saltbread-feedback-dialog button {
+  min-height: 42px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 9px;
+  color: #dbe4f1;
+  background: #293348;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+#saltbread-guardrail-dialog [data-reaction="PROCEED"],
+#saltbread-feedback-dialog [data-assessment="PLANNED"] {
+  color: #fff;
+  background: #246ed5;
+}
+
+#saltbread-feedback-dialog [data-assessment="EMOTIONAL"] {
+  color: #fff;
+  background: #d84f5b;
+}
+
+#saltbread-feedback-dialog [data-assessment="DISMISSED"] {
+  color: #9da9bc;
+  background: transparent;
+}
+
+#saltbread-guardrail-dialog .saltbread-guardrail__close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 30px;
+  min-height: 30px;
+  padding: 0;
+  border-radius: 50%;
+  color: #9ba7ba;
+  background: transparent;
+  font-size: 20px;
 }
