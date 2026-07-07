@@ -392,10 +392,6 @@ function dispatchExtensionEvent(
   return handled;
 }
 
-function emitPageEvent(type: string, detail: Record<string, unknown>) {
-  document.dispatchEvent(new CustomEvent(type, { detail }));
-}
-
 function quoteFromPayload(payload: MarketPayload): Quote {
   const firstUnit = payload.orderbook?.orderbook_units[0];
   const currentPrice = payload.ticker.trade_price || 1;
@@ -405,6 +401,32 @@ function quoteFromPayload(payload: MarketPayload): Quote {
     bestBid: firstUnit?.bid_price || currentPrice,
     askSize: firstUnit?.ask_size || Number.POSITIVE_INFINITY,
     bidSize: firstUnit?.bid_size || Number.POSITIVE_INFINITY,
+  };
+}
+
+function selectMarketFromPayload(
+  payload: MarketPayload,
+  nextMarket: string,
+): MarketPayload {
+  const selected = payload.top_markets.find(
+    (item) => item.market === nextMarket,
+  );
+
+  if (!selected) {
+    return {
+      ...payload,
+      market: nextMarket,
+    };
+  }
+
+  return {
+    ...payload,
+    market: selected.market,
+    korean_name: selected.korean_name,
+    ticker: {
+      ...payload.ticker,
+      ...selected,
+    },
   };
 }
 
@@ -633,6 +655,14 @@ function Icon({ name }: { name: string }) {
         <path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A8 8 0 0 0 14.8 6l-.3-2.5h-4L10.2 6a8 8 0 0 0-1.8 1.1L6 6.1 4 9.5 6.1 11a7 7 0 0 0 0 2L4 14.5l2 3.4 2.4-1a8 8 0 0 0 1.8 1.1l.3 2.5h4l.3-2.5a8 8 0 0 0 1.8-1.1l2.4 1 2-3.4-2.1-1.5a7 7 0 0 0 .1-1Z" />
       </>
     ),
+    refresh: (
+      <>
+        <path d="M20 11a8 8 0 0 0-14.6-4.5L4 8" />
+        <path d="M4 4v4h4" />
+        <path d="M4 13a8 8 0 0 0 14.6 4.5L20 16" />
+        <path d="M20 20v-4h-4" />
+      </>
+    ),
   };
 
   return (
@@ -701,22 +731,43 @@ export default function TradingTerminal() {
     [],
   );
 
-  const fetchMarket = useCallback(async (selectedMarket: string) => {
+  const refreshDemoApis = useCallback(async (
+    selectedMarket: string,
+    reason: "initial" | "manual" = "manual",
+  ) => {
+    setLiveState("loading");
     try {
-      const response = await fetch(
-        `/api/demo/upbit?market=${encodeURIComponent(selectedMarket)}`,
-        { cache: "no-store" },
-      );
+      const [upbitResponse, marketSnapshotResponse] = await Promise.all([
+        fetch(`/api/demo/upbit?market=${encodeURIComponent(selectedMarket)}`, {
+          cache: "no-store",
+        }),
+        fetch(
+          `/api/demo/market/snapshot?symbol=${encodeURIComponent(selectedMarket)}`,
+          { cache: "no-store" },
+        ),
+      ]);
 
-      if (!response.ok) {
+      if (!upbitResponse.ok || !marketSnapshotResponse.ok) {
         throw new Error("market fetch failed");
       }
 
-      const nextData = (await response.json()) as MarketPayload;
+      const nextData = (await upbitResponse.json()) as MarketPayload;
+      const marketSnapshotJson = await marketSnapshotResponse.json();
+      const marketSnapshot =
+        typeof marketSnapshotJson === "object" &&
+        marketSnapshotJson !== null &&
+        "data" in marketSnapshotJson
+          ? marketSnapshotJson.data
+          : marketSnapshotJson;
       setMarketData(nextData);
       setMarket(nextData.market);
       marketRef.current = nextData.market;
       setPrice(String(nextData.ticker.trade_price));
+      addDebugRecord("page", "market", "DEMO_API_REFRESH", {
+        reason,
+        upbit: marketContextFromPayload(nextData),
+        marketSnapshot,
+      });
       setPortfolio((current) =>
         settleOpenOrders(
           current,
@@ -725,10 +776,16 @@ export default function TradingTerminal() {
         ),
       );
       setLiveState("live");
-    } catch {
+    } catch (error) {
       setLiveState("fallback");
+      addDebugRecord("page", "market", "DEMO_API_REFRESH_FAILED", {
+        reason,
+        market: selectedMarket,
+        message:
+          error instanceof Error ? error.message : "market fetch failed",
+      });
     }
-  }, []);
+  }, [addDebugRecord]);
 
   useEffect(() => {
     const url = new URL(window.location.href);
@@ -742,19 +799,13 @@ export default function TradingTerminal() {
     window.history.replaceState({}, "", url);
     marketRef.current = initialMarket;
     const initialTimeout = window.setTimeout(
-      () => void fetchMarket(initialMarket),
+      () => void refreshDemoApis(initialMarket, "initial"),
       0,
-    );
-
-    const interval = window.setInterval(
-      () => void fetchMarket(marketRef.current),
-      15_000,
     );
     return () => {
       window.clearTimeout(initialTimeout);
-      window.clearInterval(interval);
     };
-  }, [fetchMarket]);
+  }, [refreshDemoApis]);
 
   useEffect(() => {
     const updateClock = () => {
@@ -793,17 +844,6 @@ export default function TradingTerminal() {
         detail.occurredAt,
       );
     };
-    const handleContextRequest = () => {
-      emitPageEvent("saltbread:demo-context", {
-        market: marketContextFromPayload(marketData),
-        personal: {
-          market,
-          accounts: toUpbitAccounts(portfolio),
-          orders: portfolio.orders,
-          collectedAt: new Date().toISOString(),
-        },
-      });
-    };
     const handleReviewOrder = () => {
       setModal(null);
       orderButtonRef.current?.focus();
@@ -812,10 +852,6 @@ export default function TradingTerminal() {
     document.addEventListener(
       "saltbread:extension-debug",
       handleExtensionDebug,
-    );
-    document.addEventListener(
-      "saltbread:demo-context-request",
-      handleContextRequest,
     );
     document.addEventListener(
       "saltbread:demo-review-order",
@@ -827,15 +863,11 @@ export default function TradingTerminal() {
         handleExtensionDebug,
       );
       document.removeEventListener(
-        "saltbread:demo-context-request",
-        handleContextRequest,
-      );
-      document.removeEventListener(
         "saltbread:demo-review-order",
         handleReviewOrder,
       );
     };
-  }, [addDebugRecord, market, marketData, portfolio]);
+  }, [addDebugRecord]);
 
   useEffect(() => {
     const context = marketContextFromPayload(marketData);
@@ -854,11 +886,6 @@ export default function TradingTerminal() {
       orders: portfolio.orders,
       collectedAt: new Date().toISOString(),
     };
-    emitPageEvent("saltbread:demo-context", {
-      market: marketContextFromPayload(marketData),
-      personal: payload,
-    });
-
     const newRecords: Array<{ kind: string; order: DemoOrder }> = [];
     for (const order of portfolio.orders) {
       const previousState = previousOrdersRef.current[order.uuid];
@@ -872,11 +899,6 @@ export default function TradingTerminal() {
       if (previousState !== signature) {
         const kind = previousState ? "ORDER_UPDATED" : "ORDER_CREATED";
         newRecords.push({ kind, order });
-        emitPageEvent("saltbread:demo-order-event", {
-          kind,
-          order,
-          occurredAt: new Date().toISOString(),
-        });
         previousOrdersRef.current[order.uuid] = signature;
       }
     }
@@ -897,15 +919,19 @@ export default function TradingTerminal() {
 
   const chooseMarket = useCallback(
     (nextMarket: string) => {
+      const nextData = selectMarketFromPayload(marketData, nextMarket);
       setMarket(nextMarket);
       marketRef.current = nextMarket;
       const url = new URL(window.location.href);
       url.searchParams.set("code", `CRIX.UPBIT.${nextMarket}`);
       window.history.replaceState({}, "", url);
-      setLiveState("loading");
-      void fetchMarket(nextMarket);
+      setMarketData(nextData);
+      setPrice(String(nextData.ticker.trade_price));
+      setPortfolio((current) =>
+        settleOpenOrders(current, nextData.market, quoteFromPayload(nextData)),
+      );
     },
-    [fetchMarket],
+    [marketData],
   );
 
   const runScenario = useCallback(
@@ -913,6 +939,7 @@ export default function TradingTerminal() {
       const targetMarket = nextScenario.useVolatileMarket
         ? marketData.volatile_market
         : market;
+      const nextData = selectMarketFromPayload(marketData, targetMarket);
       const currentPrice = marketData.ticker.trade_price || 1;
       const nextPrice = Math.round(
         currentPrice * nextScenario.priceMultiplier,
@@ -924,26 +951,21 @@ export default function TradingTerminal() {
         (nextAmount / Math.max(nextPrice, 1)).toFixed(8),
       );
 
-      const currentOrder = {
-        market: targetMarket,
-        order_side: nextScenario.orderSide,
-        order_status: "WAIT",
-        order_type: nextScenario.orderType,
-        order_price:
-          nextScenario.orderType === "MARKET" ? null : nextPrice,
-        order_volume: nextVolume,
-        order_amount: nextAmount,
-        realized_loss_pct_1h: null,
-        order_request_time: new Date().toISOString(),
-        order_cancel_time: null,
-      };
-      const detail = {
+      setMarketData(nextData);
+      setMarket(targetMarket);
+      marketRef.current = targetMarket;
+      setSide(nextScenario.orderSide);
+      setOrderType(nextScenario.orderType);
+      setPrice(String(nextPrice));
+      setVolume(String(nextVolume));
+      setAmount(String(nextAmount));
+      setActiveScenario(nextScenario.key);
+      addDebugRecord("page", "behavior", "DEMO_SCENARIO_SELECTED", {
         id: nextScenario.key,
         type: nextScenario.type,
         title: nextScenario.title,
         market: targetMarket,
         behaviorData: nextScenario.behaviorData,
-        currentOrder,
         recentOrders: normalizeRecentOrders(
           nextScenario.recentOrders,
           targetMarket,
@@ -952,42 +974,19 @@ export default function TradingTerminal() {
           nextScenario.behaviorData.client_avg_buy_amount,
         currentPrice,
         marketData: nextScenario.marketData,
-        expiresAt: Date.now() + 3 * 60_000,
-      };
-
-      const handled = dispatchExtensionEvent(
-        "saltbread:demo-scenario",
-        detail,
-      );
-
-      if (handled) {
-        setActiveScenario(nextScenario.key);
-        setToast({
-          message: `${nextScenario.key}번 · ${nextScenario.title} 시나리오를 실행했습니다.`,
-          variant: "success",
-        });
-      } else {
-        setToast({
-          message:
-            "확장 프로그램이 연결되지 않았습니다. Fireguard를 다시 로드해 주세요.",
-          variant: "error",
-        });
-      }
+      });
+      setToast({
+        message: `${nextScenario.key}번 · ${nextScenario.title} 입력값을 세팅했습니다.`,
+        variant: "success",
+      });
     },
-    [
-      market,
-      marketData.ticker.trade_price,
-      marketData.volatile_market,
-    ],
+    [addDebugRecord, market, marketData],
   );
 
   const runDetectNow = useCallback(() => {
-    const handled = dispatchExtensionEvent("saltbread:detect-now");
     setToast({
-      message: handled
-        ? "8번 · 현재 데이터로 감지 요청을 전달했습니다."
-        : "확장 프로그램이 연결되지 않아 감지 요청을 보내지 못했습니다.",
-      variant: handled ? "success" : "error",
+      message: "데모 페이지에서는 확장 프로그램 감지를 실행하지 않습니다.",
+      variant: "error",
     });
   }, []);
 
@@ -1204,7 +1203,7 @@ export default function TradingTerminal() {
                     aria-hidden="true"
                   />
                   {liveState === "live"
-                    ? "UPbit API 실시간"
+                    ? "UPbit API 최신"
                     : liveState === "loading"
                       ? "시세 연결 중"
                       : "데모 시세"}
@@ -1249,8 +1248,15 @@ export default function TradingTerminal() {
                 </strong>
               </div>
             </div>
-            <button className="summary-settings" aria-label="시세 설정">
-              <Icon name="settings" />
+            <button
+              className="summary-refresh"
+              type="button"
+              aria-label="API 새로고침"
+              disabled={liveState === "loading"}
+              onClick={() => void refreshDemoApis(marketRef.current, "manual")}
+            >
+              <Icon name="refresh" />
+              <span>API</span>
             </button>
           </div>
 
@@ -1698,7 +1704,7 @@ export default function TradingTerminal() {
               <kbd>1–9</kbd>
             </div>
             <p>
-              1–7은 시나리오, 8은 즉시 감지, 9는 초기화입니다.
+              1–7은 입력 세팅, 8은 확장 감지 차단 확인, 9는 초기화입니다.
             </p>
             <div className="scenario-list">
               {SCENARIOS.map((item) => (
@@ -1720,8 +1726,8 @@ export default function TradingTerminal() {
               <button type="button" onClick={runDetectNow}>
                 <kbd>8</kbd>
                 <span>
-                  <strong>지금 감지 실행</strong>
-                  <em>DETECT_NOW</em>
+                  <strong>감지 차단 확인</strong>
+                  <em>NO_DEMO_EXTENSION_DATA</em>
                 </span>
               </button>
               <button type="button" onClick={resetDemo}>
@@ -1735,7 +1741,7 @@ export default function TradingTerminal() {
             <div className="demo-current">
               <span>API 전용 데모</span>
               <strong>화면 입력값은 변경되지 않습니다</strong>
-              <p>1–7 선택 시 시나리오 데이터만 감지 API로 전송합니다.</p>
+              <p>1–7 선택 시 화면 입력값만 바꾸고 확장에는 데이터를 보내지 않습니다.</p>
             </div>
           </section>
         </aside>

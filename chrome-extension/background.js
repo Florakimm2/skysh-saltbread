@@ -3,8 +3,11 @@ importScripts("config.js", "data-core.js");
 const {
   calculateAverageBuyAmount,
   calculateMarketData,
+  evaluateGuardrailRules,
   mapUpbitOrder,
   resolveFlameMode,
+  resolveVisualMode,
+  toNumber,
 } = globalThis.SaltbreadCore;
 const {
   appUrl: APP_URL,
@@ -26,6 +29,7 @@ const APP_TAB_URL_PATTERNS = [
 const COLLECTION_ALARM = "saltbread-minute-collection";
 const CREDENTIALS_STORAGE_KEY = "upbitCredentials";
 const SESSION_KEY_STORAGE_KEY = "upbitCredentialSessionKey";
+const GUARDRAIL_RULES_CACHE_KEY = "guardrailRulesCache";
 const REFRESH_TOKEN_COOKIE_NAME = "refreshToken";
 const PUBLIC_REQUEST_INTERVAL_MS = 10_100;
 const MARKET_DETAILS_CACHE_MS = 10 * 60 * 1000;
@@ -52,6 +56,28 @@ function normalizeAllowedAppOrigin(value) {
       : null;
   } catch {
     return null;
+  }
+}
+
+function isDemoPageUrl(value) {
+  try {
+    const url = new URL(value || "");
+    return normalizeAllowedAppOrigin(url.href) === url.origin &&
+      url.pathname === "/demo";
+  } catch {
+    return false;
+  }
+}
+
+function isUpbitExchangeUrl(value) {
+  try {
+    const url = new URL(value || "");
+    return (
+      ["upbit.com", "www.upbit.com"].includes(url.hostname) &&
+      url.pathname.startsWith("/exchange")
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -140,6 +166,7 @@ async function refreshAuthForOrigin(appOrigin, currentAuth = {}) {
     appOrigin,
   };
   await chrome.storage.local.set({ auth });
+  void fetchGuardrailRules(auth).catch(() => {});
   return auth;
 }
 
@@ -433,19 +460,62 @@ function createBackendHeaders(auth, includeUserId = false) {
   return headers;
 }
 
+async function getCachedGuardrailRules() {
+  const result = await chrome.storage.local.get(GUARDRAIL_RULES_CACHE_KEY);
+  return result[GUARDRAIL_RULES_CACHE_KEY]?.rules || [];
+}
+
+async function fetchGuardrailRules(existingAuth = null) {
+  const auth = existingAuth || (await getValidBackendAuth());
+
+  if (!auth?.accessToken) {
+    await chrome.storage.local.set({
+      [GUARDRAIL_RULES_CACHE_KEY]: {
+        rules: [],
+        userId: null,
+        fetchedAt: new Date().toISOString(),
+      },
+    });
+    return [];
+  }
+
+  const response = await fetchJson(`${getAuthApiBase(auth)}/api/me/guardrail-rules`, {
+    method: "GET",
+    headers: createBackendHeaders(auth),
+  });
+  const rules = Array.isArray(response?.data) ? response.data : [];
+
+  await chrome.storage.local.set({
+    [GUARDRAIL_RULES_CACHE_KEY]: {
+      rules,
+      userId: auth.user?.id || null,
+      fetchedAt: new Date().toISOString(),
+    },
+  });
+
+  return rules;
+}
+
+async function loadGuardrailRules(existingAuth = null) {
+  try {
+    return {
+      rules: await fetchGuardrailRules(existingAuth),
+      source: "network",
+      error: null,
+    };
+  } catch (error) {
+    return {
+      rules: await getCachedGuardrailRules(),
+      source: "cache",
+      error: error instanceof Error ? error.message : "규칙을 불러오지 못했습니다.",
+    };
+  }
+}
+
 async function postDetectionRequest(requestBody, auth) {
   return fetchJson(`${getAuthApiBase(auth)}${DETECT_PATH}`, {
     method: "POST",
     headers: createBackendHeaders(auth),
-    body: JSON.stringify(requestBody),
-  });
-}
-
-async function postDemoDetectionRequest(requestBody, pageUrl) {
-  const origin = normalizeAllowedAppOrigin(pageUrl) || API_BASE_URL;
-  return fetchJson(`${origin}/api/demo/detect`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(requestBody),
   });
 }
@@ -514,7 +584,7 @@ async function getMarketDetails() {
 
 async function collectMarketData(market) {
   const encodedMarket = encodeURIComponent(market);
-  const [candles, tickers, marketDetails] = await Promise.all([
+  const [candles, tickers, marketDetails, orderbooks] = await Promise.all([
     fetchPublicUpbit(
       `/v1/candles/minutes/1?market=${encodedMarket}&count=20`,
     ),
@@ -522,6 +592,7 @@ async function collectMarketData(market) {
       "/v1/ticker/all?quote_currencies=KRW",
     ),
     getMarketDetails(),
+    fetchPublicUpbit(`/v1/orderbook?markets=${encodedMarket}`),
   ]);
   const collected = {
     market,
@@ -530,6 +601,7 @@ async function collectMarketData(market) {
       candles,
       tickers,
       marketDetails,
+      orderbook: Array.isArray(orderbooks) ? orderbooks[0] : null,
     }),
     collected_at: new Date().toISOString(),
   };
@@ -705,6 +777,9 @@ async function collectOrderData(market) {
     market,
     recentOrders,
     clientAverageBuyAmount,
+    accounts,
+    rawClosedOrders: closedOrders,
+    rawOpenOrders: openOrders,
     collected_at: new Date().toISOString(),
   };
   const { orderDataCache = {} } =
@@ -723,6 +798,9 @@ async function collectOrderDataForDetection(market) {
       market,
       recentOrders: [],
       clientAverageBuyAmount: null,
+      accounts: [],
+      rawClosedOrders: [],
+      rawOpenOrders: [],
       collected_at: new Date().toISOString(),
       privateDataAvailable: false,
     };
@@ -752,25 +830,11 @@ async function callDetectionApi(
     chrome.storage.local.get("orderDataCache"),
   ]);
 
-  const isDemoPage = (() => {
-    try {
-      return new URL(context.pageUrl).pathname === "/demo";
-    } catch {
-      return false;
-    }
-  })();
-
-  if (!isDemoPage && !auth?.accessToken) {
+  if (!isUpbitExchangeUrl(context.pageUrl) || !auth?.accessToken) {
     return null;
   }
 
-  const orderData = context.demoData
-    ? {
-        recentOrders: context.demoData.recentOrders || [],
-        clientAverageBuyAmount:
-          context.demoData.clientAverageBuyAmount ?? null,
-      }
-    : options.orderData || orderDataCache[context.market];
+  const orderData = options.orderData || orderDataCache[context.market];
   const recentOrders = orderData?.recentOrders || [];
   const lastLoss = recentOrders.find(
     (order) =>
@@ -813,11 +877,8 @@ async function callDetectionApi(
       marketData: requestBody.market_data,
     },
   };
-  const detectionPromise = isDemoPage
-    ? postDemoDetectionRequest(requestBody, context.pageUrl)
-    : postDetectionRequest(requestBody, auth);
   const behaviorSaveTask =
-    options.logSubmitAttempt === false || isDemoPage
+    options.logSubmitAttempt === false
       ? Promise.resolve()
       : postBehaviorEvent(behaviorEvent, auth)
           .then(() =>
@@ -834,7 +895,90 @@ async function callDetectionApi(
               },
             }),
           );
+  const rulesState = await loadGuardrailRules(auth);
+  const orderContextSnapshot = enrichOrderContextSnapshot(
+    context,
+    marketData,
+    orderData,
+  );
+  const ruleEvaluation = evaluateGuardrailRules(
+    rulesState.rules,
+    orderContextSnapshot,
+  );
+  const evaluatedSnapshot = {
+    ...orderContextSnapshot,
+    matchedRuleIdsAtSnapshot: ruleEvaluation.matchedRuleIds,
+    primaryShownRuleId: ruleEvaluation.primaryRuleId,
+    shownRuleIds: ruleEvaluation.primaryRuleId
+      ? [ruleEvaluation.primaryRuleId]
+      : [],
+  };
+
+  await sendDtoDebugSnapshot(tabId, {
+    behavior: context.behaviorData || null,
+    market: marketData,
+    personal: {
+      privateDataAvailable: orderData?.privateDataAvailable ?? null,
+      accounts: orderData?.accounts || [],
+      confirmedTradeLogs: toConfirmedTradeLogs(
+        orderData,
+        orderContextSnapshot.attemptId,
+      ),
+      orderOutcomePatches: toOrderOutcomePatches(orderData),
+      recentOrders: recentOrders,
+      clientAverageBuyAmount: orderData?.clientAverageBuyAmount ?? null,
+    },
+    orderContext: evaluatedSnapshot,
+    ruleEvaluation: {
+      source: rulesState.source,
+      loadError: rulesState.error,
+      ruleCount: rulesState.rules.length,
+      detected: ruleEvaluation.detected,
+      matchedRuleIds: ruleEvaluation.matchedRuleIds,
+      primaryRuleId: ruleEvaluation.primaryRuleId,
+      primaryRule: ruleEvaluation.primaryRule,
+    },
+  });
+
+  if (ruleEvaluation.detected) {
+    const flameMode = resolveVisualMode(ruleEvaluation.primaryRule);
+    const ruleResult = {
+      detected: true,
+      type: "USER_GUARDRAIL_RULE",
+      message:
+        ruleEvaluation.warningMessage ||
+        "사용자 규칙에 해당하는 주문 조건이 감지되었습니다.",
+      warningTitle: ruleEvaluation.warningTitle,
+      riskLevel: ruleEvaluation.riskLevel,
+      matchedRuleIds: ruleEvaluation.matchedRuleIds,
+      primaryRuleId: ruleEvaluation.primaryRuleId,
+      primaryRule: ruleEvaluation.primaryRule,
+      visualMode: flameMode,
+      flameMode,
+      orderContextSnapshot: evaluatedSnapshot,
+      ruleEvaluation,
+    };
+
+    await chrome.storage.local.set({
+      flameTheme: {
+        mode: flameMode,
+        detected: true,
+        type: ruleResult.type,
+        orderSide: context.currentOrder.order_side,
+        primaryRuleId: ruleEvaluation.primaryRuleId,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+    await sendTabMessage(tabId, {
+      type: "DETECTION_RESULT",
+      payload: ruleResult,
+    });
+    await behaviorSaveTask;
+    return ruleResult;
+  }
+
   let result;
+  const detectionPromise = postDetectionRequest(requestBody, auth);
 
   try {
     result = await detectionPromise;
@@ -876,71 +1020,186 @@ async function getMarketDataForDetection(market) {
   return isFresh ? cached : collectMarketData(market);
 }
 
-function getDemoMarketData(context) {
-  const currentPrice = Number(context.demoData?.currentPrice);
-  const marketData = context.demoData?.marketData;
+async function getMarketDataForContext(context) {
+  return getMarketDataForDetection(context.market);
+}
 
-  if (
-    !Number.isFinite(currentPrice) ||
-    currentPrice <= 0 ||
-    !marketData ||
-    !Number.isFinite(marketData.price_change_rate_15m) ||
-    !Number.isFinite(marketData.volume_change_rate_1m) ||
-    typeof marketData.is_top3_volatility !== "boolean" ||
-    typeof marketData.has_warning_badge !== "boolean"
-  ) {
-    return null;
-  }
+function decimalString(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = toNumber(value);
+  return numeric === null ? null : String(numeric);
+}
+
+function getAccount(accounts, currency) {
+  return (accounts || []).find((account) => account.currency === currency);
+}
+
+function countActualOrders10m(orderData, now = Date.now()) {
+  return [
+    ...(orderData?.rawClosedOrders || []),
+    ...(orderData?.rawOpenOrders || []),
+  ].filter((order) => {
+    const createdAt = Date.parse(order.created_at || "");
+    return Number.isFinite(createdAt) && now - createdAt <= 10 * 60_000;
+  }).length;
+}
+
+function enrichOrderContextSnapshot(context, marketData, orderData = {}) {
+  const now = Date.now();
+  const base = context.orderContextSnapshot || {};
+  const currentOrder = context.currentOrder || {};
+  const market = context.market || currentOrder.market || base.market || "UNKNOWN";
+  const side = currentOrder.order_side || base.side || "UNKNOWN";
+  const orderMode = currentOrder.order_type || base.orderMode || "UNKNOWN";
+  const coinCurrency = String(market).split("-")[1];
+  const accounts = orderData.accounts || [];
+  const account =
+    side === "BUY" ? getAccount(accounts, "KRW") : getAccount(accounts, coinCurrency);
+  const available = toNumber(account?.balance);
+  const requested =
+    side === "BUY"
+      ? toNumber(currentOrder.order_amount)
+      : toNumber(currentOrder.order_volume);
+  const baseAccount = getAccount(accounts, coinCurrency);
+  const avgBuyPrice = toNumber(baseAccount?.avg_buy_price);
+  const tradePrice = toNumber(marketData.tradePriceAtSnapshot) ||
+    toNumber(marketData.current_price);
+  const requestedBalanceRatio =
+    base.requestedBalanceRatio ??
+    (available && requested !== null
+      ? Math.max(0, Math.min(1, requested / available))
+      : null);
 
   return {
-    market: context.market,
-    current_price: currentPrice,
-    market_data: marketData,
-    collected_at: new Date().toISOString(),
-    isDemo: true,
+    snapshotId: base.snapshotId || crypto.randomUUID(),
+    attemptId: base.attemptId || null,
+    snapshotTrigger: base.snapshotTrigger || "ORDER_INTENT_CLICK",
+    capturedAt: base.capturedAt || new Date().toISOString(),
+    market,
+    side,
+    orderMode,
+    entryPoint: base.entryPoint || "NORMAL",
+    intentPrice:
+      base.intentPrice ?? decimalString(currentOrder.order_price),
+    intentQuantity:
+      base.intentQuantity ?? decimalString(currentOrder.order_volume),
+    intentAmount:
+      base.intentAmount ?? decimalString(currentOrder.order_amount),
+    requestedBalanceRatio,
+    draftDurationMs: base.draftDurationMs ?? null,
+    lastEditToSnapshotMs: base.lastEditToSnapshotMs ?? null,
+    draftEditCount: base.draftEditCount ?? null,
+    amountChangeRate: base.amountChangeRate ?? null,
+    modeChangedToMarket: base.modeChangedToMarket ?? false,
+    orderbookClickToSnapshotMs: base.orderbookClickToSnapshotMs ?? null,
+    orderIntentCount1m:
+      base.orderIntentCount1m ?? context.behaviorData?.buy_click_count_1m ?? 0,
+    actualOrderCreatedCount10m:
+      base.actualOrderCreatedCount10m ?? countActualOrders10m(orderData, now),
+    sameSideIntentCount1m:
+      base.sameSideIntentCount1m ?? context.behaviorData?.buy_click_count_1m ?? 0,
+    marketChangeCount5m: base.marketChangeCount5m ?? 0,
+    sideChangeCount3m: base.sideChangeCount3m ?? 0,
+    priceEditCount3m:
+      base.priceEditCount3m ?? context.behaviorData?.input_edit_count ?? 0,
+    quantityEditCount3m: base.quantityEditCount3m ?? 0,
+    amountEditCount3m:
+      base.amountEditCount3m ?? context.behaviorData?.input_edit_count ?? 0,
+    inputRevertCount: base.inputRevertCount ?? 0,
+    priceDirectionChangeCount: base.priceDirectionChangeCount ?? 0,
+    priceChangeRate: base.priceChangeRate ?? null,
+    orderModeChangeCount3m: base.orderModeChangeCount3m ?? 0,
+    allocationPresetPercent: base.allocationPresetPercent ?? null,
+    draftResetCount3m: base.draftResetCount3m ?? 0,
+    matchedRuleIdsAtSnapshot: base.matchedRuleIdsAtSnapshot || [],
+    primaryShownRuleId: base.primaryShownRuleId || null,
+    shownRuleIds: base.shownRuleIds || [],
+    tradePriceAtSnapshot:
+      base.tradePriceAtSnapshot ??
+      marketData.tradePriceAtSnapshot ??
+      decimalString(marketData.current_price),
+    shortTermReturn5m: base.shortTermReturn5m ?? marketData.shortTermReturn5m ?? null,
+    signedChangeRate: base.signedChangeRate ?? marketData.signedChangeRate ?? null,
+    spreadRate: base.spreadRate ?? marketData.spreadRate ?? null,
+    marketRiskFlags: base.marketRiskFlags || marketData.marketRiskFlags || [],
+    pricePositionIn5mRange:
+      base.pricePositionIn5mRange ?? marketData.pricePositionIn5mRange ?? null,
+    volumeSpikeRatio5m:
+      base.volumeSpikeRatio5m ?? marketData.volumeSpikeRatio5m ?? null,
+    baseAssetAvgBuyPriceBeforeSnapshot:
+      base.baseAssetAvgBuyPriceBeforeSnapshot ??
+      (avgBuyPrice && avgBuyPrice > 0 ? String(avgBuyPrice) : null),
+    priceVsAvgBuyRateAtSnapshot:
+      base.priceVsAvgBuyRateAtSnapshot ??
+      (avgBuyPrice && tradePrice
+        ? (tradePrice - avgBuyPrice) / avgBuyPrice
+        : null),
   };
 }
 
-async function getMarketDataForContext(context) {
-  return (
-    getDemoMarketData(context) ||
-    getMarketDataForDetection(context.market)
-  );
+function toConfirmedTradeLogs(orderData, attemptId = null) {
+  const orders = [
+    ...(orderData?.rawOpenOrders || []),
+    ...(orderData?.rawClosedOrders || []),
+  ];
+
+  return orders
+    .filter((order) => order.uuid)
+    .map((order) => ({
+      tradeLogId: crypto.randomUUID(),
+      attemptId,
+      upbitOrderUuid: order.uuid,
+      orderCreatedAt: order.created_at,
+      market: order.market,
+      side: String(order.side).toLowerCase() === "ask" ? "SELL" : "BUY",
+      ordType:
+        order.ord_type === "limit"
+          ? "LIMIT"
+          : order.ord_type === "price"
+            ? "MARKET_BUY"
+            : order.ord_type === "best"
+              ? "BEST"
+              : "MARKET_SELL",
+      limitPrice:
+        order.ord_type === "limit" ? decimalString(order.price) : null,
+      requestedFunds:
+        order.ord_type === "price" ? decimalString(order.price) : null,
+      requestedVolume: decimalString(order.volume),
+      timeInForce: order.time_in_force || null,
+    }));
 }
 
-async function runMinuteCycleForTab(tab) {
-  const context = await sendTabMessage(tab.id, {
-    type: "GET_CONTEXT_SNAPSHOT",
+function toOrderOutcomePatches(orderData) {
+  const orders = [
+    ...(orderData?.rawOpenOrders || []),
+    ...(orderData?.rawClosedOrders || []),
+  ];
+
+  return orders
+    .filter((order) => order.uuid)
+    .map((order) => ({
+      upbitOrderUuid: order.uuid,
+      state: order.state,
+      executedVolume: decimalString(order.executed_volume),
+      executedFunds: decimalString(order.executed_funds),
+      paidFee: decimalString(order.paid_fee),
+      remainingVolume: decimalString(order.remaining_volume),
+      outcomeObservedAt: new Date().toISOString(),
+    }));
+}
+
+async function sendDtoDebugSnapshot(tabId, payload) {
+  await sendTabMessage(tabId, {
+    type: "DTO_DEBUG_SNAPSHOT",
+    payload: {
+      ...payload,
+      collectedAt: new Date().toISOString(),
+    },
   });
-
-  if (!context?.market) {
-    return;
-  }
-
-  try {
-    await sendTabMessage(tab.id, { type: "COLLECTION_STARTED" });
-    const marketData =
-      getDemoMarketData(context) || (await collectMarketData(context.market));
-    await callDetectionApi(tab.id, context, marketData, {
-      logSubmitAttempt: false,
-    });
-  } catch (error) {
-    await sendTabMessage(tab.id, {
-      type: "COLLECTION_ERROR",
-      payload: { message: error.message },
-    });
-  }
 }
 
 async function runMinuteCycle() {
-  const tabs = await chrome.tabs.query({
-    url: [
-      "https://upbit.com/exchange*",
-      "https://www.upbit.com/exchange*",
-      ...APP_TAB_URL_PATTERNS,
-    ],
-  });
-  await Promise.all(tabs.map(runMinuteCycleForTab));
+  await loadGuardrailRules();
 }
 
 async function ensureCollectionAlarm() {
@@ -1011,7 +1270,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "REGISTER_MARKET_CONTEXT") {
-    collectMarketData(message.payload.market)
+    loadGuardrailRules()
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -1026,6 +1285,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === "RUN_DETECTION_NOW") {
     const context = message.payload;
+    const pageUrl = context?.pageUrl || sender.tab?.url || "";
 
     if (
       !sender.tab?.id ||
@@ -1036,6 +1296,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({
         ok: false,
         error: "즉시 감지에 필요한 현재 주문 정보가 없습니다.",
+      });
+      return false;
+    }
+
+    if (!isUpbitExchangeUrl(pageUrl) || isDemoPageUrl(pageUrl)) {
+      sendResponse({
+        ok: false,
+        error: "실제 Upbit 거래 화면에서만 감지를 실행합니다.",
       });
       return false;
     }
@@ -1075,17 +1343,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "ORDER_ACTION_DETECTED") {
-    const collectOrder = message.payload.demoData
-      ? Promise.resolve({
-          market: message.payload.market,
-          recentOrders: message.payload.demoData.recentOrders || [],
-          clientAverageBuyAmount:
-            message.payload.demoData.clientAverageBuyAmount ?? null,
-          collected_at: new Date().toISOString(),
-          isDemo: true,
-          privateDataAvailable: true,
-        })
-      : collectOrderDataForDetection(message.payload.market);
+    const pageUrl = message.payload?.pageUrl || sender.tab?.url || "";
+
+    if (!isUpbitExchangeUrl(pageUrl) || isDemoPageUrl(pageUrl)) {
+      sendResponse({
+        ok: false,
+        error: "실제 Upbit 거래 화면에서만 주문 데이터를 수집합니다.",
+      });
+      return false;
+    }
+
+    const collectOrder = collectOrderDataForDetection(message.payload.market);
 
     collectOrder
       .then(async (orderData) => {

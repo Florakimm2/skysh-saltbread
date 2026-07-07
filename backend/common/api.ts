@@ -2,6 +2,7 @@
 
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
+import { AppError } from "./errors";
 
 export class ApiError extends Error {
   status: number;
@@ -56,6 +57,17 @@ export function errorResponse(error: unknown) {
         message: error.message,
       },
       { status: error.status }
+    );
+  }
+
+  if (error instanceof AppError) {
+    return NextResponse.json(
+      {
+        ok: false,
+        code: "APP_ERROR",
+        message: error.message,
+      },
+      { status: error.statusCode }
     );
   }
 

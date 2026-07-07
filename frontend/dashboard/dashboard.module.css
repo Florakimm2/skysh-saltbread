@@ -773,6 +773,442 @@
   line-height: 1.7;
 }
 
+.myPageGrid {
+  display: grid;
+  gap: 18px;
+}
+
+.profilePanel {
+  min-height: 260px;
+}
+
+.profileForm,
+.ruleMetaGrid,
+.warningEditor {
+  display: grid;
+  gap: 14px;
+  padding: 24px;
+}
+
+.profileForm {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  align-items: end;
+}
+
+.profileForm label,
+.ruleMetaGrid label,
+.warningEditor label,
+.ruleMiniField {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+  color: #7e7470;
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.profileForm input,
+.ruleMetaGrid input,
+.ruleMetaGrid select,
+.warningEditor input,
+.warningEditor textarea,
+.ruleMiniField input,
+.ruleMiniField select,
+.ruleJsonTools textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #e6ded9;
+  border-radius: 10px;
+  background: #fff;
+  color: #3c3330;
+  font: inherit;
+  font-size: 12px;
+}
+
+.profileForm input,
+.ruleMetaGrid input,
+.ruleMetaGrid select,
+.warningEditor input,
+.ruleMiniField input,
+.ruleMiniField select {
+  height: 42px;
+  padding: 0 12px;
+}
+
+.profileForm button,
+.ruleEditorActions button,
+.ruleJsonTools button,
+.ruleNodeActions button,
+.panelLinkButton,
+.fieldPicker header button,
+.ruleInlineControls button {
+  min-height: 36px;
+  border: 1px solid #eadbd4;
+  border-radius: 10px;
+  background: #fff7f2;
+  color: #bd4f2d;
+  font-size: 12px;
+  font-weight: 760;
+  cursor: pointer;
+}
+
+.profileForm button:hover,
+.ruleEditorActions button:hover,
+.ruleJsonTools button:hover,
+.ruleNodeActions button:hover,
+.panelLinkButton:hover,
+.fieldPicker header button:hover,
+.ruleInlineControls button:hover {
+  border-color: #ffb18f;
+  background: #fff0e8;
+  color: #e8490f;
+}
+
+.panelLinkButton {
+  padding: 0 12px;
+}
+
+.ruleWorkbench {
+  min-height: 720px;
+}
+
+.ruleLayout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  min-height: 650px;
+}
+
+.ruleList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px;
+  border-right: 1px solid #f1e8e5;
+  background: #fffaf8;
+}
+
+.ruleList p {
+  margin: 0;
+  color: #9c918d;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.ruleList button {
+  display: grid;
+  gap: 6px;
+  min-height: 74px;
+  padding: 13px;
+  border: 1px solid #eee2dc;
+  border-radius: 12px;
+  background: #fff;
+  color: #584946;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ruleList button:hover,
+.ruleListItemActive {
+  border-color: #ffc2a6 !important;
+  background: #fff3ed !important;
+}
+
+.ruleList strong {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.ruleList span {
+  color: #ac9c97;
+  font-size: 10px;
+  font-weight: 720;
+}
+
+.ruleEditor {
+  min-width: 0;
+  padding: 0 0 24px;
+}
+
+.ruleMetaGrid {
+  grid-template-columns: minmax(180px, 1.4fr) 92px 120px 150px;
+  border-bottom: 1px solid #f1e8e5;
+}
+
+.ruleMetaGrid label:nth-child(5) {
+  grid-column: span 3;
+}
+
+.ruleToggle {
+  align-content: end;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+}
+
+.ruleToggle input {
+  width: 18px;
+  height: 18px;
+}
+
+.warningEditor {
+  grid-template-columns: minmax(180px, 0.55fr) minmax(0, 1fr);
+  border-bottom: 1px solid #f1e8e5;
+}
+
+.warningEditor textarea {
+  min-height: 86px;
+  padding: 11px 12px;
+  resize: vertical;
+  line-height: 1.55;
+}
+
+.ruleGroup {
+  margin: 18px 24px 0;
+  padding: 14px;
+  border: 1px solid #eadfd9;
+  border-radius: 12px;
+  background: #fffdfb;
+}
+
+.ruleGroup .ruleGroup {
+  margin: 10px 0 0 16px;
+  background: #fff8f5;
+}
+
+.ruleGroupHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.segmentedControl {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid #eadfd9;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.segmentedControl button {
+  min-width: 52px;
+  min-height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #8c7e78;
+  font-size: 11px;
+  font-weight: 820;
+}
+
+.segmentedControl .isSelected {
+  background: #ff5d13;
+  color: #fff;
+}
+
+.ruleGroupChildren {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.ruleCondition {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.1fr) 104px 118px minmax(150px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid #eee4df;
+  border-radius: 11px;
+  background: #fff;
+}
+
+.ruleInlineControls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 54px;
+  gap: 6px;
+}
+
+.ruleNodeActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.ruleNodeActions button {
+  min-height: 34px;
+  padding: 0 10px;
+  background: #fff;
+}
+
+.ruleJsonTools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 18px 24px 0;
+}
+
+.ruleJsonTools textarea {
+  min-height: 130px;
+  padding: 12px;
+  color: #53423f;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  line-height: 1.55;
+}
+
+.ruleJsonTools div,
+.ruleEditorActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-content: flex-start;
+}
+
+.ruleJsonTools button,
+.ruleEditorActions button {
+  padding: 0 13px;
+}
+
+.ruleEditorActions {
+  justify-content: flex-end;
+  padding: 16px 24px 0;
+}
+
+.myPageMessage {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid #f0d8cb;
+  border-radius: 12px;
+  background: #fff8f3;
+  color: #a34826;
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.fieldPickerBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(33 27 24 / 36%);
+}
+
+.fieldPicker {
+  width: min(980px, 100%);
+  max-height: min(82vh, 820px);
+  overflow-y: auto;
+  border: 1px solid #eadfd9;
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgb(35 28 24 / 20%);
+}
+
+.fieldPicker header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 20px 24px;
+  border-bottom: 1px solid #f1e8e5;
+  background: #fff;
+}
+
+.fieldPicker header span {
+  color: var(--dashboard-accent);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.12em;
+}
+
+.fieldPicker header strong {
+  display: block;
+  margin-top: 4px;
+  color: #352a27;
+  font-size: 18px;
+}
+
+.fieldPickerGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 18px 24px;
+}
+
+.fieldPickerGrid button {
+  display: grid;
+  gap: 5px;
+  min-height: 126px;
+  padding: 14px;
+  border: 1px solid #eee2dc;
+  border-radius: 12px;
+  background: #fffaf7;
+  color: #4f403c;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fieldPickerGrid button:hover {
+  border-color: #ffb18f;
+  background: #fff1eb;
+}
+
+.fieldPickerGrid button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.fieldPickerGrid strong {
+  font-size: 13px;
+}
+
+.fieldPickerGrid span,
+.fieldPickerGrid small {
+  color: #a1938e;
+  font-size: 10px;
+  font-weight: 760;
+}
+
+.fieldPickerGrid p {
+  margin: 4px 0 0;
+  color: #736965;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.unsupportedFields {
+  padding: 0 24px 24px;
+}
+
+.unsupportedFields strong {
+  display: block;
+  margin-bottom: 9px;
+  color: #8f827d;
+  font-size: 12px;
+}
+
+.unsupportedFields div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.unsupportedFields span {
+  display: inline-flex;
+  min-height: 26px;
+  align-items: center;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: #f2efed;
+  color: #9a918c;
+  font-size: 10px;
+  font-weight: 720;
+}
+
 @media (max-width: 900px) {
   .dashboardShell {
     grid-template-columns: 1fr;
@@ -1000,5 +1436,34 @@
   .placeholderBody {
     min-height: 346px;
     padding: 28px;
+  }
+
+  .profileForm,
+  .ruleLayout,
+  .ruleMetaGrid,
+  .warningEditor,
+  .ruleJsonTools,
+  .ruleCondition,
+  .fieldPickerGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .ruleList {
+    border-right: 0;
+    border-bottom: 1px solid #f1e8e5;
+  }
+
+  .ruleGroup {
+    margin: 14px 14px 0;
+  }
+
+  .ruleEditorActions,
+  .ruleJsonTools {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .fieldPickerBackdrop {
+    padding: 10px;
   }
 }

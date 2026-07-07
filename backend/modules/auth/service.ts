@@ -5,8 +5,12 @@ import {
   firebaseRefresh,
   firebaseSignup,
 } from "@/backend/infrastructure/firebase/firebase-auth-rest";
-import { createUserProfile, findUserProfileById } from "./repository";
-import { LoginInput, SignupInput } from "./schema";
+import {
+  createUserProfile,
+  findUserProfileById,
+  updateUserProfileName,
+} from "./repository";
+import { LoginInput, ProfilePatchInput, SignupInput } from "./schema";
 import { ensureProfileAfterSignup } from "@/backend/modules/guardrail/service";
 
 export async function signup(input: SignupInput) {
@@ -85,4 +89,52 @@ export async function verifyAccessToken(accessToken: string) {
   } catch {
     throw new AppError("Access Token이 유효하지 않습니다.", 401);
   }
+}
+
+export async function getProfile(userId: string) {
+  const [authUser, profile] = await Promise.all([
+    adminAuth.getUser(userId),
+    findUserProfileById(userId),
+  ]);
+
+  return {
+    userId,
+    email: authUser.email ?? profile?.email ?? null,
+    displayName: profile?.name ?? authUser.displayName ?? null,
+  };
+}
+
+export async function patchProfile(userId: string, input: ProfilePatchInput) {
+  const authUser = await adminAuth.getUser(userId);
+  const displayName = input.displayName;
+
+  if (input.newPassword) {
+    const email = authUser.email;
+
+    if (!email) {
+      throw new AppError("비밀번호를 확인할 이메일 계정을 찾지 못했습니다.", 400);
+    }
+
+    await firebaseLogin(email, input.currentPassword ?? "");
+    await adminAuth.updateUser(userId, {
+      password: input.newPassword,
+    });
+  }
+
+  if (displayName) {
+    await adminAuth.updateUser(userId, {
+      displayName,
+    });
+    await ensureProfileAfterSignup({
+      userId,
+      email: authUser.email ?? null,
+      displayName,
+    });
+    await updateUserProfileName({
+      userId,
+      name: displayName,
+    });
+  }
+
+  return getProfile(userId);
 }

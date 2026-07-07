@@ -2,7 +2,9 @@
 
 import { NextRequest } from "next/server";
 import { getAuth } from "firebase-admin/auth";
+import { getCookieValue, REFRESH_TOKEN_COOKIE_NAME } from "./cookies";
 import { ApiError } from "./api";
+import { refresh } from "@/backend/modules/auth/service";
 
 /**
  * Authorization: Bearer <Firebase ID Token>
@@ -29,9 +31,24 @@ export async function getRequiredUserId(req: NextRequest): Promise<string> {
     if (devUserId) return devUserId;
   }
 
+  const refreshToken = getCookieValue(req, REFRESH_TOKEN_COOKIE_NAME);
+
+  if (refreshToken) {
+    try {
+      const session = await refresh(refreshToken);
+      return session.userId;
+    } catch {
+      throw new ApiError(
+        401,
+        "UNAUTHORIZED",
+        "로그인 세션이 만료되었습니다. 다시 로그인해 주세요."
+      );
+    }
+  }
+
   throw new ApiError(
     401,
     "UNAUTHORIZED",
-    "Authorization Bearer 토큰이 필요합니다."
+    "Authorization Bearer 토큰 또는 로그인 세션이 필요합니다."
   );
 }

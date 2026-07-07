@@ -63,14 +63,10 @@ let behaviorState = null;
 let behaviorTimerId = null;
 let panelFlame = null;
 let collapsedPanelFlame = null;
-let demoContext = null;
-let demoPageContext = null;
-let demoDetectionTimerId = null;
 let currentPageUrl = location.href;
 let pendingAttempt = null;
 let activeGuardrailSnapshotId = null;
 let activeDetectionResult = null;
-const observedDemoOrders = new Map();
 
 function isAppPage() {
   return APP_ORIGINS.has(location.origin);
@@ -124,21 +120,26 @@ function acknowledgePageEvent(event) {
   }
 }
 
-function activeDemoContext() {
-  if (!demoContext) {
-    return null;
-  }
-
-  if (Date.now() >= demoContext.expiresAt) {
-    demoContext = null;
-    return null;
-  }
-
-  return demoContext;
-}
-
 function normalizeFlameMode(mode) {
-  return ["default", "blue", "pink"].includes(mode) ? mode : "default";
+  const normalized = String(mode || "DEFAULT").trim().toUpperCase();
+  const aliases = {
+    DEFAULT: "DEFAULT",
+    AUTO: "DEFAULT",
+    BLUE: "SAD",
+    PINK: "SCARED",
+  };
+  const resolved = aliases[normalized] || normalized;
+
+  return [
+    "DEFAULT",
+    "CURIOUS",
+    "SURPRISED",
+    "FAST_BURN",
+    "SCARED",
+    "SAD",
+  ].includes(resolved)
+    ? resolved
+    : "DEFAULT";
 }
 
 function applyFlameTheme(mode) {
@@ -146,7 +147,7 @@ function applyFlameTheme(mode) {
   const panel = document.getElementById(PANEL_ID);
 
   if (panel) {
-    panel.dataset.flameMode = normalizedMode;
+    panel.dataset.flameMode = normalizedMode.toLowerCase();
   }
 
   panelFlame?.setMode(normalizedMode);
@@ -280,7 +281,10 @@ function createPanel(auth) {
     .addEventListener("click", openDashboard);
   panel
     .querySelector(".saltbread-action-button--proceed")
-    .addEventListener("click", () => setPanelCollapsed(panel, true));
+    .addEventListener("click", () => {
+      closeGuardrail("PROCEED");
+      setPanelCollapsed(panel, true);
+    });
 
   document.body.append(panel);
   panelFlame = new CuteIdleFlame(
@@ -383,13 +387,15 @@ function findOrderButton(target) {
     return null;
   }
 
+  const buttonText = normalizedText(button);
   const explicitSide = button.dataset.saltbreadOrderAction;
   const orderSide =
     ["BUY", "SELL"].includes(explicitSide) ? explicitSide : detectOrderActionSide(
-      normalizedText(button),
+      buttonText,
     );
+  const isConfirmAction = /^(매수확인|매도확인)$/.test(buttonText);
 
-  return orderSide && findOrderPanel(button)
+  return orderSide && (findOrderPanel(button) || isConfirmAction)
     ? button
     : null;
 }
@@ -533,10 +539,6 @@ function detectOrderType(panel) {
 }
 
 function detectOrderSide(panel, orderButton) {
-  if (!panel) {
-    return null;
-  }
-
   const explicitSide = orderButton?.dataset.saltbreadOrderAction;
   const buttonSide =
     ["BUY", "SELL"].includes(explicitSide)
@@ -545,6 +547,10 @@ function detectOrderSide(panel, orderButton) {
 
   if (buttonSide) {
     return buttonSide;
+  }
+
+  if (!panel) {
+    return null;
   }
 
   const selectedSideControl = [
@@ -588,11 +594,21 @@ function startNewOrderSession() {
 
   behaviorState.sessionId = createOrderSessionId();
   behaviorState.lastLoggedInputValues.clear();
+  behaviorState.inputValueHistoryByField = {
+    price: new Set(),
+    quantity: new Set(),
+    amount: new Set(),
+  };
   behaviorState.lastOrderType = null;
   behaviorState.draftStartedAt = null;
   behaviorState.lastEditAt = null;
   behaviorState.draftEditCount = 0;
   behaviorState.firstAmount = null;
+  behaviorState.firstPrice = null;
+  behaviorState.lastPriceValue = null;
+  behaviorState.lastPriceDirection = null;
+  behaviorState.inputRevertCount = 0;
+  behaviorState.priceDirectionChangeCount = 0;
   behaviorState.lastOrderbookClickAt = null;
   behaviorState.allocationPresetPercent = null;
 }
@@ -874,6 +890,51 @@ function handleAmountInput(event) {
   const inputKind = getOrderInputKind(input);
 
   if (inputKind) {
+    const value = readInputNumber(input);
+    const fieldTimestamps =
+      behaviorState.inputEditTimestampsByField[inputKind.field] || [];
+    fieldTimestamps.push(editedAt);
+    behaviorState.inputEditTimestampsByField[inputKind.field] = fieldTimestamps;
+
+    if (value !== null) {
+      const history = behaviorState.inputValueHistoryByField[inputKind.field];
+      const lastValue = behaviorState.lastInputValueByField[inputKind.field];
+
+      if (lastValue !== value && history?.has(value)) {
+        behaviorState.inputRevertCount += 1;
+      }
+
+      history?.add(value);
+      behaviorState.lastInputValueByField[inputKind.field] = value;
+
+      if (inputKind.field === "price") {
+        behaviorState.firstPrice ??= value;
+
+        if (behaviorState.lastPriceValue !== null) {
+          const direction =
+            value > behaviorState.lastPriceValue
+              ? "UP"
+              : value < behaviorState.lastPriceValue
+                ? "DOWN"
+                : null;
+
+          if (
+            direction &&
+            behaviorState.lastPriceDirection &&
+            behaviorState.lastPriceDirection !== direction
+          ) {
+            behaviorState.priceDirectionChangeCount += 1;
+          }
+
+          if (direction) {
+            behaviorState.lastPriceDirection = direction;
+          }
+        }
+
+        behaviorState.lastPriceValue = value;
+      }
+    }
+
     const previousPending = behaviorState.pendingInputEvents.get(input);
 
     if (previousPending) {
@@ -898,61 +959,11 @@ function handleDemoScenario(event) {
     return;
   }
 
-  const detail = event.detail;
-  const behavior = detail?.behaviorData;
-
-  if (
-    !detail?.currentOrder ||
-    !behavior ||
-    !Number.isFinite(detail.expiresAt)
-  ) {
-    return;
-  }
-
   acknowledgePageEvent(event);
-  const now = Date.now();
-  const market = detail.market || behaviorState.market;
-  behaviorState.market = market;
-  behaviorState.inputEditTimestamps = Array.from(
-    { length: Math.max(0, behavior.input_edit_count || 0) },
-    (_, index) => now - index * 1000,
+  setAnalysisStatus(
+    "데모 페이지에서는 확장 프로그램 수집을 실행하지 않습니다.",
+    "safe",
   );
-  behaviorState.buyClicksByMarket[market] = Array.from(
-    { length: Math.max(0, behavior.buy_click_count_1m || 0) },
-    (_, index) => now - index * 1000,
-  );
-  behaviorState.maxClickedSinceLastOrder = Boolean(
-    behavior.is_max_button_clicked,
-  );
-  behaviorState.clientAvgBuyAmount =
-    behavior.client_avg_buy_amount ?? null;
-  behaviorState.visibleDurationMs = Math.max(
-    0,
-    Number(behavior.page_stay_duration || 0) * 1000,
-  );
-  behaviorState.visibleSince = document.hidden ? null : now;
-  demoContext = {
-    type: detail.type || null,
-    title: detail.title || "데모 시나리오",
-    expiresAt: detail.expiresAt,
-    currentOrder: detail.currentOrder,
-    recentOrders: Array.isArray(detail.recentOrders)
-      ? detail.recentOrders
-      : [],
-    clientAverageBuyAmount:
-      detail.clientAverageBuyAmount ??
-      behavior.client_avg_buy_amount ??
-      null,
-    currentPrice: detail.currentPrice,
-    marketData: detail.marketData || null,
-  };
-  renderBehaviorMetrics();
-  setAnalysisStatus("데이터 수집 중...", "loading");
-  window.clearTimeout(demoDetectionTimerId);
-  demoDetectionTimerId = window.setTimeout(() => {
-    demoDetectionTimerId = null;
-    handleDetectNow();
-  }, 2000);
 }
 
 function handleDetectNow(event) {
@@ -963,6 +974,15 @@ function handleDetectNow(event) {
   if (event) {
     acknowledgePageEvent(event);
   }
+
+  if (isDemoPage()) {
+    setAnalysisStatus(
+      "데모 페이지에서는 확장 프로그램 수집을 실행하지 않습니다.",
+      "safe",
+    );
+    return;
+  }
+
   const snapshot = getContextSnapshot();
 
   if (!snapshot.market || !snapshot.currentOrder || !snapshot.behaviorData) {
@@ -996,12 +1016,19 @@ function handleDemoReset(event) {
 
   acknowledgePageEvent(event);
   const market = parseMarket(location.href) || behaviorState.market;
-  window.clearTimeout(demoDetectionTimerId);
-  demoDetectionTimerId = null;
-  demoContext = null;
   behaviorState.market = market;
   behaviorState.inputEditTimestamps = [];
+  behaviorState.inputEditTimestampsByField = {
+    price: [],
+    quantity: [],
+    amount: [],
+  };
   behaviorState.buyClicksByMarket = market ? { [market]: [] } : {};
+  behaviorState.orderIntentTimestamps = [];
+  behaviorState.sameSideIntentTimestamps = {
+    BUY: [],
+    SELL: [],
+  };
   behaviorState.maxClickedSinceLastOrder = false;
   behaviorState.clientAvgBuyAmount = null;
   behaviorState.lastOrder = null;
@@ -1018,12 +1045,6 @@ function handleDemoReset(event) {
   chrome.runtime.sendMessage({ type: "RESET_DEMO_STATE" }).catch(() => {});
 }
 
-function getDemoAccount(currency) {
-  return demoPageContext?.personal?.accounts?.find(
-    (account) => account.currency === currency,
-  );
-}
-
 function buildOrderContextSnapshot(orderButton, snapshotTrigger) {
   const panel = findOrderPanel(orderButton);
   const draft = readOrderDraft(orderButton);
@@ -1034,21 +1055,18 @@ function buildOrderContextSnapshot(orderButton, snapshotTrigger) {
   const orderMode = draft?.order_type || detectOrderType(panel) || "UNKNOWN";
   const amount = draft?.order_amount ?? null;
   const quantity = draft?.order_volume ?? null;
-  const symbol = String(market || "").split("-")[1];
-  const account =
-    side === "BUY" ? getDemoAccount("KRW") : getDemoAccount(symbol);
-  const available = toNumber(account?.balance);
-  const requested = side === "BUY" ? amount : quantity;
-  const marketContext = demoPageContext?.market || {};
-  const baseAccount = getDemoAccount(symbol);
-  const avgBuyPrice = toNumber(baseAccount?.avg_buy_price);
-  const tradePrice = toNumber(marketContext.tradePriceAtSnapshot);
-  const orders = demoPageContext?.personal?.orders || [];
-  const actualOrderCreatedCount10m = orders.filter(
-    (order) =>
-      order.created_at &&
-      now - Date.parse(order.created_at) <= 10 * 60_000,
-  ).length;
+  const recentFieldEdits = (field) =>
+    (behaviorState?.inputEditTimestampsByField?.[field] || []).filter(
+      (timestamp) => timestamp >= now - 3 * 60_000,
+    ).length;
+  const recentIntentCount =
+    (behaviorState?.orderIntentTimestamps || []).filter(
+      (timestamp) => timestamp >= now - 60_000,
+    ).length + 1;
+  const recentSameSideIntentCount =
+    (behaviorState?.sameSideIntentTimestamps?.[side] || []).filter(
+      (timestamp) => timestamp >= now - 60_000,
+    ).length + 1;
 
   if (behaviorState && behaviorState.firstAmount === null && amount !== null) {
     behaviorState.firstAmount = amount;
@@ -1067,10 +1085,7 @@ function buildOrderContextSnapshot(orderButton, snapshotTrigger) {
     intentPrice: decimalString(draft?.order_price),
     intentQuantity: decimalString(quantity),
     intentAmount: decimalString(amount),
-    requestedBalanceRatio:
-      available && requested !== null
-        ? Math.max(0, Math.min(1, requested / available))
-        : null,
+    requestedBalanceRatio: null,
     draftDurationMs: behaviorState?.draftStartedAt
       ? now - behaviorState.draftStartedAt
       : null,
@@ -1088,33 +1103,25 @@ function buildOrderContextSnapshot(orderButton, snapshotTrigger) {
     orderbookClickToSnapshotMs: behaviorState?.lastOrderbookClickAt
       ? now - behaviorState.lastOrderbookClickAt
       : null,
-    orderIntentCount1m:
-      (behaviorState?.buyClicksByMarket?.[market] || []).filter(
-        (timestamp) => timestamp >= now - 60_000,
-      ).length + 1,
-    actualOrderCreatedCount10m,
-    sameSideIntentCount1m:
-      side === "BUY"
-        ? (behaviorState?.buyClicksByMarket?.[market] || []).filter(
-            (timestamp) => timestamp >= now - 60_000,
-          ).length + 1
-        : 1,
+    orderIntentCount1m: recentIntentCount,
+    actualOrderCreatedCount10m: null,
+    sameSideIntentCount1m: recentSameSideIntentCount,
     marketChangeCount5m: (behaviorState?.marketChangeTimestamps || []).filter(
       (timestamp) => timestamp >= now - 5 * 60_000,
     ).length,
     sideChangeCount3m: (behaviorState?.sideChangeTimestamps || []).filter(
       (timestamp) => timestamp >= now - 3 * 60_000,
     ).length,
-    priceEditCount3m: behaviorState?.inputEditTimestamps?.filter(
-      (timestamp) => timestamp >= now - 3 * 60_000,
-    ).length || 0,
-    quantityEditCount3m: 0,
-    amountEditCount3m: behaviorState?.inputEditTimestamps?.filter(
-      (timestamp) => timestamp >= now - 3 * 60_000,
-    ).length || 0,
-    inputRevertCount: 0,
-    priceDirectionChangeCount: 0,
-    priceChangeRate: null,
+    priceEditCount3m: recentFieldEdits("price"),
+    quantityEditCount3m: recentFieldEdits("quantity"),
+    amountEditCount3m: recentFieldEdits("amount"),
+    inputRevertCount: behaviorState?.inputRevertCount ?? 0,
+    priceDirectionChangeCount:
+      behaviorState?.priceDirectionChangeCount ?? 0,
+    priceChangeRate:
+      behaviorState?.firstPrice && price !== null
+        ? (price - behaviorState.firstPrice) / behaviorState.firstPrice
+        : null,
     orderModeChangeCount3m: (
       behaviorState?.orderModeChangeTimestamps || []
     ).filter((timestamp) => timestamp >= now - 3 * 60_000).length,
@@ -1124,21 +1131,15 @@ function buildOrderContextSnapshot(orderButton, snapshotTrigger) {
     matchedRuleIdsAtSnapshot: [],
     primaryShownRuleId: null,
     shownRuleIds: [],
-    tradePriceAtSnapshot:
-      decimalString(marketContext.tradePriceAtSnapshot) ||
-      decimalString(marketContext.ticker?.trade_price),
-    shortTermReturn5m: marketContext.shortTermReturn5m ?? null,
-    signedChangeRate: marketContext.signedChangeRate ?? null,
-    spreadRate: marketContext.spreadRate ?? null,
-    marketRiskFlags: marketContext.marketRiskFlags || [],
-    pricePositionIn5mRange: marketContext.pricePositionIn5mRange ?? null,
-    volumeSpikeRatio5m: marketContext.volumeSpikeRatio5m ?? null,
-    baseAssetAvgBuyPriceBeforeSnapshot:
-      avgBuyPrice && avgBuyPrice > 0 ? String(avgBuyPrice) : null,
-    priceVsAvgBuyRateAtSnapshot:
-      avgBuyPrice && tradePrice
-        ? (tradePrice - avgBuyPrice) / avgBuyPrice
-        : null,
+    tradePriceAtSnapshot: null,
+    shortTermReturn5m: null,
+    signedChangeRate: null,
+    spreadRate: null,
+    marketRiskFlags: [],
+    pricePositionIn5mRange: null,
+    volumeSpikeRatio5m: null,
+    baseAssetAvgBuyPriceBeforeSnapshot: null,
+    priceVsAvgBuyRateAtSnapshot: null,
   };
 }
 
@@ -1161,7 +1162,6 @@ function emitOrderContextSnapshot(snapshot, detection = null) {
 }
 
 function beginOrderAttempt(orderButton) {
-  if (!isDemoPage()) return;
   if (pendingAttempt && !pendingAttempt.snapshotEmitted) {
     emitOrderContextSnapshot(pendingAttempt.snapshot, activeDetectionResult);
     pendingAttempt.snapshotEmitted = true;
@@ -1267,59 +1267,13 @@ function showTradeFeedback() {
 }
 
 function handleDemoContext(event) {
-  if (!isDemoPage() || !event.detail) return;
-  demoPageContext = event.detail;
-  emitExtensionDebug("market", "MARKET_SNAPSHOT", event.detail.market);
-  emitExtensionDebug("personal", "ACCOUNT_SNAPSHOT", event.detail.personal);
-}
-
-function emitOrderOutcome(order) {
-  emitExtensionDebug("personal", "OrderOutcomePatchDTO", {
-    upbitOrderUuid: order.uuid,
-    state: order.state,
-    executedVolume: decimalString(order.executed_volume),
-    executedFunds: decimalString(order.executed_funds),
-    paidFee: decimalString(order.paid_fee),
-    remainingVolume: decimalString(order.remaining_volume),
-    outcomeObservedAt: new Date().toISOString(),
-  });
+  if (!isDemoPage()) return;
+  acknowledgePageEvent(event);
 }
 
 function handleDemoOrderEvent(event) {
-  const order = event.detail?.order;
-  if (!isDemoPage() || !order?.uuid) return;
-
-  if (!observedDemoOrders.has(order.uuid)) {
-    const confirmed = {
-      tradeLogId: createUuid(),
-      attemptId: pendingAttempt?.attemptId || null,
-      upbitOrderUuid: order.uuid,
-      orderCreatedAt: order.created_at,
-      market: order.market,
-      side: order.side === "ask" ? "SELL" : "BUY",
-      ordType:
-        order.ord_type === "limit"
-          ? "LIMIT"
-          : order.ord_type === "price"
-            ? "MARKET_BUY"
-            : "MARKET_SELL",
-      limitPrice:
-        order.ord_type === "limit" ? decimalString(order.price) : null,
-      requestedFunds:
-        order.ord_type === "price" ? decimalString(order.price) : null,
-      requestedVolume: decimalString(order.volume),
-      timeInForce: null,
-    };
-    observedDemoOrders.set(order.uuid, confirmed);
-    emitExtensionDebug(
-      "personal",
-      "ConfirmedTradeLogDTO",
-      confirmed,
-      order.created_at,
-    );
-  }
-
-  emitOrderOutcome(order);
+  if (!isDemoPage()) return;
+  acknowledgePageEvent(event);
 }
 
 function handleDocumentClick(event) {
@@ -1331,7 +1285,13 @@ function handleDocumentClick(event) {
     ? event.target.closest("[data-saltbread-order-confirm]")
     : null;
   if (confirmButton) {
-    showTradeFeedback();
+    if (!isDemoPage()) {
+      showTradeFeedback();
+    }
+    return;
+  }
+
+  if (isDemoPage()) {
     return;
   }
 
@@ -1382,6 +1342,11 @@ function handleDocumentClick(event) {
   const orderSide =
     orderButton.dataset.saltbreadOrderAction ||
     detectOrderActionSide(normalizedText(orderButton));
+  if (["BUY", "SELL"].includes(orderSide)) {
+    const clickedAt = Date.now();
+    behaviorState.orderIntentTimestamps.push(clickedAt);
+    behaviorState.sameSideIntentTimestamps[orderSide].push(clickedAt);
+  }
   const clickEvent = createBehaviorEvent(
     orderSide === "SELL" ? "SELL_CLICK" : "BUY_CLICK",
     orderPanel,
@@ -1394,13 +1359,7 @@ function handleDocumentClick(event) {
   }
 
   const submittedSessionId = behaviorState.sessionId;
-  const demo = activeDemoContext();
-  const orderDraft = demo?.currentOrder
-    ? {
-        ...demo.currentOrder,
-        order_request_time: new Date().toISOString(),
-      }
-    : readOrderDraft(orderButton);
+  const orderDraft = readOrderDraft(orderButton);
 
   if (!orderDraft) {
     const orderType = detectOrderType(orderPanel);
@@ -1450,16 +1409,8 @@ function handleDocumentClick(event) {
         pageUrl: location.href,
         currentOrder: orderDraft,
         behaviorData,
-        demoData: demo
-          ? {
-              recentOrders: demo.recentOrders,
-              clientAverageBuyAmount: demo.clientAverageBuyAmount,
-              currentPrice: demo.currentPrice,
-              marketData: demo.marketData,
-              type: demo.type,
-              expiresAt: demo.expiresAt,
-            }
-          : null,
+        orderContextSnapshot: pendingAttempt?.snapshot || null,
+        demoData: null,
       },
     })
     .then((response) => {
@@ -1631,7 +1582,7 @@ function renderBehaviorMetrics() {
   setMetric("dwell-time", formatDuration(behavior.page_stay_duration));
 }
 
-function setAnalysisStatus(message, state = "loading", type = null) {
+function setAnalysisStatus(message, state = "loading", type = null, title = null) {
   const status = document.querySelector(".saltbread-analysis-status");
   const badgeElement = status?.querySelector("[data-status-badge]");
   const titleElement = status?.querySelector("[data-status-title]");
@@ -1650,7 +1601,7 @@ function setAnalysisStatus(message, state = "loading", type = null) {
   if (state === "detected") {
     badgeElement.textContent = "주의";
     titleElement.textContent =
-      DETECTION_TITLES[type] || type || "감정 매매 패턴 감지";
+      title || DETECTION_TITLES[type] || type || "감정 매매 패턴 감지";
     messageElement.textContent = message;
     return;
   }
@@ -1675,8 +1626,6 @@ function setAnalysisStatus(message, state = "loading", type = null) {
 }
 
 function getContextSnapshot() {
-  const demo = activeDemoContext();
-  const pageDemo = isDemoPage() ? demoPageContext : null;
   const currentBehavior = behaviorState ? getBehaviorData() : null;
   const hasRecentOrder =
     behaviorState?.lastOrderAt &&
@@ -1698,57 +1647,10 @@ function getContextSnapshot() {
     pageUrl: location.href,
     behaviorData,
     currentOrder:
-      demo?.currentOrder ||
       behaviorState?.lastOrder ||
       readOrderDraft(),
-    demoData: demo
-      ? {
-          recentOrders: demo.recentOrders,
-          clientAverageBuyAmount: demo.clientAverageBuyAmount,
-          currentPrice: demo.currentPrice,
-          marketData: demo.marketData,
-          type: demo.type,
-          expiresAt: demo.expiresAt,
-        }
-      : pageDemo
-        ? {
-            recentOrders: (pageDemo.personal?.orders || []).map((order) => ({
-              market: order.market,
-              order_side: order.side === "ask" ? "SELL" : "BUY",
-              order_status:
-                order.state === "done"
-                  ? "DONE"
-                  : order.state === "cancel"
-                    ? "CANCEL"
-                    : "WAIT",
-              order_type: order.ord_type === "limit" ? "LIMIT" : "MARKET",
-              order_price:
-                order.ord_type === "limit" ? toNumber(order.price) : null,
-              order_volume:
-                toNumber(order.volume) || toNumber(order.executed_volume),
-              order_amount:
-                toNumber(order.executed_funds) || toNumber(order.price),
-              realized_loss_pct_1h: null,
-              order_request_time: order.created_at,
-              order_cancel_time: null,
-            })),
-            clientAverageBuyAmount: null,
-            currentPrice:
-              toNumber(pageDemo.market?.tradePriceAtSnapshot) ||
-              toNumber(pageDemo.market?.ticker?.trade_price),
-            marketData: {
-              price_change_rate_15m:
-                Number(pageDemo.market?.shortTermReturn5m || 0) * 100,
-              volume_change_rate_1m:
-                (Number(pageDemo.market?.volumeSpikeRatio5m || 1) - 1) * 100,
-              is_top3_volatility: false,
-              has_warning_badge:
-                (pageDemo.market?.marketRiskFlags || []).length > 0,
-            },
-            type: "SESSION_SIMULATION",
-            expiresAt: Number.POSITIVE_INFINITY,
-          }
-        : null,
+    orderContextSnapshot: pendingAttempt?.snapshot || null,
+    demoData: null,
   };
 }
 
@@ -1774,10 +1676,26 @@ function startBehaviorTracking() {
     market: parseMarket(location.href),
     sessionId: createOrderSessionId(),
     inputEditTimestamps: [],
+    inputEditTimestampsByField: {
+      price: [],
+      quantity: [],
+      amount: [],
+    },
+    inputValueHistoryByField: {
+      price: new Set(),
+      quantity: new Set(),
+      amount: new Set(),
+    },
+    lastInputValueByField: {},
     pendingInputEvents: new Map(),
     lastLoggedInputValues: new Map(),
     lastOrderType: null,
     buyClicksByMarket: {},
+    orderIntentTimestamps: [],
+    sameSideIntentTimestamps: {
+      BUY: [],
+      SELL: [],
+    },
     maxClickedSinceLastOrder: false,
     clientAvgBuyAmount: null,
     lastOrder: null,
@@ -1790,6 +1708,11 @@ function startBehaviorTracking() {
     lastEditAt: null,
     draftEditCount: 0,
     firstAmount: null,
+    firstPrice: null,
+    lastPriceValue: null,
+    lastPriceDirection: null,
+    inputRevertCount: 0,
+    priceDirectionChangeCount: 0,
     lastOrderbookClickAt: null,
     marketChangeTimestamps: [],
     sideChangeTimestamps: [],
@@ -1812,9 +1735,8 @@ function startBehaviorTracking() {
     renderBehaviorMetrics();
   }, 1000);
   renderBehaviorMetrics();
-  registerCurrentContext();
-  if (isDemoPage()) {
-    document.dispatchEvent(new CustomEvent("saltbread:demo-context-request"));
+  if (!isDemoPage()) {
+    registerCurrentContext();
   }
 }
 
@@ -1835,16 +1757,11 @@ function stopBehaviorTracking() {
     window.clearTimeout(pending.timerId);
   }
   window.clearInterval(behaviorTimerId);
-  window.clearTimeout(demoDetectionTimerId);
   behaviorTimerId = null;
-  demoDetectionTimerId = null;
   behaviorState = null;
-  demoContext = null;
-  demoPageContext = null;
   pendingAttempt = null;
   activeDetectionResult = null;
   activeGuardrailSnapshotId = null;
-  observedDemoOrders.clear();
 }
 
 function syncPanel(auth) {
@@ -1883,12 +1800,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "DETECTION_RESULT") {
     const result = message.payload;
-    applyFlameTheme(result?.flameMode);
+    applyFlameTheme(result?.visualMode || result?.flameMode);
     activeDetectionResult = result?.detected ? result : null;
 
     if (result?.detected) {
       let snapshot;
-      if (pendingAttempt && !pendingAttempt.snapshotEmitted) {
+      if (result.orderContextSnapshot) {
+        snapshot = emitOrderContextSnapshot(result.orderContextSnapshot, result);
+        if (pendingAttempt) {
+          pendingAttempt.snapshotEmitted = true;
+        }
+      } else if (pendingAttempt && !pendingAttempt.snapshotEmitted) {
         snapshot = emitOrderContextSnapshot(pendingAttempt.snapshot, result);
         pendingAttempt.snapshotEmitted = true;
       } else if (pendingAttempt?.snapshot) {
@@ -1902,10 +1824,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (isDemoPage() && snapshot) {
         showGuardrail(result, snapshot.snapshotId);
       }
+      if (snapshot?.snapshotId) {
+        activeGuardrailSnapshotId = snapshot.snapshotId;
+      }
+      const panel = document.getElementById(PANEL_ID);
+      if (panel) {
+        setPanelCollapsed(panel, false);
+      }
       setAnalysisStatus(
         result.message || `${result.type} 감정 매매 타입을 감지했어요.`,
         "detected",
         result.type,
+        result.warningTitle || result.primaryRule?.warningTitle || null,
       );
     } else {
       activeGuardrailSnapshotId = null;
@@ -1932,6 +1862,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       message.payload?.kind || "COLLECTED_DATA",
       message.payload?.data,
       message.payload?.occurredAt,
+    );
+  }
+
+  if (message?.type === "DTO_DEBUG_SNAPSHOT") {
+    console.log("[Saltbread DTO Debug]", message.payload);
+    emitExtensionDebug(
+      "behavior",
+      "DTO_DEBUG_SNAPSHOT",
+      message.payload,
+      message.payload?.collectedAt,
     );
   }
 

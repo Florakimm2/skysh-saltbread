@@ -289,21 +289,34 @@ button {
   font-weight: 400;
 }
 
-.summary-settings {
+.summary-refresh {
   position: absolute;
   top: 0;
   right: 0;
-  display: grid;
-  width: 48px;
+  display: inline-flex;
+  width: 58px;
   height: 46px;
-  place-items: center;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
   border-left: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
   color: #98a0aa;
+  font-size: 10px;
+  font-weight: 800;
 }
 
-.summary-settings svg {
-  width: 21px;
+.summary-refresh:hover {
+  color: var(--upbit-blue);
+}
+
+.summary-refresh:disabled {
+  opacity: 0.48;
+  cursor: wait;
+}
+
+.summary-refresh svg {
+  width: 18px;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.4;

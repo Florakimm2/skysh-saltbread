@@ -194,6 +194,8 @@ export default function OnboardingPage({ userId }: { userId: string }) {
   const [progress, setProgress] =
     useState<OnboardingProgress>(DEFAULT_PROGRESS);
   const [isReady, setIsReady] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState("");
   const [openConsentId, setOpenConsentId] = useState<ConsentId | null>(null);
   const [openRuleId, setOpenRuleId] = useState<PatternId | null>(null);
 
@@ -284,20 +286,80 @@ export default function OnboardingPage({ userId }: { userId: string }) {
     }));
   }
 
-  function saveRules() {
+  async function saveRules() {
     const savedRules = buildSavedRules(
       userId,
       progress.selectedPatternIds,
       progress.enabledRules,
     );
+    const initialRules = savedRules.map(
+      ({
+        name,
+        description,
+        isEnabled,
+        priority,
+        riskLevel,
+        visualMode,
+        expression,
+        warningTitle,
+        warningMessage,
+      }) => ({
+        name,
+        description,
+        isEnabled,
+        priority,
+        riskLevel,
+        visualMode,
+        expression,
+        warningTitle,
+        warningMessage,
+      }),
+    );
 
-    setProgress((current) => ({
-      ...current,
-      step: "complete",
-      savedRules,
-      completedAt: new Date().toISOString(),
-    }));
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    setIsSaving(true);
+    setSaveMessage("");
+
+    try {
+      const response = await fetch("/api/me/onboarding/complete", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          personalDataConsentVersion: "v1",
+          initialRules,
+        }),
+      });
+      const result = (await response.json().catch(() => null)) as {
+        ok?: boolean;
+        message?: string;
+        data?: { rules?: SavedDemoRule[] };
+      } | null;
+
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.message || "규칙을 저장하지 못했습니다.");
+      }
+
+      setProgress((current) => ({
+        ...current,
+        step: "complete",
+        savedRules: result.data?.rules?.length
+          ? result.data.rules
+          : savedRules,
+        completedAt: new Date().toISOString(),
+      }));
+      window.localStorage.removeItem(onboardingStorageKey(userId));
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (error) {
+      setSaveMessage(
+        error instanceof Error
+          ? error.message
+          : "규칙 저장 중 알 수 없는 오류가 발생했습니다.",
+      );
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   if (!isReady) {
@@ -693,9 +755,15 @@ export default function OnboardingPage({ userId }: { userId: string }) {
 
               <p className={styles.ruleNote}>
                 <UiIcon name="info" />
-                이번 저장은 브라우저에만 남는 데모 설정이며 실제 규칙 DB 저장은
-                이후 작업에서 연결해요.
+                저장하면 내 계정의 실제 가드레일 규칙으로 등록되고, 확장
+                프로그램이 이 규칙을 불러와 주문 화면에서 판정합니다.
               </p>
+              {saveMessage ? (
+                <p className={styles.ruleNote} role="status">
+                  <UiIcon name="info" />
+                  {saveMessage}
+                </p>
+              ) : null}
             </section>
 
             <aside className={styles.ruleAside}>
@@ -726,8 +794,9 @@ export default function OnboardingPage({ userId }: { userId: string }) {
               className={styles.primaryButton}
               type="button"
               onClick={saveRules}
+              disabled={isSaving}
             >
-              규칙 저장하기
+              {isSaving ? "규칙 저장 중..." : "규칙 저장하기"}
               <ArrowIcon />
             </button>
           </div>

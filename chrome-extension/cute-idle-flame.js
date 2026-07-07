@@ -5,8 +5,8 @@
  *   <div id="my-flame"></div>
  *   <script src="./cute-idle-flame.js"></script>
  *   <script>
- *     const flame = new CuteIdleFlame("#my-flame", { mode: "default" });
- *     flame.setMode("blue"); // "default" | "blue" | "pink"
+ *     const flame = new CuteIdleFlame("#my-flame", { mode: "DEFAULT" });
+ *     flame.setMode("SCARED");
  *   </script>
  *
  * 또는 data 속성으로 자동 실행:
@@ -26,7 +26,43 @@
       fierce: 0,
       energy: 1,
     },
-    blue: {
+    curious: {
+      outer: [255, 112, 56],
+      inner: [255, 207, 69],
+      face: [90, 56, 42],
+      cheek: [255, 147, 84],
+      sad: 0,
+      fierce: 0,
+      energy: 1.08,
+    },
+    surprised: {
+      outer: [255, 107, 53],
+      inner: [255, 230, 90],
+      face: [83, 51, 48],
+      cheek: [255, 143, 76],
+      sad: 0,
+      fierce: 0.25,
+      energy: 1.35,
+    },
+    fast_burn: {
+      outer: [255, 68, 73],
+      inner: [255, 198, 45],
+      face: [104, 32, 38],
+      cheek: [255, 88, 85],
+      sad: 0,
+      fierce: 0.72,
+      energy: 1.8,
+    },
+    scared: {
+      outer: [255, 55, 143],
+      inner: [255, 105, 184],
+      face: [101, 20, 64],
+      cheek: [225, 45, 128],
+      sad: 0.22,
+      fierce: 1,
+      energy: 1.5,
+    },
+    sad: {
       outer: [48, 117, 255],
       inner: [44, 195, 255],
       face: [23, 59, 105],
@@ -35,15 +71,18 @@
       fierce: 0,
       energy: 0.88,
     },
-    pink: {
-      outer: [255, 55, 143],
-      inner: [255, 105, 184],
-      face: [101, 20, 64],
-      cheek: [225, 45, 128],
-      sad: 0,
-      fierce: 1,
-      energy: 1.5,
-    },
+  };
+  const MODE_ALIASES = {
+    DEFAULT: "default",
+    AUTO: "default",
+    CURIOUS: "curious",
+    SURPRISED: "surprised",
+    FAST_BURN: "fast_burn",
+    FASTBURN: "fast_burn",
+    SCARED: "scared",
+    SAD: "sad",
+    blue: "sad",
+    pink: "scared",
   };
   const OUTER_BARS = [
     { x: -84, height: 105, width: 48, phase: 0.2, amount: 17 },
@@ -108,6 +147,24 @@
     };
   }
 
+  function resolveMode(mode) {
+    const raw = String(mode || "default");
+    const direct = raw.toLowerCase();
+
+    if (MODE_STYLES[direct]) {
+      return direct;
+    }
+
+    return MODE_ALIASES[raw] || MODE_ALIASES[raw.toUpperCase()] || "default";
+  }
+
+  function transitionKind(mode) {
+    if (mode === "sad") return "surprise";
+    if (mode === "surprised") return "surprise";
+    if (mode === "scared" || mode === "fast_burn") return "strain";
+    return "pulse";
+  }
+
   function colorString(color, alpha = 1) {
     const [red, green, blue] = color.map(Math.round);
     return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
@@ -123,7 +180,7 @@
       installStyle();
 
       this.host = host;
-      this.mode = MODE_STYLES[options.mode] ? options.mode : "default";
+      this.mode = resolveMode(options.mode);
       this.visual = copyMode(this.mode);
       this.targetVisual = copyMode(this.mode);
       this.canvas = document.createElement("canvas");
@@ -206,7 +263,7 @@
       const numberKeys = ["sad", "fierce", "energy"];
       let effectiveTarget = this.targetVisual;
 
-      if (this.transition?.mode === "blue") {
+      if (transitionKind(this.transition?.mode) === "surprise") {
         const progress = Math.min(
           this.transition.elapsed / this.transition.duration,
           1,
@@ -244,12 +301,12 @@
         1,
       );
 
-      if (this.transition.mode === "blue") {
+      if (transitionKind(this.transition.mode) === "surprise") {
         this.surprise = this.keyframePulse(progress, 0.28, 0.66);
         this.strain = 0;
         this.transitionPulse = this.surprise * 0.72;
         this.transitionStretch = this.surprise * 0.07;
-      } else if (this.transition.mode === "pink") {
+      } else if (transitionKind(this.transition.mode) === "strain") {
         const strain = this.keyframePulse(progress, 0.3, 0.62);
         const burstProgress = Math.max(0, (progress - 0.46) / 0.54);
         const burst = this.keyframePulse(burstProgress, 0.4, 1);
@@ -275,22 +332,29 @@
     }
 
     setMode(mode) {
-      if (!MODE_STYLES[mode]) {
+      const resolvedMode = resolveMode(mode);
+
+      if (!MODE_STYLES[resolvedMode]) {
         throw new Error(
-          `알 수 없는 불꽃 모드입니다: ${mode}. default, blue, pink 중 하나를 사용하세요.`,
+          `알 수 없는 불꽃 모드입니다: ${mode}. DEFAULT, CURIOUS, SURPRISED, FAST_BURN, SCARED, SAD 중 하나를 사용하세요.`,
         );
       }
 
-      if (this.mode === mode && !this.transition) return this;
+      if (this.mode === resolvedMode && !this.transition) return this;
 
-      this.mode = mode;
-      this.targetVisual = copyMode(mode);
+      this.mode = resolvedMode;
+      this.targetVisual = copyMode(resolvedMode);
       this.transition = {
-        mode,
+        mode: resolvedMode,
         elapsed: 0,
-        duration: mode === "pink" ? 1.25 : mode === "blue" ? 1.3 : 0.85,
+        duration:
+          transitionKind(resolvedMode) === "strain"
+            ? 1.25
+            : transitionKind(resolvedMode) === "surprise"
+              ? 1.3
+              : 0.85,
       };
-      this.host.dataset.flameMode = mode;
+      this.host.dataset.flameMode = resolvedMode;
       return this;
     }
 

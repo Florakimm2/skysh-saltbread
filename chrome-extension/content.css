@@ -34,6 +34,7 @@
   transition: transform 240ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+#saltbread-extension-panel[data-flame-mode="sad"],
 #saltbread-extension-panel[data-flame-mode="blue"] {
   --flame-primary: #3478f6;
   --flame-deep: #1e5ed4;
@@ -44,6 +45,37 @@
   --flame-shadow: rgba(52, 120, 246, 0.2);
 }
 
+#saltbread-extension-panel[data-flame-mode="curious"] {
+  --flame-primary: #ff6d28;
+  --flame-deep: #df4c11;
+  --flame-soft: #fff5ec;
+  --flame-soft-strong: #ffe5cf;
+  --flame-border: #f2c29f;
+  --flame-focus: rgba(255, 109, 40, 0.24);
+  --flame-shadow: rgba(222, 78, 18, 0.19);
+}
+
+#saltbread-extension-panel[data-flame-mode="surprised"] {
+  --flame-primary: #ff8a1f;
+  --flame-deep: #d86211;
+  --flame-soft: #fff6df;
+  --flame-soft-strong: #ffe8a8;
+  --flame-border: #ecc36c;
+  --flame-focus: rgba(255, 138, 31, 0.25);
+  --flame-shadow: rgba(216, 98, 17, 0.2);
+}
+
+#saltbread-extension-panel[data-flame-mode="fast_burn"] {
+  --flame-primary: #f04444;
+  --flame-deep: #c92c2c;
+  --flame-soft: #fff0ef;
+  --flame-soft-strong: #ffd7d3;
+  --flame-border: #efaaa4;
+  --flame-focus: rgba(240, 68, 68, 0.24);
+  --flame-shadow: rgba(201, 44, 44, 0.2);
+}
+
+#saltbread-extension-panel[data-flame-mode="scared"],
 #saltbread-extension-panel[data-flame-mode="pink"] {
   --flame-primary: #f23f91;
   --flame-deep: #cf2673;

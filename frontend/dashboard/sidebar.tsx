@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import FlameMascot from "@/frontend/auth/flame-mascot";
-import { SparklesIcon, TrendIcon } from "./icons";
+import { SparklesIcon, TrendIcon, UserIcon } from "./icons";
 import LogoutButton from "./logout-button";
 import styles from "./dashboard.module.css";
 
@@ -17,6 +17,11 @@ const navigation = [
     href: "/dashboard/ai-insights",
     label: "AI 인사이트",
     icon: SparklesIcon,
+  },
+  {
+    href: "/dashboard/my-page",
+    label: "마이페이지",
+    icon: UserIcon,
   },
 ];
 
@@ -38,7 +43,7 @@ export default function Sidebar() {
       <p className={styles.navLabel}>ANALYTICS</p>
       <nav className={styles.nav} aria-label="대시보드 메뉴">
         {navigation.map(({ href, label, icon: Icon }) => {
-          const isActive = pathname === href;
+          const isActive = pathname === href || pathname.startsWith(`${href}/`);
 
           return (
             <Link
