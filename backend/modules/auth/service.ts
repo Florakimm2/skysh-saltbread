@@ -7,6 +7,7 @@ import {
 } from "@/backend/infrastructure/firebase/firebase-auth-rest";
 import { createUserProfile, findUserProfileById } from "./repository";
 import { LoginInput, SignupInput } from "./schema";
+import { ensureProfileAfterSignup } from "@/backend/modules/guardrail/service";
 
 export async function signup(input: SignupInput) {
   const authResult = await firebaseSignup(input.email, input.password);
@@ -19,6 +20,12 @@ export async function signup(input: SignupInput) {
     name: input.name,
     createdAt: now,
     updatedAt: now,
+  });
+
+  await ensureProfileAfterSignup({
+    userId: authResult.localId,
+    email: authResult.email,
+    displayName: input.name ?? null,
   });
 
   return {
