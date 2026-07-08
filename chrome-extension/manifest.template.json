@@ -9,7 +9,7 @@
     "48": "icon-48.png",
     "128": "icon-128.png"
   },
-  "permissions": ["alarms", "cookies", "storage", "tabs"],
+  "permissions": ["cookies", "storage", "tabs"],
   "host_permissions": [
     "__APP_MATCH_PATTERN__",
     "http://localhost/*",
@@ -43,7 +43,7 @@
         "http://127.0.0.1/*",
         "__APP_MATCH_PATTERN__"
       ],
-      "js": ["config.js", "cute-idle-flame.js", "data-core.js", "content.js"],
+      "js": ["config.js", "flame-animation.js", "data-core.js", "content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
     }

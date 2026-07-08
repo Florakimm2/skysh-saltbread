@@ -11,7 +11,10 @@ import {
   updateUserProfileName,
 } from "./repository";
 import { LoginInput, ProfilePatchInput, SignupInput } from "./schema";
-import { ensureProfileAfterSignup } from "@/backend/modules/guardrail/service";
+import {
+  ensureProfileAfterSignup,
+  getUserOnboardingStatus,
+} from "@/backend/modules/guardrail/service";
 
 export async function signup(input: SignupInput) {
   const authResult = await firebaseSignup(input.email, input.password);
@@ -41,7 +44,10 @@ export async function signup(input: SignupInput) {
 export async function login(input: LoginInput) {
   const authResult = await firebaseLogin(input.email, input.password);
 
-  const profile = await findUserProfileById(authResult.localId);
+  const [profile, onboardingStatus] = await Promise.all([
+    findUserProfileById(authResult.localId),
+    getUserOnboardingStatus(authResult.localId),
+  ]);
 
   return {
     message: "로그인에 성공했습니다.",
@@ -52,6 +58,7 @@ export async function login(input: LoginInput) {
       id: authResult.localId,
       email: authResult.email,
       name: profile?.name ?? "",
+      ...onboardingStatus,
     },
   };
 }
@@ -92,15 +99,17 @@ export async function verifyAccessToken(accessToken: string) {
 }
 
 export async function getProfile(userId: string) {
-  const [authUser, profile] = await Promise.all([
+  const [authUser, profile, onboardingStatus] = await Promise.all([
     adminAuth.getUser(userId),
     findUserProfileById(userId),
+    getUserOnboardingStatus(userId),
   ]);
 
   return {
     userId,
     email: authUser.email ?? profile?.email ?? null,
     displayName: profile?.name ?? authUser.displayName ?? null,
+    ...onboardingStatus,
   };
 }
 

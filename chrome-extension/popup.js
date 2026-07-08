@@ -5,6 +5,7 @@ const openLoginButton = document.querySelector("#open-login-button");
 const openSignupButton = document.querySelector("#open-signup-button");
 const loginMessage = document.querySelector("#login-message");
 const accountGreeting = document.querySelector("#account-greeting");
+const openOnboardingButton = document.querySelector("#open-onboarding-button");
 const statisticsSummary = document.querySelector("#statistics-summary");
 const accountMessage = document.querySelector("#account-message");
 const logoutButton = document.querySelector("#logout-button");
@@ -37,7 +38,13 @@ function renderStatistics() {
 
 function showAccount(user) {
   const userName = user.name || "불씨 사용자";
-  accountGreeting.textContent = `${userName} 님, 오늘도 좋은 하루에요.`;
+  const onboardingReady =
+    Boolean(user.personalDataConsentAgreed) &&
+    Boolean(user.onboardingCompleted);
+  accountGreeting.textContent = onboardingReady
+    ? `${userName} 님, 오늘도 좋은 하루에요.`
+    : `${userName} 님, 개인정보 동의와 온보딩을 완료해 주세요.`;
+  openOnboardingButton.hidden = onboardingReady;
   accountMessage.textContent = "";
   setPopupView("account");
   renderStatistics();
@@ -113,6 +120,18 @@ openLoginButton.addEventListener("click", () =>
 openSignupButton.addEventListener("click", () =>
   openAuth("signup", openSignupButton),
 );
+openOnboardingButton.addEventListener("click", async () => {
+  openOnboardingButton.disabled = true;
+  accountMessage.textContent = "";
+
+  try {
+    await sendBackgroundMessage("OPEN_ONBOARDING");
+    window.close();
+  } catch (error) {
+    accountMessage.textContent = error.message;
+    openOnboardingButton.disabled = false;
+  }
+});
 
 apiKeyToggle.addEventListener("click", () => {
   const isExpanded = apiKeyToggle.getAttribute("aria-expanded") === "true";

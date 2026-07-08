@@ -31,6 +31,12 @@ function getChromeRuntime() {
   ).chrome?.runtime;
 }
 
+function getConnectionFlameMode(status: "connecting" | "success" | "error") {
+  if (status === "connecting") return "fastBurn";
+  if (status === "error") return "sad";
+  return "default";
+}
+
 export default function ExtensionConnectPage({
   extensionId,
   nextPath,
@@ -100,7 +106,7 @@ export default function ExtensionConnectPage({
         <section className={styles.connectPanel} aria-labelledby="connect-title">
           <FlameMascot
             className={styles.connectFlame}
-            mode={status === "error" ? "surprised" : "curious"}
+            mode={getConnectionFlameMode(status)}
             speed={status === "connecting" ? "fast" : "slow"}
             size="clamp(150px, 22vw, 260px)"
           />

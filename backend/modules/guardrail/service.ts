@@ -49,6 +49,18 @@ export async function ensureProfileAfterSignup(params: {
   return ensureUserProfile(params);
 }
 
+export async function getUserOnboardingStatus(userId: string) {
+  const user = await getRequiredUserProfile(userId);
+
+  return {
+    personalDataConsentAgreed: user.personalDataConsentAgreed,
+    personalDataConsentAgreedAt: user.personalDataConsentAgreedAt,
+    personalDataConsentVersion: user.personalDataConsentVersion,
+    onboardingCompleted: user.onboardingCompleted,
+    onboardingCompletedAt: user.onboardingCompletedAt,
+  };
+}
+
 export async function completeOnboarding(params: {
   userId: string;
   personalDataConsentVersion: string;

@@ -379,8 +379,9 @@ test("시장 데이터 조회는 demoData를 무시하고 실제 Upbit 캐시를
   assert.equal(result.market_data.price_change_rate_15m, 1.2);
 });
 
-test("즉시 감지 데모 메시지는 background 수집을 실행하지 않는다", async () => {
-  const { context, localStore, runtimeListeners } = createBackgroundHarness();
+test("데모 페이지 즉시 감지는 demo detect와 DTO 수집을 실행한다", async () => {
+  const { context, localStore, runtimeListeners, sentTabMessages } =
+    createBackgroundHarness();
   localStore.auth = {
     accessToken: "backend-access-token",
     expiresAt: Date.now() + 60 * 60 * 1000,
@@ -394,6 +395,10 @@ test("즉시 감지 데모 메시지는 background 수집을 실행하지 않는
       async json() {
         if (url.endsWith("/api/behavior/events")) {
           return { ok: true };
+        }
+
+        if (url.endsWith("/api/me/guardrail-rules")) {
+          return { ok: true, data: [] };
         }
 
         return {
@@ -453,12 +458,42 @@ test("즉시 감지 데모 메시지는 background 수집을 실행하지 않는
     assert.equal(keepsChannelOpen, true);
   });
 
-  assert.equal(response.ok, false);
-  assert.match(response.error, /실제 Upbit 거래 화면/);
-  assert.equal(capturedRequests.length, 0);
+  const demoDetectRequest = capturedRequests.find(({ url }) =>
+    url.endsWith("/api/demo/detect"),
+  );
+  const behaviorRequest = capturedRequests.find(({ url }) =>
+    url.endsWith("/api/behavior/events"),
+  );
+  const dtoMessage = sentTabMessages.find(
+    ({ message }) => message.type === "DTO_DEBUG_SNAPSHOT",
+  );
+
+  assert.equal(response.ok, true);
+  assert.equal(response.detection.type, "FOMO_CHASING");
+  assert.ok(demoDetectRequest);
+  assert.ok(behaviorRequest);
+  assert.equal(
+    capturedRequests.some(({ url }) => url.includes("api.upbit.com")),
+    false,
+  );
+  assert.equal(
+    capturedRequests.some(({ url }) =>
+      url.endsWith("/api/me/guardrail-rules"),
+    ),
+    false,
+  );
+  assert.equal(
+    JSON.parse(demoDetectRequest.options.body).current_order.order_side,
+    "BUY",
+  );
+  assert.equal(dtoMessage.message.payload.personal.privateDataAvailable, false);
+  assert.equal(
+    dtoMessage.message.payload.orderContext.actualOrderCreatedCount10m,
+    null,
+  );
 });
 
-test("실제 Upbit 주문 액션은 모두 detect API를 호출한다", async () => {
+test("실제 Upbit 주문 액션은 규칙 재조회 없이 모두 detect API를 호출한다", async () => {
   const { context, localStore, runtimeListeners } = createBackgroundHarness();
   localStore.auth = {
     accessToken: "backend-access-token",
@@ -547,14 +582,14 @@ test("실제 Upbit 주문 액션은 모두 detect API를 호출한다", async ()
 
   assert.equal(buyResponse.ok, true);
   assert.equal(sellResponse.ok, true);
-  assert.equal(capturedRequests.length, 6);
+  assert.equal(capturedRequests.length, 4);
   assert.equal(detectRequests.length, 2);
   assert.equal(behaviorRequests.length, 2);
   assert.equal(
     capturedRequests.filter(({ url }) =>
       url.endsWith("/api/me/guardrail-rules"),
     ).length,
-    2,
+    0,
   );
   assert.deepEqual(
     detectRequestBodies.map((body) => body.current_order.order_side),
@@ -598,44 +633,7 @@ test("사용자 가드레일 규칙이 매칭되면 detect fallback을 건너뛴
       ok: true,
       async json() {
         if (url.endsWith("/api/me/guardrail-rules")) {
-          return {
-            ok: true,
-            data: [
-              {
-                ruleId: "high-allocation",
-                isEnabled: true,
-                priority: 1,
-                riskLevel: "HIGH",
-                visualMode: "SCARED",
-                warningTitle: "고비중 시장가 매수",
-                warningMessage: "가용 자산 대부분을 쓰는 주문입니다.",
-                expression: {
-                  nodeType: "GROUP",
-                  operator: "AND",
-                  children: [
-                    {
-                      nodeType: "CONDITION",
-                      leftField: "side",
-                      operator: "EQ",
-                      rightOperand: {
-                        operandType: "LITERAL",
-                        value: "BUY",
-                      },
-                    },
-                    {
-                      nodeType: "CONDITION",
-                      leftField: "requestedBalanceRatio",
-                      operator: "GTE",
-                      rightOperand: {
-                        operandType: "LITERAL",
-                        value: 0.7,
-                      },
-                    },
-                  ],
-                },
-              },
-            ],
-          };
+          throw new Error("Guardrail rules should be loaded from page cache");
         }
 
         if (url.endsWith("/api/behavior/events")) {
@@ -645,6 +643,45 @@ test("사용자 가드레일 규칙이 매칭되면 detect fallback을 건너뛴
         throw new Error(`Unexpected fallback request: ${url}`);
       },
     };
+  };
+  localStore.guardrailRulesCache = {
+    userId: "test-user",
+    fetchedAt: new Date().toISOString(),
+    rules: [
+      {
+        ruleId: "high-allocation",
+        isEnabled: true,
+        priority: 1,
+        riskLevel: "HIGH",
+        visualMode: "SCARED",
+        warningTitle: "고비중 시장가 매수",
+        warningMessage: "가용 자산 대부분을 쓰는 주문입니다.",
+        expression: {
+          nodeType: "GROUP",
+          operator: "AND",
+          children: [
+            {
+              nodeType: "CONDITION",
+              leftField: "side",
+              operator: "EQ",
+              rightOperand: {
+                operandType: "LITERAL",
+                value: "BUY",
+              },
+            },
+            {
+              nodeType: "CONDITION",
+              leftField: "requestedBalanceRatio",
+              operator: "GTE",
+              rightOperand: {
+                operandType: "LITERAL",
+                value: 0.7,
+              },
+            },
+          ],
+        },
+      },
+    ],
   };
 
   const response = await new Promise((resolve) => {
@@ -701,12 +738,174 @@ test("사용자 가드레일 규칙이 매칭되면 detect fallback을 건너뛴
     capturedRequests.some(({ url }) => url.endsWith("/api/ext/detect")),
     false,
   );
+  assert.equal(
+    capturedRequests.some(({ url }) =>
+      url.endsWith("/api/me/guardrail-rules"),
+    ),
+    false,
+  );
   assert.ok(
     sentTabMessages.some(
       ({ message }) =>
         message.type === "DTO_DEBUG_SNAPSHOT" &&
         message.payload.orderContext.primaryShownRuleId === "high-allocation",
     ),
+  );
+});
+
+test("개인 Upbit API가 없어도 매수 규칙은 ORDER_INTENT_CLICK에서 경고를 만든다", async () => {
+  const { context, localStore, runtimeListeners, sentTabMessages } =
+    createBackgroundHarness();
+  localStore.auth = {
+    accessToken: "backend-access-token",
+    expiresAt: Date.now() + 60 * 60 * 1000,
+    user: { id: "test-user" },
+  };
+  localStore.marketDataCache = {
+    "KRW-BTC": {
+      current_price: 100_000_000,
+      tradePriceAtSnapshot: "100000000",
+      shortTermReturn5m: 0.01,
+      signedChangeRate: 0.02,
+      spreadRate: 0.0001,
+      marketRiskFlags: [],
+      pricePositionIn5mRange: 0.6,
+      volumeSpikeRatio5m: 1.2,
+      market_data: {
+        price_change_rate_15m: 0.5,
+        volume_change_rate_1m: 20,
+        is_top3_volatility: false,
+        has_warning_badge: false,
+      },
+      collected_at: new Date().toISOString(),
+    },
+  };
+  localStore.guardrailRulesCache = {
+    userId: "test-user",
+    fetchedAt: new Date().toISOString(),
+    rules: [
+      {
+        ruleId: "buy-warning",
+        name: "매수 확인",
+        isEnabled: true,
+        priority: 1,
+        riskLevel: "MEDIUM",
+        visualMode: "CURIOUS",
+        warningTitle: "매수 주문 확인",
+        warningMessage: "매수 주문 전 한 번 더 확인합니다.",
+        requiresPrivateApi: false,
+        expression: {
+          nodeType: "CONDITION",
+          leftField: "side",
+          operator: "EQ",
+          rightOperand: {
+            operandType: "LITERAL",
+            value: "BUY",
+          },
+        },
+      },
+    ],
+  };
+  const capturedRequests = [];
+  context.fetch = async (url, options) => {
+    capturedRequests.push({ url, options });
+    return {
+      ok: true,
+      async json() {
+        if (url.endsWith("/api/me/guardrail-rules")) {
+          throw new Error("Guardrail rules should be loaded from page cache");
+        }
+
+        if (url.endsWith("/api/behavior/events")) {
+          return { ok: true };
+        }
+
+        throw new Error(`Unexpected request: ${url}`);
+      },
+    };
+  };
+
+  const response = await new Promise((resolve) => {
+    const keepsChannelOpen = runtimeListeners[0](
+      {
+        type: "ORDER_ACTION_DETECTED",
+        payload: {
+          market: "KRW-BTC",
+          pageUrl: "https://upbit.com/exchange?code=CRIX.UPBIT.KRW-BTC",
+          currentOrder: {
+            market: "KRW-BTC",
+            order_side: "BUY",
+            order_status: "WAIT",
+            order_type: "LIMIT",
+            order_price: 100_000_000,
+            order_volume: 0.01,
+            order_amount: 1_000_000,
+            realized_loss_pct_1h: null,
+            order_request_time: "2026-06-28T10:30:00+09:00",
+            order_cancel_time: null,
+          },
+          behaviorData: {
+            is_max_button_clicked: false,
+            client_avg_buy_amount: null,
+            buy_click_count_1m: 1,
+            input_edit_count: 1,
+            page_stay_duration: 60,
+          },
+          orderContextSnapshot: {
+            snapshotId: "snapshot-buy",
+            attemptId: "attempt-buy",
+            snapshotTrigger: "ORDER_INTENT_CLICK",
+            capturedAt: "2026-06-28T01:30:00.000Z",
+            market: "KRW-BTC",
+            side: "BUY",
+            orderMode: "LIMIT",
+            intentPrice: "100000000",
+            intentQuantity: "0.01",
+            intentAmount: "1000000",
+          },
+          demoData: null,
+        },
+      },
+      { tab: { id: 9 } },
+      resolve,
+    );
+
+    assert.equal(keepsChannelOpen, true);
+  });
+  const dtoMessage = sentTabMessages.find(
+    ({ message }) => message.type === "DTO_DEBUG_SNAPSHOT",
+  );
+
+  assert.equal(response.ok, true);
+  assert.equal(response.detection.type, "USER_GUARDRAIL_RULE");
+  assert.equal(response.detection.primaryRuleId, "buy-warning");
+  assert.equal(response.detection.visualMode, "CURIOUS");
+  assert.equal(
+    capturedRequests.some(({ url }) => url.endsWith("/api/ext/detect")),
+    false,
+  );
+  assert.equal(
+    capturedRequests.some(({ url }) =>
+      url.endsWith("/api/me/guardrail-rules"),
+    ),
+    false,
+  );
+  assert.equal(
+    capturedRequests.some(({ url }) => url.includes("api.upbit.com")),
+    false,
+  );
+  assert.equal(dtoMessage.message.payload.personal.privateDataAvailable, false);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(dtoMessage.message.payload.orderContext.shownRuleIds)),
+    ["buy-warning"],
+  );
+  assert.equal(
+    dtoMessage.message.payload.orderContext.actualOrderCreatedCount10m,
+    null,
+  );
+  assert.equal(
+    dtoMessage.message.payload.orderContext.baseAssetAvgBuyPriceBeforeSnapshot,
+    null,
   );
 });
 
@@ -827,7 +1026,7 @@ test("만료된 백엔드 Access Token을 감지 전에 갱신한다", async () 
   assert.ok(localStore.auth.expiresAt > Date.now());
 });
 
-test("1분 알람을 만들고 detect.md 형식으로 백엔드 판정을 요청한다", async () => {
+test("주기 알람 없이 detect.md 형식으로 백엔드 판정을 요청한다", async () => {
   const { context, localStore, alarms } = createBackgroundHarness();
   localStore.auth = {
     accessToken: "backend-access-token",
@@ -858,7 +1057,6 @@ test("1분 알람을 만들고 detect.md 형식으로 백엔드 판정을 요청
       },
     };
   };
-  await vm.runInContext("ensureCollectionAlarm()", context);
   const result = await vm.runInContext(
     `callDetectionApi(
       1,
@@ -905,7 +1103,7 @@ test("1분 알람을 만들고 detect.md 형식으로 백엔드 판정을 요청
   const requestBody = JSON.parse(detectRequest.options.body);
   const behaviorBody = JSON.parse(behaviorRequest.options.body);
 
-  assert.equal(alarms.get("saltbread-minute-collection").periodInMinutes, 1);
+  assert.equal(alarms.has("saltbread-minute-collection"), false);
   assert.equal(
     detectRequest.url,
     `${context.SALTBREAD_CONFIG.apiBaseUrl}/api/ext/detect`,

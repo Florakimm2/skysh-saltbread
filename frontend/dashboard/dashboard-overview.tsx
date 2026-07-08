@@ -103,7 +103,7 @@ export default function DashboardOverview({
             <FlameMascot
               className={styles.welcomeFlame}
               label=""
-              mode="curious"
+              mode="default"
               size="clamp(118px, 14vw, 178px)"
               speed="slow"
             />

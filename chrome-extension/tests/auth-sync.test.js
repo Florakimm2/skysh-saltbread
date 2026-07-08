@@ -323,6 +323,20 @@ test("만료된 토큰은 저장된 appOrigin의 쿠키로 갱신한다", async 
     domain: "example.com",
   });
   harness.context.fetch = async (url) => {
+    if (url === "https://example.com/api/me/profile") {
+      return jsonResponse({
+        data: {
+          email: "user@example.com",
+          displayName: "불씨",
+          personalDataConsentAgreed: true,
+          personalDataConsentAgreedAt: "2026-07-08T00:00:00.000Z",
+          personalDataConsentVersion: "v1",
+          onboardingCompleted: true,
+          onboardingCompletedAt: "2026-07-08T00:00:00.000Z",
+        },
+      });
+    }
+
     assert.equal(url, "https://example.com/api/auth/extension/refresh");
     return jsonResponse({
       accessToken: "fresh-access",

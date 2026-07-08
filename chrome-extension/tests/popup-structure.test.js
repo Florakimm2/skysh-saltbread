@@ -50,10 +50,20 @@ test("Upbit 연동 카드는 접근 가능한 접힘 상태로 시작한다", ()
   );
 });
 
-test("사이드바 표시 조건에 행동 데이터 동의를 요구하지 않는다", () => {
-  assert.doesNotMatch(contentScript, /behaviorDataConsent|CONSENT_STORAGE_KEY/);
+test("사이드바 표시 조건은 거래 화면과 온보딩 완료를 요구한다", () => {
   assert.match(
     contentScript,
-    /if \(!isDashboardPage\(\) && isLoggedIn\(auth\)\)/,
+    /return isDemoPage\(\) \|\| isUpbitExchangePage\(\);/,
   );
+  assert.match(contentScript, /personalDataConsentAgreed/);
+  assert.match(contentScript, /onboardingCompleted/);
+  assert.match(contentScript, /canShowPanel\(auth\)/);
+  assert.doesNotMatch(contentScript, /saltbread-metric-card/);
+  assert.match(contentScript, /설정된 가드레일/);
+});
+
+test("온보딩 미완료 계정에는 온보딩 CTA를 제공한다", () => {
+  assert.match(popupHtml, /id="open-onboarding-button"/);
+  assert.match(popupScript, /개인정보 동의와 온보딩을 완료해 주세요/);
+  assert.match(popupScript, /OPEN_ONBOARDING/);
 });

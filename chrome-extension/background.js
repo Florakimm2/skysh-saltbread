@@ -26,7 +26,6 @@ const APP_TAB_URL_PATTERNS = [
   "http://localhost/*",
   "http://127.0.0.1/*",
 ];
-const COLLECTION_ALARM = "saltbread-minute-collection";
 const CREDENTIALS_STORAGE_KEY = "upbitCredentials";
 const SESSION_KEY_STORAGE_KEY = "upbitCredentialSessionKey";
 const GUARDRAIL_RULES_CACHE_KEY = "guardrailRulesCache";
@@ -38,6 +37,7 @@ const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 let publicRequestQueue = Promise.resolve();
 let lastPublicRequestAt = 0;
+const loggedGuardrailRuleUsers = new Set();
 
 function normalizeAllowedAppOrigin(value) {
   if (!value || typeof value !== "string") {
@@ -79,6 +79,10 @@ function isUpbitExchangeUrl(value) {
   } catch {
     return false;
   }
+}
+
+function isCollectableTradingUrl(value) {
+  return isUpbitExchangeUrl(value) || isDemoPageUrl(value);
 }
 
 function getSenderOrigin(sender) {
@@ -166,7 +170,9 @@ async function refreshAuthForOrigin(appOrigin, currentAuth = {}) {
     appOrigin,
   };
   await chrome.storage.local.set({ auth });
-  void fetchGuardrailRules(auth).catch(() => {});
+  if (hasCompletedOnboarding(auth)) {
+    void fetchGuardrailRules(auth).catch(() => {});
+  }
   return auth;
 }
 
@@ -363,7 +369,8 @@ async function fetchJson(url, options = {}) {
   return data;
 }
 
-async function getValidBackendAuth() {
+async function getValidBackendAuth(options = {}) {
+  const { refreshProfile = false } = options;
   const { auth } = await chrome.storage.local.get("auth");
 
   if (!auth?.accessToken || !auth?.user) {
@@ -371,14 +378,15 @@ async function getValidBackendAuth() {
   }
 
   if (auth.expiresAt > Date.now() + 60_000) {
-    return auth;
+    return refreshProfile ? refreshStoredAuthProfile(auth) : auth;
   }
 
   const appOrigin = normalizeAllowedAppOrigin(auth.appOrigin);
 
   if (appOrigin) {
     try {
-      return await refreshAuthForOrigin(appOrigin, auth);
+      const refreshed = await refreshAuthForOrigin(appOrigin, auth);
+      return refreshProfile ? refreshStoredAuthProfile(refreshed) : refreshed;
     } catch (error) {
       await clearExtensionSession();
       throw error;
@@ -395,7 +403,15 @@ async function getValidBackendAuth() {
     expiresAt: Date.now() + Number(refreshed.expiresIn) * 1000,
   };
   await chrome.storage.local.set({ auth: nextAuth });
-  return nextAuth;
+  return refreshProfile ? refreshStoredAuthProfile(nextAuth) : nextAuth;
+}
+
+async function getOptionalBackendAuth() {
+  try {
+    return await getValidBackendAuth();
+  } catch {
+    return null;
+  }
 }
 
 async function removeRefreshCookie(appOrigin) {
@@ -460,9 +476,96 @@ function createBackendHeaders(auth, includeUserId = false) {
   return headers;
 }
 
+function hasCompletedOnboarding(auth) {
+  return Boolean(
+    auth?.user?.personalDataConsentAgreed &&
+      auth?.user?.onboardingCompleted,
+  );
+}
+
+async function refreshStoredAuthProfile(auth) {
+  if (!auth?.accessToken || !auth?.user) {
+    return auth;
+  }
+
+  const response = await fetchJson(`${getAuthApiBase(auth)}/api/me/profile`, {
+    method: "GET",
+    headers: createBackendHeaders(auth),
+  });
+  const profile = response?.data || {};
+  const nextAuth = {
+    ...auth,
+    user: {
+      ...auth.user,
+      email: profile.email || auth.user.email || "",
+      name: profile.displayName || auth.user.name || "",
+      personalDataConsentAgreed: Boolean(
+        profile.personalDataConsentAgreed,
+      ),
+      personalDataConsentAgreedAt:
+        profile.personalDataConsentAgreedAt || null,
+      personalDataConsentVersion:
+        profile.personalDataConsentVersion || null,
+      onboardingCompleted: Boolean(profile.onboardingCompleted),
+      onboardingCompletedAt: profile.onboardingCompletedAt || null,
+    },
+  };
+
+  if (JSON.stringify(nextAuth.user) !== JSON.stringify(auth.user)) {
+    await chrome.storage.local.set({ auth: nextAuth });
+  }
+
+  return nextAuth;
+}
+
 async function getCachedGuardrailRules() {
   const result = await chrome.storage.local.get(GUARDRAIL_RULES_CACHE_KEY);
   return result[GUARDRAIL_RULES_CACHE_KEY]?.rules || [];
+}
+
+async function getCachedGuardrailRulesState(auth = null) {
+  const result = await chrome.storage.local.get(GUARDRAIL_RULES_CACHE_KEY);
+  const cache = result[GUARDRAIL_RULES_CACHE_KEY] || {};
+  const rules = Array.isArray(cache.rules) ? cache.rules : [];
+
+  return {
+    rules,
+    source: cache.fetchedAt
+      ? "page-cache"
+      : auth?.accessToken
+        ? "not-loaded"
+        : "none",
+    error: null,
+    fetchedAt: cache.fetchedAt || null,
+    userId: cache.userId || null,
+  };
+}
+
+function summarizeGuardrailRulesForLog(rules) {
+  return rules.map((rule) => ({
+    ruleId: rule.ruleId,
+    name: rule.name,
+    isEnabled: rule.isEnabled,
+    priority: rule.priority,
+    riskLevel: rule.riskLevel,
+    visualMode: rule.visualMode,
+    warningTitle: rule.warningTitle,
+    requiresPrivateApi: rule.requiresPrivateApi,
+  }));
+}
+
+function logGuardrailRulesOnce(auth, rules) {
+  const userKey = auth?.user?.id || auth?.user?.email || "unknown-user";
+
+  if (loggedGuardrailRuleUsers.has(userKey)) {
+    return;
+  }
+
+  loggedGuardrailRuleUsers.add(userKey);
+  console.log(
+    "[Saltbread] Loaded user guardrail rules",
+    summarizeGuardrailRulesForLog(rules),
+  );
 }
 
 async function fetchGuardrailRules(existingAuth = null) {
@@ -484,6 +587,7 @@ async function fetchGuardrailRules(existingAuth = null) {
     headers: createBackendHeaders(auth),
   });
   const rules = Array.isArray(response?.data) ? response.data : [];
+  logGuardrailRulesOnce(auth, rules);
 
   await chrome.storage.local.set({
     [GUARDRAIL_RULES_CACHE_KEY]: {
@@ -516,6 +620,21 @@ async function postDetectionRequest(requestBody, auth) {
   return fetchJson(`${getAuthApiBase(auth)}${DETECT_PATH}`, {
     method: "POST",
     headers: createBackendHeaders(auth),
+    body: JSON.stringify(requestBody),
+  });
+}
+
+async function postDemoDetectionRequest(requestBody, context, auth = null) {
+  const pageOrigin = normalizeAllowedAppOrigin(context?.pageUrl);
+  const appOrigin =
+    pageOrigin ||
+    normalizeAllowedAppOrigin(auth?.appOrigin) ||
+    normalizeAllowedAppOrigin(APP_URL) ||
+    API_BASE_URL;
+
+  return fetchJson(`${appOrigin}/api/demo/detect`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(requestBody),
   });
 }
@@ -807,6 +926,30 @@ async function collectOrderDataForDetection(market) {
   }
 }
 
+function createDemoOrderData(context = {}) {
+  const demoData = context.demoData || {};
+
+  return {
+    market: context.market,
+    recentOrders: Array.isArray(demoData.recentOrders)
+      ? demoData.recentOrders
+      : [],
+    clientAverageBuyAmount:
+      demoData.clientAverageBuyAmount ??
+      context.behaviorData?.client_avg_buy_amount ??
+      null,
+    accounts: Array.isArray(demoData.accounts) ? demoData.accounts : [],
+    rawClosedOrders: Array.isArray(demoData.rawClosedOrders)
+      ? demoData.rawClosedOrders
+      : [],
+    rawOpenOrders: Array.isArray(demoData.rawOpenOrders)
+      ? demoData.rawOpenOrders
+      : [],
+    collected_at: new Date().toISOString(),
+    privateDataAvailable: false,
+  };
+}
+
 async function sendTabMessage(tabId, message) {
   try {
     return await chrome.tabs.sendMessage(tabId, message);
@@ -825,16 +968,28 @@ async function callDetectionApi(
     return null;
   }
 
-  const [auth, { orderDataCache = {} }] = await Promise.all([
-    getValidBackendAuth(),
-    chrome.storage.local.get("orderDataCache"),
-  ]);
+  const pageUrl = context.pageUrl || "";
+  const isDemo = isDemoPageUrl(pageUrl);
+  const isUpbitExchange = isUpbitExchangeUrl(pageUrl);
 
-  if (!isUpbitExchangeUrl(context.pageUrl) || !auth?.accessToken) {
+  if (!isDemo && !isUpbitExchange) {
     return null;
   }
 
-  const orderData = options.orderData || orderDataCache[context.market];
+  const [auth, { orderDataCache = {} }] = await Promise.all([
+    isDemo ? getOptionalBackendAuth() : getValidBackendAuth(),
+    chrome.storage.local.get("orderDataCache"),
+  ]);
+
+  if (!isDemo && !auth?.accessToken) {
+    return null;
+  }
+
+  const orderData =
+    options.orderData ||
+    (isDemo
+      ? createDemoOrderData(context)
+      : orderDataCache[context.market] || createDemoOrderData(context));
   const recentOrders = orderData?.recentOrders || [];
   const lastLoss = recentOrders.find(
     (order) =>
@@ -880,7 +1035,8 @@ async function callDetectionApi(
   const behaviorSaveTask =
     options.logSubmitAttempt === false
       ? Promise.resolve()
-      : postBehaviorEvent(behaviorEvent, auth)
+      : auth?.accessToken
+        ? postBehaviorEvent(behaviorEvent, auth)
           .then(() =>
             sendTabMessage(tabId, {
               type: "BEHAVIOR_EVENT_STATUS",
@@ -894,8 +1050,9 @@ async function callDetectionApi(
                 message: `행동 로그 저장 실패: ${error.message}`,
               },
             }),
-          );
-  const rulesState = await loadGuardrailRules(auth);
+          )
+        : Promise.resolve();
+  const rulesState = await getCachedGuardrailRulesState(auth);
   const orderContextSnapshot = enrichOrderContextSnapshot(
     context,
     marketData,
@@ -978,7 +1135,9 @@ async function callDetectionApi(
   }
 
   let result;
-  const detectionPromise = postDetectionRequest(requestBody, auth);
+  const detectionPromise = isDemo
+    ? postDemoDetectionRequest(requestBody, context, auth)
+    : postDetectionRequest(requestBody, auth);
 
   try {
     result = await detectionPromise;
@@ -1021,6 +1180,28 @@ async function getMarketDataForDetection(market) {
 }
 
 async function getMarketDataForContext(context) {
+  const demoData = context?.demoData;
+  const demoCurrentPrice = toNumber(demoData?.currentPrice);
+
+  if (
+    isDemoPageUrl(context?.pageUrl) &&
+    demoData?.marketData &&
+    demoCurrentPrice !== null
+  ) {
+    return {
+      market: context.market,
+      current_price: demoCurrentPrice,
+      tradePriceAtSnapshot: decimalString(demoCurrentPrice),
+      shortTermReturn5m: null,
+      signedChangeRate: null,
+      spreadRate: null,
+      marketRiskFlags: [],
+      pricePositionIn5mRange: null,
+      volumeSpikeRatio5m: null,
+      market_data: demoData.marketData,
+    };
+  }
+
   return getMarketDataForDetection(context.market);
 }
 
@@ -1095,7 +1276,10 @@ function enrichOrderContextSnapshot(context, marketData, orderData = {}) {
     orderIntentCount1m:
       base.orderIntentCount1m ?? context.behaviorData?.buy_click_count_1m ?? 0,
     actualOrderCreatedCount10m:
-      base.actualOrderCreatedCount10m ?? countActualOrders10m(orderData, now),
+      base.actualOrderCreatedCount10m ??
+      (orderData?.privateDataAvailable === false
+        ? null
+        : countActualOrders10m(orderData, now)),
     sameSideIntentCount1m:
       base.sameSideIntentCount1m ?? context.behaviorData?.buy_click_count_1m ?? 0,
     marketChangeCount5m: base.marketChangeCount5m ?? 0,
@@ -1198,30 +1382,6 @@ async function sendDtoDebugSnapshot(tabId, payload) {
   });
 }
 
-async function runMinuteCycle() {
-  await loadGuardrailRules();
-}
-
-async function ensureCollectionAlarm() {
-  const alarm = await chrome.alarms.get(COLLECTION_ALARM);
-
-  if (!alarm) {
-    await chrome.alarms.create(COLLECTION_ALARM, {
-      delayInMinutes: 1,
-      periodInMinutes: 1,
-    });
-  }
-}
-
-chrome.runtime.onInstalled.addListener(ensureCollectionAlarm);
-chrome.runtime.onStartup.addListener(ensureCollectionAlarm);
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === COLLECTION_ALARM) {
-    runMinuteCycle();
-  }
-});
-ensureCollectionAlarm();
-
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "OPEN_AUTH") {
     const mode = message.payload?.mode === "signup" ? "signup" : "login";
@@ -1253,9 +1413,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "OPEN_ONBOARDING") {
+    resolveCurrentAppOrigin()
+      .then((appOrigin) =>
+        chrome.tabs.create({ url: `${appOrigin}/onboarding` }),
+      )
+      .then(() => sendResponse({ ok: true }))
+      .catch(() =>
+        sendResponse({ ok: false, error: "온보딩 페이지를 열 수 없습니다." }),
+      );
+    return true;
+  }
+
   if (message?.type === "GET_AUTH_STATE") {
-    getValidBackendAuth()
-      .then((auth) => sendResponse({ ok: true, auth }))
+    getValidBackendAuth({ refreshProfile: true })
+      .then((auth) =>
+        sendResponse({
+          ok: true,
+          auth,
+          onboardingReady: hasCompletedOnboarding(auth),
+        }),
+      )
+      .catch((error) =>
+        sendResponse({ ok: false, error: error.message }),
+      );
+    return true;
+  }
+
+  if (message?.type === "LOAD_GUARDRAIL_RULES") {
+    loadGuardrailRules()
+      .then((guardrailRules) =>
+        sendResponse({ ok: true, guardrailRules }),
+      )
       .catch((error) =>
         sendResponse({ ok: false, error: error.message }),
       );
@@ -1270,9 +1459,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "REGISTER_MARKET_CONTEXT") {
-    loadGuardrailRules()
-      .then(() => sendResponse({ ok: true }))
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    sendResponse({ ok: true });
     return true;
   }
 
@@ -1300,10 +1487,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
 
-    if (!isUpbitExchangeUrl(pageUrl) || isDemoPageUrl(pageUrl)) {
+    if (!isCollectableTradingUrl(pageUrl)) {
       sendResponse({
         ok: false,
-        error: "실제 Upbit 거래 화면에서만 감지를 실행합니다.",
+        error: "데모 페이지 또는 실제 Upbit 거래 화면에서만 감지를 실행합니다.",
       });
       return false;
     }
@@ -1326,7 +1513,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === "RESET_DEMO_STATE") {
+  if (
+    message?.type === "RESET_DEMO_STATE" ||
+    message?.type === "RESET_FLAME_STATE"
+  ) {
     chrome.storage.local
       .set({
         flameTheme: {
@@ -1345,15 +1535,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "ORDER_ACTION_DETECTED") {
     const pageUrl = message.payload?.pageUrl || sender.tab?.url || "";
 
-    if (!isUpbitExchangeUrl(pageUrl) || isDemoPageUrl(pageUrl)) {
+    if (!isCollectableTradingUrl(pageUrl)) {
       sendResponse({
         ok: false,
-        error: "실제 Upbit 거래 화면에서만 주문 데이터를 수집합니다.",
+        error: "데모 페이지 또는 실제 Upbit 거래 화면에서만 주문 데이터를 수집합니다.",
       });
       return false;
     }
 
-    const collectOrder = collectOrderDataForDetection(message.payload.market);
+    const collectOrder = isDemoPageUrl(pageUrl)
+      ? Promise.resolve(createDemoOrderData(message.payload))
+      : collectOrderDataForDetection(message.payload.market);
 
     collectOrder
       .then(async (orderData) => {
@@ -1447,7 +1639,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "RUN_COLLECTION_NOW") {
-    runMinuteCycle()
+    loadGuardrailRules()
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;

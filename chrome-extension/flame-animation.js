@@ -1044,11 +1044,3 @@
     autoMount();
   }
 })();
-
-
-export function createFlameAnimation(target, options = {}) {
-  return window.createFlameAnimation(target, options);
-}
-
-export const FireMascot = window.FireMascot;
-export const FlameAnimation = window.FlameAnimation;

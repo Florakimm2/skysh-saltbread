@@ -950,6 +950,23 @@ export default function TradingTerminal() {
       const nextVolume = Number(
         (nextAmount / Math.max(nextPrice, 1)).toFixed(8),
       );
+      const recentOrders = normalizeRecentOrders(
+        nextScenario.recentOrders,
+        targetMarket,
+      );
+      const extensionHandled = dispatchExtensionEvent("saltbread:demo-scenario", {
+        id: nextScenario.key,
+        type: nextScenario.type,
+        title: nextScenario.title,
+        market: targetMarket,
+        behaviorData: nextScenario.behaviorData,
+        recentOrders,
+        clientAverageBuyAmount:
+          nextScenario.behaviorData.client_avg_buy_amount,
+        currentPrice: nextData.ticker.trade_price,
+        marketData: nextScenario.marketData,
+        expiresAt: Date.now() + 180_000,
+      });
 
       setMarketData(nextData);
       setMarket(targetMarket);
@@ -966,17 +983,20 @@ export default function TradingTerminal() {
         title: nextScenario.title,
         market: targetMarket,
         behaviorData: nextScenario.behaviorData,
-        recentOrders: normalizeRecentOrders(
-          nextScenario.recentOrders,
-          targetMarket,
-        ),
+        recentOrders,
         clientAverageBuyAmount:
           nextScenario.behaviorData.client_avg_buy_amount,
-        currentPrice,
+        currentPrice: nextData.ticker.trade_price,
         marketData: nextScenario.marketData,
+        extensionHandled,
       });
+      if (extensionHandled) {
+        setExtensionConnected(true);
+      }
       setToast({
-        message: `${nextScenario.key}번 · ${nextScenario.title} 입력값을 세팅했습니다.`,
+        message: extensionHandled
+          ? `${nextScenario.key}번 · ${nextScenario.title} 데이터를 확장과 연결했습니다.`
+          : `${nextScenario.key}번 · ${nextScenario.title} 입력값을 세팅했습니다.`,
         variant: "success",
       });
     },
@@ -984,9 +1004,15 @@ export default function TradingTerminal() {
   );
 
   const runDetectNow = useCallback(() => {
+    const handled = dispatchExtensionEvent("saltbread:detect-now");
+    if (handled) {
+      setExtensionConnected(true);
+    }
     setToast({
-      message: "데모 페이지에서는 확장 프로그램 감지를 실행하지 않습니다.",
-      variant: "error",
+      message: handled
+        ? "8번 · 확장 프로그램 즉시 감지를 실행했습니다."
+        : "확장 프로그램이 연결되지 않았습니다.",
+      variant: handled ? "success" : "error",
     });
   }, []);
 
@@ -1300,8 +1326,10 @@ export default function TradingTerminal() {
               <Chart candles={marketData.candles} />
               <div className="chart-axis">
                 {[ticker.high_price, ticker.trade_price, ticker.low_price].map(
-                  (value) => (
-                    <span key={value}>{formatNumber(value)}</span>
+                  (value, index) => (
+                    <span key={`axis-price-${index}`}>
+                      {formatNumber(value)}
+                    </span>
                   ),
                 )}
               </div>
@@ -1704,7 +1732,7 @@ export default function TradingTerminal() {
               <kbd>1–9</kbd>
             </div>
             <p>
-              1–7은 입력 세팅, 8은 확장 감지 차단 확인, 9는 초기화입니다.
+              1–7은 입력 세팅, 8은 확장 감지 실행, 9는 초기화입니다.
             </p>
             <div className="scenario-list">
               {SCENARIOS.map((item) => (
@@ -1726,8 +1754,8 @@ export default function TradingTerminal() {
               <button type="button" onClick={runDetectNow}>
                 <kbd>8</kbd>
                 <span>
-                  <strong>감지 차단 확인</strong>
-                  <em>NO_DEMO_EXTENSION_DATA</em>
+                  <strong>확장 감지 실행</strong>
+                  <em>RUN_EXTENSION_DETECTION</em>
                 </span>
               </button>
               <button type="button" onClick={resetDemo}>
@@ -1739,9 +1767,9 @@ export default function TradingTerminal() {
               </button>
             </div>
             <div className="demo-current">
-              <span>API 전용 데모</span>
-              <strong>화면 입력값은 변경되지 않습니다</strong>
-              <p>1–7 선택 시 화면 입력값만 바꾸고 확장에는 데이터를 보내지 않습니다.</p>
+              <span>EXTENSION READY</span>
+              <strong>데모 입력값과 확장 수집값을 비교합니다</strong>
+              <p>1–7 선택 후 주문 버튼을 누르면 확장 수집 DTO가 아래 로그에 표시됩니다.</p>
             </div>
           </section>
         </aside>

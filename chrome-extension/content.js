@@ -5,50 +5,16 @@ const APP_ORIGINS = new Set([
   ...(globalThis.SALTBREAD_CONFIG.appOrigins || []),
 ]);
 const BEHAVIOR_INPUT_DEBOUNCE_MS = 650;
+const GUARDRAIL_RULES_CACHE_KEY = "guardrailRulesCache";
 const {
   buildBehaviorSnapshot,
   detectOrderActionSide,
+  evaluateGuardrailRules,
   parseMarket,
+  resolveVisualMode,
   toNumber,
 } =
   globalThis.SaltbreadCore;
-const METRIC_DEFINITIONS = [
-  {
-    id: "max-click",
-    icon: "◎",
-    label: "최대(100%) 선택",
-    initialValue: "아니요",
-    description: "최근 주문 시도 이후",
-  },
-  {
-    id: "buy-clicks",
-    icon: "↗",
-    label: "1분 내 매수 클릭",
-    initialValue: "0회",
-    description: "현재 종목 기준",
-  },
-  {
-    id: "amount-edits",
-    icon: "✎",
-    label: "3분 내 입력 수정",
-    initialValue: "0회",
-    description: "금액·가격·수량 입력",
-  },
-  {
-    id: "average-buy",
-    icon: "₩",
-    label: "최근 평균 매수 금액",
-    initialValue: "-",
-    description: "최근 체결 10회 기준",
-  },
-  {
-    id: "dwell-time",
-    icon: "◷",
-    label: "종목 체류 시간",
-    initialValue: "00:00:00",
-    description: "현재 종목 화면이 보인 시간",
-  },
-];
 const DETECTION_TITLES = {
   FOMO_CHASING: "FOMO 추격 매수",
   REVENGE_TRADING: "복수 매매",
@@ -57,6 +23,14 @@ const DETECTION_TITLES = {
   AMOUNT_SPIKE: "주문 금액 급증",
   MACHINE_GUN_TRADING: "연속 시장가 매수",
   HIGH_RISK_HOPPING: "고위험 종목 이동",
+};
+const VISUAL_MODE_LABELS = {
+  DEFAULT: "기본",
+  CURIOUS: "확인",
+  SURPRISED: "급변",
+  FAST_BURN: "반복",
+  SCARED: "위험",
+  SAD: "손실",
 };
 
 let behaviorState = null;
@@ -67,6 +41,18 @@ let currentPageUrl = location.href;
 let pendingAttempt = null;
 let activeGuardrailSnapshotId = null;
 let activeDetectionResult = null;
+let activeTradeFeedback = null;
+let guardrailRulesLogged = false;
+let shownGuardrailSnapshotIds = new Set();
+let closedGuardrailSnapshotIds = new Set();
+let pageGuardrailRules = [];
+let pageGuardrailRulesState = {
+  rules: [],
+  source: "unloaded",
+  error: null,
+  fetchedAt: null,
+};
+let guardrailRulesLoadPromise = null;
 
 function isAppPage() {
   return APP_ORIGINS.has(location.origin);
@@ -82,6 +68,17 @@ function isDashboardPage() {
 
 function isDemoPage() {
   return isAppPage() && location.pathname === "/demo";
+}
+
+function isUpbitExchangePage() {
+  return (
+    ["upbit.com", "www.upbit.com"].includes(location.hostname) &&
+    location.pathname.startsWith("/exchange")
+  );
+}
+
+function isPanelAllowedPage() {
+  return isDemoPage() || isUpbitExchangePage();
 }
 
 function emitExtensionDebug(category, kind, payload, occurredAt = null) {
@@ -127,6 +124,9 @@ function normalizeFlameMode(mode) {
     AUTO: "DEFAULT",
     BLUE: "SAD",
     PINK: "SCARED",
+    FASTBURN: "FAST_BURN",
+    FAST_BURN: "FAST_BURN",
+    FAST_BURNING: "FAST_BURN",
   };
   const resolved = aliases[normalized] || normalized;
 
@@ -142,37 +142,260 @@ function normalizeFlameMode(mode) {
     : "DEFAULT";
 }
 
+function toDatasetFlameMode(mode) {
+  const normalizedMode = normalizeFlameMode(mode);
+  return normalizedMode === "FAST_BURN"
+    ? "fast_burn"
+    : normalizedMode.toLowerCase();
+}
+
+function toAnimationFlameMode(mode) {
+  const normalizedMode = normalizeFlameMode(mode);
+  const modes = {
+    DEFAULT: "default",
+    CURIOUS: "curious",
+    SURPRISED: "surprised",
+    FAST_BURN: "fastBurn",
+    SCARED: "scared",
+    SAD: "sad",
+  };
+
+  return modes[normalizedMode] || "default";
+}
+
+function setFlameAnimationMode(animation, mode) {
+  if (!animation?.setMode) {
+    return;
+  }
+
+  animation.setMode(toAnimationFlameMode(mode));
+}
+
 function applyFlameTheme(mode) {
   const normalizedMode = normalizeFlameMode(mode);
   const panel = document.getElementById(PANEL_ID);
 
   if (panel) {
-    panel.dataset.flameMode = normalizedMode.toLowerCase();
+    panel.dataset.flameMode = toDatasetFlameMode(normalizedMode);
   }
 
-  panelFlame?.setMode(normalizedMode);
-  collapsedPanelFlame?.setMode(normalizedMode);
+  setFlameAnimationMode(panelFlame, normalizedMode);
+}
+
+function resetPanelFlameState() {
+  activeDetectionResult = null;
+  activeGuardrailSnapshotId = null;
+  activeTradeFeedback = null;
+  shownGuardrailSnapshotIds = new Set();
+  closedGuardrailSnapshotIds = new Set();
+  applyFlameTheme("default");
+  setPanelWarningActive(false);
+  setPanelFeedbackActive(false);
+}
+
+function rememberGuardrailSnapshot(set, snapshotId) {
+  if (!snapshotId) {
+    return;
+  }
+
+  if (set.size >= 100) {
+    set.delete(set.values().next().value);
+  }
+
+  set.add(snapshotId);
+}
+
+function isGuardrailSnapshotHandled(snapshotId) {
+  return Boolean(
+    snapshotId &&
+      (shownGuardrailSnapshotIds.has(snapshotId) ||
+        closedGuardrailSnapshotIds.has(snapshotId)),
+  );
 }
 
 function isLoggedIn(auth) {
   return Boolean(auth?.accessToken && auth?.user);
 }
 
-function renderMetricCards() {
-  return METRIC_DEFINITIONS.map(
-    ({ id, icon, label, initialValue, description }) => `
-      <article
-        class="saltbread-metric-card"
-        data-metric="${id}"
-        data-changed="false"
-        title="${description}"
-      >
-        <span class="saltbread-metric-card__icon" aria-hidden="true">${icon}</span>
-        <span class="saltbread-metric-card__label">${label}</span>
-        <strong class="saltbread-metric-card__value">${initialValue}</strong>
+function hasCompletedOnboarding(auth) {
+  return Boolean(
+    auth?.user?.personalDataConsentAgreed &&
+      auth?.user?.onboardingCompleted,
+  );
+}
+
+function canShowPanel(auth) {
+  return isPanelAllowedPage() && isLoggedIn(auth) && hasCompletedOnboarding(auth);
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function summarizeRuleForLog(rule) {
+  return {
+    ruleId: rule.ruleId,
+    name: rule.name,
+    isEnabled: rule.isEnabled,
+    priority: rule.priority,
+    riskLevel: rule.riskLevel,
+    visualMode: rule.visualMode,
+    warningTitle: rule.warningTitle,
+    requiresPrivateApi: rule.requiresPrivateApi,
+  };
+}
+
+function renderRuleRows(rules = []) {
+  const userRules = Array.isArray(rules) ? rules : [];
+
+  if (userRules.length === 0) {
+    return `
+      <article class="saltbread-rule-row saltbread-rule-row--empty">
+        <span class="saltbread-rule-row__swatch" aria-hidden="true"></span>
+        <span class="saltbread-rule-row__title">설정된 규칙 없음</span>
+        <strong class="saltbread-rule-row__mode">대기</strong>
       </article>
-    `,
-  ).join("");
+    `;
+  }
+
+  return userRules.map((rule) => {
+    const visualMode = normalizeFlameMode(rule.visualMode);
+    const title = rule.warningTitle || rule.name || "이름 없는 규칙";
+    const modeLabel = VISUAL_MODE_LABELS[visualMode] || visualMode;
+
+    return `
+      <article
+        class="saltbread-rule-row"
+        data-rule-id="${escapeHtml(rule.ruleId || "")}"
+        data-rule-mode="${toDatasetFlameMode(visualMode)}"
+        data-enabled="${String(rule.isEnabled !== false)}"
+        title="${escapeHtml(rule.description || rule.warningMessage || title)}"
+      >
+        <span class="saltbread-rule-row__swatch" aria-hidden="true"></span>
+        <span class="saltbread-rule-row__title">${escapeHtml(title)}</span>
+        <strong class="saltbread-rule-row__mode">${escapeHtml(modeLabel)}</strong>
+      </article>
+    `;
+  }).join("");
+}
+
+function renderGuardrailRulesFromCache(cache = {}) {
+  const panel = document.getElementById(PANEL_ID);
+  const list = panel?.querySelector("[data-guardrail-rule-list]");
+  const count = panel?.querySelector("[data-guardrail-rule-count]");
+  const rules = Array.isArray(cache.rules) ? cache.rules : [];
+
+  if (!list || !count) {
+    return;
+  }
+
+  list.innerHTML = renderRuleRows(rules);
+  count.textContent = `${rules.length}개`;
+
+  if (!guardrailRulesLogged && cache.fetchedAt) {
+    guardrailRulesLogged = true;
+    console.log(
+      "[Saltbread] Loaded user guardrail rules",
+      rules.map(summarizeRuleForLog),
+    );
+  }
+}
+
+function setPageGuardrailRulesState(state = {}) {
+  const rules = Array.isArray(state.rules) ? state.rules : [];
+  pageGuardrailRules = rules;
+  pageGuardrailRulesState = {
+    rules,
+    source: state.source || (state.fetchedAt ? "cache" : "unloaded"),
+    error: state.error || state.loadError || null,
+    fetchedAt: state.fetchedAt || null,
+    userId: state.userId || null,
+  };
+  renderGuardrailRulesFromCache(pageGuardrailRulesState);
+  reviewPendingAttemptWithPageRules();
+  return pageGuardrailRulesState;
+}
+
+function loadPageGuardrailRules() {
+  if (guardrailRulesLoadPromise) {
+    return guardrailRulesLoadPromise;
+  }
+
+  guardrailRulesLoadPromise = chrome.runtime
+    .sendMessage({ type: "LOAD_GUARDRAIL_RULES" })
+    .then((response) => {
+      if (!response?.ok) {
+        throw new Error(response?.error || "규칙을 불러오지 못했습니다.");
+      }
+
+      return setPageGuardrailRulesState(response.guardrailRules || {});
+    })
+    .catch((error) =>
+      chrome.storage.local
+        .get(GUARDRAIL_RULES_CACHE_KEY)
+        .then((result) =>
+          setPageGuardrailRulesState({
+            ...(result[GUARDRAIL_RULES_CACHE_KEY] || {}),
+            source: "cache",
+            error:
+              error instanceof Error
+                ? error.message
+                : "규칙을 불러오지 못했습니다.",
+          }),
+        ),
+    );
+
+  return guardrailRulesLoadPromise;
+}
+
+function createPanelFlame(host, options) {
+  if (!host) {
+    return null;
+  }
+
+  const animationOptions = {
+    ...options,
+    mode: toAnimationFlameMode(options?.mode),
+  };
+  const createAnimation =
+    globalThis.FireguardFlameAnimation?.createFlameAnimation ||
+    globalThis.createFlameAnimation ||
+    (globalThis.FireMascot
+      ? (target, nextOptions) => new globalThis.FireMascot(target, nextOptions)
+      : null);
+
+  if (createAnimation) {
+    return createAnimation(host, animationOptions);
+  }
+
+  return null;
+}
+
+function setPanelWarningActive(isActive) {
+  const panel = document.getElementById(PANEL_ID);
+
+  if (panel) {
+    panel.dataset.warningActive = String(isActive);
+  }
+}
+
+function setPanelFeedbackActive(isActive) {
+  const panel = document.getElementById(PANEL_ID);
+  const rulesSection = panel?.querySelector("[data-panel-rules-section]");
+  const feedbackSection = panel?.querySelector("[data-trade-feedback]");
+
+  if (!panel || !rulesSection || !feedbackSection) {
+    return;
+  }
+
+  panel.dataset.feedbackActive = String(isActive);
+  rulesSection.hidden = isActive;
+  feedbackSection.hidden = !isActive;
 }
 
 function removePanel() {
@@ -192,7 +415,9 @@ function createPanel(auth) {
   const panel = document.createElement("aside");
   panel.id = PANEL_ID;
   panel.dataset.authenticated = String(isLoggedIn(auth));
-  panel.setAttribute("aria-label", "불씨 행동 데이터");
+  panel.dataset.warningActive = "false";
+  panel.dataset.feedbackActive = "false";
+  panel.setAttribute("aria-label", "불씨 가드레일 규칙");
   panel.innerHTML = `
     <div class="saltbread-panel__collapsed-controls" aria-hidden="true">
       <div class="saltbread-panel__collapsed-flame"></div>
@@ -241,17 +466,65 @@ function createPanel(auth) {
       </div>
       <p class="saltbread-logging-status" data-logging-status hidden></p>
 
-      <section class="saltbread-panel__section" aria-labelledby="saltbread-metrics-title">
+      <section
+        class="saltbread-panel__section"
+        aria-labelledby="saltbread-rules-title"
+        data-panel-rules-section
+      >
         <div class="saltbread-panel__section-heading">
-          <h2 id="saltbread-metrics-title">실시간 행동 데이터</h2>
-          <span data-current-market>종목 확인 중</span>
+          <h2 id="saltbread-rules-title">설정된 가드레일</h2>
+          <span data-guardrail-rule-count>불러오는 중</span>
         </div>
-        <div class="saltbread-metric-list">
-          ${renderMetricCards()}
+        <div class="saltbread-rule-list" data-guardrail-rule-list>
+          ${renderRuleRows([])}
+        </div>
+      </section>
+
+      <section
+        class="saltbread-panel__section saltbread-panel__feedback"
+        aria-labelledby="saltbread-feedback-title"
+        data-trade-feedback
+        hidden
+      >
+        <div class="saltbread-panel__section-heading">
+          <h2 id="saltbread-feedback-title">거래 피드백</h2>
+          <span>선택</span>
+        </div>
+        <p class="saltbread-panel__feedback-copy">
+          방금 거래를 어떻게 기록할까요?
+        </p>
+        <div class="saltbread-feedback-actions" aria-label="거래 피드백">
+          <button
+            class="saltbread-feedback-button saltbread-feedback-button--planned"
+            type="button"
+            data-assessment="PLANNED"
+          >
+            계획된 거래였어요
+          </button>
+          <button
+            class="saltbread-feedback-button saltbread-feedback-button--emotional"
+            type="button"
+            data-assessment="EMOTIONAL"
+          >
+            감정적인 거래였어요
+          </button>
+          <button
+            class="saltbread-feedback-button saltbread-feedback-button--dismiss"
+            type="button"
+            data-assessment="DISMISSED"
+          >
+            건너뛰기
+          </button>
         </div>
       </section>
 
       <div class="saltbread-panel__actions" aria-label="거래 판단">
+        <button
+          class="saltbread-action-button saltbread-action-button--review"
+          type="button"
+        >
+          주문 내용 다시 보기
+        </button>
         <button
           class="saltbread-action-button saltbread-action-button--history"
           type="button"
@@ -277,33 +550,44 @@ function createPanel(auth) {
     .querySelector(".saltbread-panel__reopen")
     .addEventListener("click", () => setPanelCollapsed(panel, false));
   panel
+    .querySelector(".saltbread-action-button--review")
+    .addEventListener("click", () => closeGuardrail("REVIEW"));
+  panel
     .querySelector(".saltbread-action-button--history")
-    .addEventListener("click", openDashboard);
+    .addEventListener("click", () => {
+      closeGuardrail("REVIEW", { dispatchReview: false });
+      openDashboard();
+    });
   panel
     .querySelector(".saltbread-action-button--proceed")
     .addEventListener("click", () => {
       closeGuardrail("PROCEED");
       setPanelCollapsed(panel, true);
     });
+  panel.querySelectorAll("[data-assessment]").forEach((button) => {
+    button.addEventListener("click", () => {
+      answerTradeFeedback(button.dataset.assessment);
+    });
+  });
 
   document.body.append(panel);
-  panelFlame = new CuteIdleFlame(
+  panelFlame = createPanelFlame(
     panel.querySelector(".saltbread-panel__flame"),
     {
       mode: "default",
       label: "현재 감정 매매 상태를 보여주는 불꽃",
     },
   );
-  collapsedPanelFlame = new CuteIdleFlame(
+  collapsedPanelFlame = createPanelFlame(
     panel.querySelector(".saltbread-panel__collapsed-flame"),
     {
       mode: "default",
       label: "접힌 불씨의 현재 감정 매매 상태 불꽃",
     },
   );
-  chrome.storage.local
-    .get("flameTheme")
-    .then(({ flameTheme }) => applyFlameTheme(flameTheme?.mode));
+  resetPanelFlameState();
+  chrome.runtime.sendMessage({ type: "RESET_FLAME_STATE" }).catch(() => {});
+  void loadPageGuardrailRules();
   startBehaviorTracking();
 }
 
@@ -960,10 +1244,38 @@ function handleDemoScenario(event) {
   }
 
   acknowledgePageEvent(event);
-  setAnalysisStatus(
-    "데모 페이지에서는 확장 프로그램 수집을 실행하지 않습니다.",
-    "safe",
-  );
+  const detail = event.detail || {};
+  const expiresAt = Number(detail.expiresAt) || Date.now() + 180_000;
+  behaviorState.demoOverride = {
+    behaviorData: detail.behaviorData || null,
+    currentOrder: detail.currentOrder || null,
+    demoData: {
+      recentOrders: Array.isArray(detail.recentOrders)
+        ? detail.recentOrders
+        : [],
+      clientAverageBuyAmount:
+        detail.clientAverageBuyAmount ??
+        detail.behaviorData?.client_avg_buy_amount ??
+        null,
+      currentPrice: detail.currentPrice ?? null,
+      marketData: detail.marketData || null,
+      accounts: Array.isArray(detail.accounts) ? detail.accounts : [],
+      rawClosedOrders: Array.isArray(detail.rawClosedOrders)
+        ? detail.rawClosedOrders
+        : [],
+      rawOpenOrders: Array.isArray(detail.rawOpenOrders)
+        ? detail.rawOpenOrders
+        : [],
+    },
+    expiresAt,
+  };
+
+  if (typeof detail.market === "string") {
+    behaviorState.market = detail.market;
+  }
+
+  renderBehaviorMetrics();
+  setAnalysisStatus("데모 시나리오 데이터를 연결했습니다.", "loading");
 }
 
 function handleDetectNow(event) {
@@ -976,11 +1288,7 @@ function handleDetectNow(event) {
   }
 
   if (isDemoPage()) {
-    setAnalysisStatus(
-      "데모 페이지에서는 확장 프로그램 수집을 실행하지 않습니다.",
-      "safe",
-    );
-    return;
+    setAnalysisStatus("데모 주문 데이터를 확인하고 있어요.", "loading");
   }
 
   const snapshot = getContextSnapshot();
@@ -1037,6 +1345,7 @@ function handleDemoReset(event) {
   behaviorState.lastOrderSessionId = null;
   behaviorState.visibleDurationMs = 0;
   behaviorState.visibleSince = document.hidden ? null : Date.now();
+  behaviorState.demoOverride = null;
   startNewOrderSession();
   applyFlameTheme("default");
   setLoggingStatus();
@@ -1053,6 +1362,7 @@ function buildOrderContextSnapshot(orderButton, snapshotTrigger) {
   const market = draft?.market || behaviorState?.market || parseMarket(location.href);
   const side = draft?.order_side || detectOrderSide(panel, orderButton) || "UNKNOWN";
   const orderMode = draft?.order_type || detectOrderType(panel) || "UNKNOWN";
+  const price = draft?.order_price ?? null;
   const amount = draft?.order_amount ?? null;
   const quantity = draft?.order_volume ?? null;
   const recentFieldEdits = (field) =>
@@ -1154,11 +1464,115 @@ function emitOrderContextSnapshot(snapshot, detection = null) {
   };
   emitExtensionDebug(
     "behavior",
-    "OrderContextSnapshotDTO",
+    payload.snapshotTrigger || "OrderContextSnapshotDTO",
     payload,
     payload.capturedAt,
   );
   return payload;
+}
+
+function createLocalGuardrailResult(ruleEvaluation, snapshot) {
+  if (!ruleEvaluation?.detected) {
+    return null;
+  }
+
+  const flameMode = resolveVisualMode(ruleEvaluation.primaryRule);
+  const detailedEvaluation = {
+    ...ruleEvaluation,
+    source: pageGuardrailRulesState.source,
+    loadError: pageGuardrailRulesState.error,
+    ruleCount: pageGuardrailRules.length,
+  };
+
+  return {
+    detected: true,
+    type: "USER_GUARDRAIL_RULE",
+    message:
+      ruleEvaluation.warningMessage ||
+      "사용자 규칙에 해당하는 주문 조건이 감지되었습니다.",
+    warningTitle: ruleEvaluation.warningTitle,
+    riskLevel: ruleEvaluation.riskLevel,
+    matchedRuleIds: ruleEvaluation.matchedRuleIds,
+    primaryRuleId: ruleEvaluation.primaryRuleId,
+    primaryRule: ruleEvaluation.primaryRule,
+    visualMode: flameMode,
+    flameMode,
+    orderContextSnapshot: snapshot,
+    ruleEvaluation: detailedEvaluation,
+  };
+}
+
+function evaluatePageGuardrailRulesForSnapshot(snapshot) {
+  const ruleEvaluation = evaluateGuardrailRules(pageGuardrailRules, snapshot);
+  const evaluatedSnapshot = {
+    ...snapshot,
+    matchedRuleIdsAtSnapshot: ruleEvaluation.matchedRuleIds,
+    primaryShownRuleId: ruleEvaluation.primaryRuleId,
+    shownRuleIds: ruleEvaluation.primaryRuleId
+      ? [ruleEvaluation.primaryRuleId]
+      : [],
+  };
+  const result = createLocalGuardrailResult(
+    ruleEvaluation,
+    evaluatedSnapshot,
+  );
+
+  return { snapshot: evaluatedSnapshot, result, ruleEvaluation };
+}
+
+function showDetectedGuardrailResult(result, snapshot) {
+  if (!result?.detected) {
+    return false;
+  }
+
+  if (isGuardrailSnapshotHandled(snapshot?.snapshotId)) {
+    return false;
+  }
+
+  dismissActiveTradeFeedback();
+  activeDetectionResult = result;
+  rememberGuardrailSnapshot(shownGuardrailSnapshotIds, snapshot.snapshotId);
+  applyFlameTheme(result.visualMode || result.flameMode);
+  showGuardrail(result, snapshot.snapshotId);
+  activeGuardrailSnapshotId = snapshot.snapshotId;
+
+  const panel = document.getElementById(PANEL_ID);
+  if (panel) {
+    setPanelCollapsed(panel, false);
+  }
+
+  setAnalysisStatus(
+    result.message || `${result.type} 감정 매매 타입을 감지했어요.`,
+    "detected",
+    result.type,
+    result.warningTitle || result.primaryRule?.warningTitle || null,
+  );
+  return true;
+}
+
+function clearActiveGuardrailResult() {
+  activeDetectionResult = null;
+  activeGuardrailSnapshotId = null;
+  setPanelWarningActive(false);
+}
+
+function reviewPendingAttemptWithPageRules() {
+  if (
+    !pendingAttempt?.snapshot ||
+    activeDetectionResult?.detected ||
+    isGuardrailSnapshotHandled(pendingAttempt.snapshot.snapshotId)
+  ) {
+    return;
+  }
+
+  const { snapshot, result } = evaluatePageGuardrailRulesForSnapshot(
+    pendingAttempt.snapshot,
+  );
+  pendingAttempt.snapshot = snapshot;
+
+  if (result?.detected) {
+    showDetectedGuardrailResult(result, snapshot);
+  }
 }
 
 function beginOrderAttempt(orderButton) {
@@ -1166,16 +1580,24 @@ function beginOrderAttempt(orderButton) {
     emitOrderContextSnapshot(pendingAttempt.snapshot, activeDetectionResult);
     pendingAttempt.snapshotEmitted = true;
   }
-  const snapshot = buildOrderContextSnapshot(
+  const rawSnapshot = buildOrderContextSnapshot(
     orderButton,
     "ORDER_INTENT_CLICK",
   );
+  const { snapshot, result } =
+    evaluatePageGuardrailRulesForSnapshot(rawSnapshot);
   pendingAttempt = {
     attemptId: snapshot.attemptId,
     snapshot,
-    snapshotEmitted: false,
+    snapshotEmitted: true,
     feedbackShownAt: null,
   };
+  emitOrderContextSnapshot(snapshot, result);
+  if (result?.detected) {
+    showDetectedGuardrailResult(result, snapshot);
+  } else {
+    clearActiveGuardrailResult();
+  }
   window.setTimeout(() => {
     if (pendingAttempt?.attemptId === snapshot.attemptId && !pendingAttempt.snapshotEmitted) {
       emitOrderContextSnapshot(snapshot, activeDetectionResult);
@@ -1184,8 +1606,7 @@ function beginOrderAttempt(orderButton) {
   }, 2500);
 }
 
-function closeGuardrail(action) {
-  const dialog = document.getElementById("saltbread-guardrail-dialog");
+function closeGuardrail(action, options = {}) {
   const snapshotId = activeGuardrailSnapshotId;
   if (snapshotId) {
     emitExtensionDebug("behavior", "GuardrailReactionDTO", {
@@ -1196,74 +1617,84 @@ function closeGuardrail(action) {
       reactionUiVersion: "v1",
     });
   }
-  activeGuardrailSnapshotId = null;
-  dialog?.remove();
-  if (action === "REVIEW") {
+  rememberGuardrailSnapshot(closedGuardrailSnapshotIds, snapshotId);
+  clearActiveGuardrailResult();
+  setAnalysisStatus("데이터 수집 중...", "loading");
+  if (action === "REVIEW" && options.dispatchReview !== false) {
     document.dispatchEvent(new CustomEvent("saltbread:demo-review-order"));
   }
 }
 
 function showGuardrail(result, snapshotId) {
-  document.getElementById("saltbread-guardrail-dialog")?.remove();
-  const dialog = document.createElement("aside");
-  dialog.id = "saltbread-guardrail-dialog";
-  dialog.setAttribute("aria-label", "불씨 주문 가드레일");
-  dialog.innerHTML = `
-    <button class="saltbread-guardrail__close" type="button" aria-label="닫기">×</button>
-    <span>FIREGUARD · ${result.primaryRuleId || "RISK_RULE"}</span>
-    <strong>${DETECTION_TITLES[result.type] || "주문 전 확인"}</strong>
-    <p>${result.message || "이 주문을 한 번 더 확인해 보세요."}</p>
-    <div>
-      <button type="button" data-reaction="REVIEW">주문 내용 다시 보기</button>
-      <button type="button" data-reaction="PROCEED">계속 주문하기</button>
-    </div>
-  `;
-  dialog
-    .querySelector("[data-reaction='REVIEW']")
-    .addEventListener("click", () => closeGuardrail("REVIEW"));
-  dialog
-    .querySelector("[data-reaction='PROCEED']")
-    .addEventListener("click", () => closeGuardrail("PROCEED"));
-  dialog
-    .querySelector(".saltbread-guardrail__close")
-    .addEventListener("click", () => closeGuardrail("CLOSE"));
-  document.body.append(dialog);
+  setPanelFeedbackActive(false);
+  setPanelWarningActive(true);
   activeGuardrailSnapshotId = snapshotId;
+}
+
+function emitTradeFeedback(feedbackAttempt, assessment) {
+  if (!feedbackAttempt?.attemptId) {
+    return;
+  }
+
+  emitExtensionDebug("behavior", "TradeFeedbackDTO", {
+    feedbackId: createUuid(),
+    attemptId: feedbackAttempt.attemptId,
+    feedbackStatus:
+      assessment === "DISMISSED" ? "DISMISSED" : "ANSWERED",
+    selfAssessment:
+      assessment === "DISMISSED" ? null : assessment,
+    feedbackShownAt: feedbackAttempt.feedbackShownAt,
+    respondedAt: new Date().toISOString(),
+    feedbackUiVersion: "v1",
+  });
+}
+
+function dismissActiveTradeFeedback() {
+  if (activeTradeFeedback) {
+    emitTradeFeedback(activeTradeFeedback, "DISMISSED");
+  }
+
+  activeTradeFeedback = null;
+  setPanelFeedbackActive(false);
+}
+
+function answerTradeFeedback(assessment) {
+  if (!activeTradeFeedback) {
+    return;
+  }
+
+  emitTradeFeedback(activeTradeFeedback, assessment);
+  activeTradeFeedback = null;
+  setPanelFeedbackActive(false);
+  setAnalysisStatus("주문·체결 데이터를 확인하고 있어요.", "loading");
 }
 
 function showTradeFeedback() {
   if (!pendingAttempt?.attemptId) return;
-  const feedbackAttempt = pendingAttempt;
-  feedbackAttempt.feedbackShownAt = new Date().toISOString();
-  document.getElementById("saltbread-feedback-dialog")?.remove();
-  const dialog = document.createElement("aside");
-  dialog.id = "saltbread-feedback-dialog";
-  dialog.setAttribute("aria-label", "거래 자기평가");
-  dialog.innerHTML = `
-    <span>TRADE FEEDBACK</span>
-    <strong>이번 거래는 어떤 거래였나요?</strong>
-    <button type="button" data-assessment="PLANNED">계획된 거래였어요</button>
-    <button type="button" data-assessment="EMOTIONAL">감정적인 거래였어요</button>
-    <button type="button" data-assessment="DISMISSED">건너뛰기</button>
-  `;
-  dialog.querySelectorAll("[data-assessment]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const assessment = button.dataset.assessment;
-      emitExtensionDebug("behavior", "TradeFeedbackDTO", {
-        feedbackId: createUuid(),
-        attemptId: feedbackAttempt.attemptId,
-        feedbackStatus:
-          assessment === "DISMISSED" ? "DISMISSED" : "ANSWERED",
-        selfAssessment:
-          assessment === "DISMISSED" ? null : assessment,
-        feedbackShownAt: feedbackAttempt.feedbackShownAt,
-        respondedAt: new Date().toISOString(),
-        feedbackUiVersion: "v1",
-      });
-      dialog.remove();
-    });
-  });
-  document.body.append(dialog);
+
+  if (activeDetectionResult?.detected) {
+    closeGuardrail("PROCEED");
+  }
+
+  const feedbackAttempt = {
+    ...pendingAttempt,
+    feedbackShownAt: new Date().toISOString(),
+  };
+  pendingAttempt.feedbackShownAt = feedbackAttempt.feedbackShownAt;
+  activeTradeFeedback = feedbackAttempt;
+  setPanelFeedbackActive(true);
+  setPanelWarningActive(false);
+  setAnalysisStatus(
+    "이번 거래는 어떤 거래였나요?",
+    "feedback",
+    null,
+    "거래 피드백",
+  );
+
+  const panel = document.getElementById(PANEL_ID);
+  if (panel) {
+    setPanelCollapsed(panel, false);
+  }
 }
 
 function handleDemoContext(event) {
@@ -1285,13 +1716,7 @@ function handleDocumentClick(event) {
     ? event.target.closest("[data-saltbread-order-confirm]")
     : null;
   if (confirmButton) {
-    if (!isDemoPage()) {
-      showTradeFeedback();
-    }
-    return;
-  }
-
-  if (isDemoPage()) {
+    showTradeFeedback();
     return;
   }
 
@@ -1335,7 +1760,12 @@ function handleDocumentClick(event) {
     return;
   }
 
-  beginOrderAttempt(orderButton);
+  try {
+    beginOrderAttempt(orderButton);
+  } catch (error) {
+    console.error("[Saltbread] Failed to capture ORDER_INTENT_CLICK", error);
+    setLoggingStatus("주문 의도 스냅샷을 만들지 못했지만 행동 로그 수집은 계속합니다.");
+  }
 
   flushPendingInputEvents();
   const orderPanel = findOrderPanel(orderButton);
@@ -1397,8 +1827,10 @@ function handleDocumentClick(event) {
   behaviorState.lastOrderSessionId = submittedSessionId;
   behaviorState.maxClickedSinceLastOrder = false;
   renderBehaviorMetrics();
-  applyFlameTheme("default");
-  setAnalysisStatus("주문·체결 데이터를 확인하고 있어요.", "loading");
+  if (!activeDetectionResult?.detected) {
+    applyFlameTheme("default");
+    setAnalysisStatus("주문·체결 데이터를 확인하고 있어요.", "loading");
+  }
 
   chrome.runtime
     .sendMessage({
@@ -1410,7 +1842,7 @@ function handleDocumentClick(event) {
         currentOrder: orderDraft,
         behaviorData,
         orderContextSnapshot: pendingAttempt?.snapshot || null,
-        demoData: null,
+        demoData: getActiveDemoData(),
       },
     })
     .then((response) => {
@@ -1476,88 +1908,27 @@ function syncCurrentMarket() {
   registerCurrentContext();
 }
 
+function getActiveDemoOverride() {
+  if (
+    !isDemoPage() ||
+    !behaviorState?.demoOverride ||
+    behaviorState.demoOverride.expiresAt <= Date.now()
+  ) {
+    return null;
+  }
+
+  return behaviorState.demoOverride;
+}
+
+function getActiveDemoData() {
+  return getActiveDemoOverride()?.demoData || null;
+}
+
 function getBehaviorData() {
-  return buildBehaviorSnapshot(behaviorState);
-}
+  const behavior = buildBehaviorSnapshot(behaviorState);
+  const override = getActiveDemoOverride()?.behaviorData;
 
-function formatDuration(durationSeconds) {
-  const totalSeconds = Math.floor(durationSeconds);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-
-  return [hours, minutes, seconds]
-    .map((value) => String(value).padStart(2, "0"))
-    .join(":");
-}
-
-function formatWon(value) {
-  return value === null
-    ? "-"
-    : `${Math.round(value).toLocaleString("ko-KR")}원`;
-}
-
-function promoteMetricCard(card) {
-  const list = card.closest(".saltbread-metric-list");
-
-  if (!list || list.firstElementChild === card) {
-    return;
-  }
-
-  const cards = [...list.querySelectorAll(".saltbread-metric-card")];
-  const previousTops = new Map(
-    cards.map((item) => [item, item.getBoundingClientRect().top]),
-  );
-  list.prepend(card);
-
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    return;
-  }
-
-  requestAnimationFrame(() => {
-    for (const item of cards) {
-      const previousTop = previousTops.get(item);
-      const nextTop = item.getBoundingClientRect().top;
-      const delta = previousTop - nextTop;
-
-      if (Math.abs(delta) < 1 || typeof item.animate !== "function") {
-        continue;
-      }
-
-      item.animate(
-        [
-          { transform: `translateY(${delta}px)` },
-          { transform: "translateY(0)" },
-        ],
-        {
-          duration: 360,
-          easing: "cubic-bezier(0.22, 1, 0.36, 1)",
-        },
-      );
-    }
-  });
-}
-
-function setMetric(id, value) {
-  const card = document.querySelector(`[data-metric="${id}"]`);
-
-  if (!card) {
-    return;
-  }
-
-  const valueElement = card.querySelector(".saltbread-metric-card__value");
-
-  if (valueElement.textContent === value) {
-    return;
-  }
-
-  valueElement.textContent = value;
-  card.dataset.changed = "true";
-  card.classList.remove("is-updated");
-  void card.offsetWidth;
-  card.classList.add("is-updated");
-  promoteMetricCard(card);
-  window.setTimeout(() => card.classList.remove("is-updated"), 650);
+  return override ? { ...behavior, ...override } : behavior;
 }
 
 function renderBehaviorMetrics() {
@@ -1565,21 +1936,7 @@ function renderBehaviorMetrics() {
     return;
   }
 
-  const behavior = getBehaviorData();
-  const marketLabel = document.querySelector("[data-current-market]");
-
-  if (marketLabel) {
-    marketLabel.textContent = behaviorState.market || "종목 확인 중";
-  }
-
-  setMetric(
-    "max-click",
-    behavior.is_max_button_clicked ? "예" : "아니요",
-  );
-  setMetric("buy-clicks", `${behavior.buy_click_count_1m}회`);
-  setMetric("amount-edits", `${behavior.input_edit_count}회`);
-  setMetric("average-buy", formatWon(behavior.client_avg_buy_amount));
-  setMetric("dwell-time", formatDuration(behavior.page_stay_duration));
+  getBehaviorData();
 }
 
 function setAnalysisStatus(message, state = "loading", type = null, title = null) {
@@ -1587,6 +1944,10 @@ function setAnalysisStatus(message, state = "loading", type = null, title = null
   const badgeElement = status?.querySelector("[data-status-badge]");
   const titleElement = status?.querySelector("[data-status-title]");
   const messageElement = status?.querySelector("[data-status-message]");
+
+  if (state === "loading" && activeDetectionResult?.detected) {
+    return;
+  }
 
   if (!status || !badgeElement || !titleElement || !messageElement) {
     return;
@@ -1597,6 +1958,7 @@ function setAnalysisStatus(message, state = "loading", type = null, title = null
   }
 
   status.dataset.state = state;
+  setPanelWarningActive(state === "detected");
 
   if (state === "detected") {
     badgeElement.textContent = "주의";
@@ -1620,6 +1982,14 @@ function setAnalysisStatus(message, state = "loading", type = null, title = null
     return;
   }
 
+  if (state === "feedback") {
+    badgeElement.textContent = "기록";
+    titleElement.textContent = title || "거래 피드백";
+    messageElement.textContent =
+      message || "이번 거래를 어떻게 기록할지 선택해 주세요.";
+    return;
+  }
+
   badgeElement.textContent = "실시간 분석";
   titleElement.textContent = message || "데이터 수집 중...";
   messageElement.textContent = "주문 행동 변화를 확인하고 있어요.";
@@ -1637,6 +2007,7 @@ function getContextSnapshot() {
           client_avg_buy_amount: currentBehavior.client_avg_buy_amount,
         }
       : currentBehavior;
+  const demoOverride = getActiveDemoOverride();
 
   return {
     market: behaviorState?.market || parseMarket(location.href),
@@ -1648,9 +2019,11 @@ function getContextSnapshot() {
     behaviorData,
     currentOrder:
       behaviorState?.lastOrder ||
-      readOrderDraft(),
+      readOrderDraft() ||
+      demoOverride?.currentOrder ||
+      null,
     orderContextSnapshot: pendingAttempt?.snapshot || null,
-    demoData: null,
+    demoData: demoOverride?.demoData || null,
   };
 }
 
@@ -1718,6 +2091,7 @@ function startBehaviorTracking() {
     sideChangeTimestamps: [],
     orderModeChangeTimestamps: [],
     allocationPresetPercent: null,
+    demoOverride: null,
   };
 
   document.addEventListener("input", handleAmountInput, true);
@@ -1735,9 +2109,7 @@ function startBehaviorTracking() {
     renderBehaviorMetrics();
   }, 1000);
   renderBehaviorMetrics();
-  if (!isDemoPage()) {
-    registerCurrentContext();
-  }
+  registerCurrentContext();
 }
 
 function stopBehaviorTracking() {
@@ -1762,10 +2134,11 @@ function stopBehaviorTracking() {
   pendingAttempt = null;
   activeDetectionResult = null;
   activeGuardrailSnapshotId = null;
+  activeTradeFeedback = null;
 }
 
 function syncPanel(auth) {
-  if (!isDashboardPage() && (isLoggedIn(auth) || isDemoPage())) {
+  if (!isDashboardPage() && canShowPanel(auth)) {
     createPanel(auth);
     return;
   }
@@ -1774,9 +2147,10 @@ function syncPanel(auth) {
 }
 
 function refreshPanelState() {
-  return chrome.storage.local
-    .get("auth")
-    .then(({ auth }) => syncPanel(auth));
+  return chrome.runtime
+    .sendMessage({ type: "GET_AUTH_STATE" })
+    .then((response) => syncPanel(response?.ok ? response.auth : null))
+    .catch(() => syncPanel(null));
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -1800,13 +2174,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "DETECTION_RESULT") {
     const result = message.payload;
-    applyFlameTheme(result?.visualMode || result?.flameMode);
-    activeDetectionResult = result?.detected ? result : null;
 
     if (result?.detected) {
       let snapshot;
       if (result.orderContextSnapshot) {
-        snapshot = emitOrderContextSnapshot(result.orderContextSnapshot, result);
+        if (
+          pendingAttempt?.snapshotEmitted &&
+          pendingAttempt.snapshot?.snapshotId ===
+            result.orderContextSnapshot.snapshotId
+        ) {
+          snapshot = result.orderContextSnapshot;
+        } else {
+          snapshot = emitOrderContextSnapshot(
+            result.orderContextSnapshot,
+            result,
+          );
+        }
         if (pendingAttempt) {
           pendingAttempt.snapshotEmitted = true;
         }
@@ -1821,25 +2204,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           result,
         );
       }
-      if (isDemoPage() && snapshot) {
-        showGuardrail(result, snapshot.snapshotId);
+      if (snapshot) {
+        showDetectedGuardrailResult(result, snapshot);
       }
-      if (snapshot?.snapshotId) {
-        activeGuardrailSnapshotId = snapshot.snapshotId;
-      }
-      const panel = document.getElementById(PANEL_ID);
-      if (panel) {
-        setPanelCollapsed(panel, false);
-      }
-      setAnalysisStatus(
-        result.message || `${result.type} 감정 매매 타입을 감지했어요.`,
-        "detected",
-        result.type,
-        result.warningTitle || result.primaryRule?.warningTitle || null,
-      );
     } else {
-      activeGuardrailSnapshotId = null;
-      document.getElementById("saltbread-guardrail-dialog")?.remove();
+      clearActiveGuardrailResult();
       setAnalysisStatus(result?.message || "데이터 수집 중...", "safe");
     }
 
@@ -1889,6 +2258,13 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
   if (changes.flameTheme) {
     applyFlameTheme(changes.flameTheme.newValue?.mode);
+  }
+
+  if (changes[GUARDRAIL_RULES_CACHE_KEY]) {
+    setPageGuardrailRulesState({
+      ...(changes[GUARDRAIL_RULES_CACHE_KEY].newValue || {}),
+      source: "cache",
+    });
   }
 });
 
