@@ -11,7 +11,7 @@ export default async function DashboardPage() {
   }
 
   const trends = await getBehaviorSessionRecords(session.userId);
-  const insight = await requestDashboardInsight(trends);
+  const insight = await requestDashboardInsight(session.userId, trends);
 
   return (
     <DashboardOverview

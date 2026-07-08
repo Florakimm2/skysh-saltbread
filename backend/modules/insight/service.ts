@@ -6,6 +6,7 @@ import type {
   InsightRequestInput,
   InsightResult,
 } from "./types";
+import { analyzeInsights } from "./rules"; 
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const RECENT_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -25,57 +26,22 @@ const EVENT_LABELS: Record<string, string> = {
 
 function getFastApiInsightUrl() {
   const url = process.env.FASTAPI_INSIGHT_URL;
-
   if (!url) {
     throw new Error("FASTAPI_INSIGHT_URL 환경변수가 설정되지 않았습니다.");
   }
-
   return url;
 }
 
-function extractInsightFromFastApiResponse(rawText: string): string {
+// 💡 핵심 수정 1: AI 서버가 보내준 전체 JSON 데이터(summary, cards 등)를 그대로 살려서 반환합니다.
+function extractInsightFromFastApiResponse(rawText: string): any {
   const trimmed = rawText.trim();
-
   if (!trimmed) {
     throw new Error("FastAPI 응답이 비어 있습니다.");
   }
-
   try {
-    const parsed = JSON.parse(trimmed);
-
-    // FastAPI가 그냥 JSON string으로 반환하는 경우
-    if (typeof parsed === "string") {
-      return parsed;
-    }
-
-    // FastAPI가 객체로 반환하는 경우까지 방어
-    if (parsed && typeof parsed === "object") {
-      const objectValue = parsed as Record<string, unknown>;
-
-      const candidateKeys = [
-        "insight",
-        "result",
-        "summaries",
-        "summary",
-        "output",
-        "data",
-      ];
-
-      for (const key of candidateKeys) {
-        const value = objectValue[key];
-
-        if (typeof value === "string") {
-          return value;
-        }
-      }
-
-      return JSON.stringify(parsed);
-    }
-
-    return String(parsed);
+    return JSON.parse(trimmed); 
   } catch {
-    // text/plain으로 문자열만 반환하는 경우
-    return trimmed;
+    return { summary: trimmed, cards: [] };
   }
 }
 
@@ -85,11 +51,9 @@ async function fetchWithTimeout(
   timeoutMs = DEFAULT_TIMEOUT_MS
 ) {
   const controller = new AbortController();
-
   const timeoutId = setTimeout(() => {
     controller.abort();
   }, timeoutMs);
-
   try {
     return await fetch(url, {
       ...options,
@@ -102,7 +66,7 @@ async function fetchWithTimeout(
 
 export async function requestInsightFromFastApi(
   input: InsightRequestInput
-): Promise<InsightResult> {
+): Promise<any> {
   const fastApiUrl = getFastApiInsightUrl();
 
   const response = await fetchWithTimeout(fastApiUrl, {
@@ -137,65 +101,56 @@ function toInsightSummary(record: BehaviorSessionRecord): string {
     timeStyle: "short",
     timeZone: "Asia/Seoul",
   }).format(new Date(record.occurredAt));
+  
   const orderDetails = [
     record.symbol,
     record.side === "BUY" ? "매수" : record.side === "SELL" ? "매도" : null,
-    record.orderType === "LIMIT"
-      ? "지정가"
-      : record.orderType === "MARKET"
-        ? "시장가"
-        : null,
-    record.amount !== undefined
-      ? `주문 금액 ${Math.round(record.amount).toLocaleString("ko-KR")}원`
-      : null,
-  ]
-    .filter(Boolean)
-    .join(", ");
-  const behaviors =
-    record.behaviorData.length > 0
-      ? record.behaviorData
-          .map(
-            ({ eventType, count }) =>
-              `${EVENT_LABELS[eventType] ?? eventType} ${count}회`
-          )
-          .join(", ")
+    record.orderType === "LIMIT" ? "지정가" : record.orderType === "MARKET" ? "시장가" : null,
+    record.amount !== undefined ? `주문 금액 ${Math.round(record.amount).toLocaleString("ko-KR")}원` : null,
+  ].filter(Boolean).join(", ");
+    
+  const behaviors = record.behaviorData.length > 0
+      ? record.behaviorData.map(({ eventType, count }) => `${EVENT_LABELS[eventType] ?? eventType} ${count}회`).join(", ")
       : "연결된 행동 데이터 없음";
 
   return `${occurredAt}: 주문 정보는 ${orderDetails}. 행동 데이터는 ${behaviors}.`;
 }
 
 export async function requestDashboardInsight(
+  userId: string, 
   records: BehaviorSessionRecord[],
   now = new Date()
-): Promise<DashboardInsightResult> {
+): Promise<any> {
   const since = now.getTime() - RECENT_WEEK_MS;
-  const recentRecords = records
+  const recentRecords = (records || [])
     .filter((record) => new Date(record.occurredAt).getTime() >= since)
     .slice(0, MAX_INSIGHT_SUMMARIES);
 
-  if (recentRecords.length === 0) {
-    return {
-      status: "empty",
-      sourceCount: 0,
-    };
+  const behaviorSummaries = recentRecords.map(toInsightSummary);
+  const ruleInsights = await analyzeInsights(userId);
+  const ruleSummaries = ruleInsights.map(
+    (insight) => `[분석 경고 - ${insight.title}] ${insight.message} (중요도: ${insight.score})`
+  );
+
+  const combinedSummaries = [...behaviorSummaries, ...ruleSummaries];
+
+  if (combinedSummaries.length === 0) {
+    return { status: "empty", sourceCount: 0 };
   }
 
   try {
-    const result = await requestInsightFromFastApi({
-      summaries: recentRecords.map(toInsightSummary),
-    });
+    const result = await requestInsightFromFastApi({ summaries: combinedSummaries });
+    const parsedData = result.insight;
 
+    // 💡 핵심 수정 2: 메인 화면 에러 방지를 위해 문장(summary)은 기존 자리에 두고, 카드는 몰래 챙겨서 넘겨줍니다.
     return {
       status: "ready",
-      insight: result.insight,
+      insight: parsedData?.summary || (typeof parsedData === 'string' ? parsedData : "분석 완료"),
+      parsedData: parsedData, 
       sourceCount: recentRecords.length,
     };
   } catch (error) {
     console.error("Dashboard insight generation failed", error);
-
-    return {
-      status: "error",
-      sourceCount: recentRecords.length,
-    };
+    return { status: "error", sourceCount: recentRecords.length };
   }
 }

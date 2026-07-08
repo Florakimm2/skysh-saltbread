@@ -1,3 +1,5 @@
+// frontend/dashboard/ai-insights-page.tsx
+
 import type { DashboardInsightResult } from "@/backend/modules/insight/types";
 import PageHeader from "./page-header";
 import { SparklesIcon } from "./icons";
@@ -8,6 +10,11 @@ export default function AiInsightsPage({
 }: {
   insight: DashboardInsightResult;
 }) {
+// 💡 수정: ready 상태일 때만 데이터를 안전하게 꺼냅니다.
+  const rawData = insight.status === "ready" ? insight.parsedData : {};
+  const summaryText = insight.status === "ready" ? insight.insight : "";
+  const cards = rawData.cards || [];
+
   return (
     <>
       <PageHeader
@@ -40,9 +47,40 @@ export default function AiInsightsPage({
               <SparklesIcon />
             </span>
             <div>
-              {insight.insight.split(/\n+/).map((paragraph, index) => (
+              {/* 상단 요약 문장 렌더링 */}
+              {summaryText.split(/\n+/).map((paragraph: string, index: number) => (
                 <p key={`${index}-${paragraph.slice(0, 16)}`}>{paragraph}</p>
               ))}
+
+              {/* 💡 핵심 수정: 하단 인사이트 카드 리스트 렌더링 */}
+              {cards.length > 0 && (
+                <div style={{ marginTop: "24px", display: "flex", flexDirection: "column", gap: "12px" }}>
+                  {cards.map((card: any, index: number) => (
+                    <div 
+                      key={index} 
+                      style={{ 
+                        padding: "16px", 
+                        borderRadius: "12px", 
+                        backgroundColor: "var(--surface-color, #f8f9fa)", 
+                        border: "1px solid var(--border-color, #e9ecef)" 
+                      }}
+                    >
+                      <h3 style={{ 
+                        margin: "0 0 8px 0", 
+                        fontSize: "16px", 
+                        fontWeight: "600",
+                        // 위험도에 따라 글씨 색상을 다르게 표현합니다 (critical/high는 빨간색 계열)
+                        color: card.severity === "critical" || card.severity === "high" ? "#e03131" : "#1971c2" 
+                      }}>
+                        {card.title}
+                      </h3>
+                      <p style={{ margin: 0, fontSize: "14px", color: "var(--text-color, #495057)", lineHeight: "1.5" }}>
+                        {card.description}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </article>
         ) : (

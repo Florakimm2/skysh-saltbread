@@ -32,7 +32,7 @@ function removeUndefined<T extends Record<string, unknown>>(object: T) {
   ) as T;
 }
 
-function toIsoString(value: unknown): string {
+export function toIsoString(value: unknown): string {
   if (!value) return new Date().toISOString();
 
   if (

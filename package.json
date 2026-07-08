@@ -5,14 +5,15 @@
   "scripts": {
     "configure:extension": "node scripts/sync-extension-config.mjs",
     "dev:frontend": "next dev",
-    "dev:ai_server": "cd ai_server && ./venv/bin/python -m uvicorn app.main:app --port 8000",
+    "dev:ai_server": "cd ai_server && .\\venv\\Scripts\\python -m uvicorn app.main:app --port 8000",
     "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:ai_server\"",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
     "test:extension": "node --test tests/*.test.js"
-},
+  },
   "dependencies": {
+    "decimal.js": "^10.6.0",
     "firebase": "^12.15.0",
     "firebase-admin": "^14.1.0",
     "next": "16.2.9",
@@ -25,6 +26,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/decimal.js": "^0.0.32",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
