@@ -1,108 +1,77 @@
-const API_BASE_URL = globalThis.SALTBREAD_CONFIG.apiBaseUrl;
-const CONSENT_STORAGE_KEY = "behaviorDataConsent";
-const CONSENT_VERSION = 1;
-const consentView = document.querySelector("#consent-view");
-const authView = document.querySelector("#auth-view");
+const popupRoot = document.documentElement;
+const loadingView = document.querySelector("#loading-view");
+const signedOutView = document.querySelector("#signed-out-view");
 const accountView = document.querySelector("#account-view");
-const acceptConsentButton = document.querySelector("#accept-consent-button");
-const declineConsentButton = document.querySelector("#decline-consent-button");
-const behaviorConsentCheckbox = document.querySelector(
-  "#behavior-consent-checkbox",
-);
-const loginTab = document.querySelector("#login-tab");
-const signupTab = document.querySelector("#signup-tab");
-const loginForm = document.querySelector("#login-form");
-const signupForm = document.querySelector("#signup-form");
-const accountName = document.querySelector("#account-name");
-const accountEmail = document.querySelector("#account-email");
+const openLoginButton = document.querySelector("#open-login-button");
+const openSignupButton = document.querySelector("#open-signup-button");
+const loginMessage = document.querySelector("#login-message");
+const accountGreeting = document.querySelector("#account-greeting");
+const openOnboardingButton = document.querySelector("#open-onboarding-button");
+const statisticsSummary = document.querySelector("#statistics-summary");
 const accountMessage = document.querySelector("#account-message");
 const logoutButton = document.querySelector("#logout-button");
+const apiKeyToggle = document.querySelector("#api-key-toggle");
+const apiKeyDetails = document.querySelector("#api-key-details");
 const apiKeyForm = document.querySelector("#api-key-form");
 const apiKeyStatus = document.querySelector("#api-key-status");
 const apiKeyMessage = document.querySelector("#api-key-message");
 const saveApiKeyButton = document.querySelector("#save-api-key-button");
 const unlockApiKeyButton = document.querySelector("#unlock-api-key-button");
 const deleteApiKeyButton = document.querySelector("#delete-api-key-button");
-const popupRoot = document.documentElement;
-let hasBehaviorDataConsent = false;
-const popupFlame = new CuteIdleFlame("#popup-flame", {
-  mode: "default",
-  label: "현재 감정 매매 상태를 보여주는 불꽃",
-});
+let authLoadRequestId = 0;
 
-function normalizeFlameMode(mode) {
-  return ["default", "blue", "pink"].includes(mode) ? mode : "default";
+function setPopupView(view) {
+  const normalizedView =
+    view === "account" || view === "signed-out" ? view : "loading";
+  popupRoot.dataset.view = normalizedView;
+  loadingView.hidden = normalizedView !== "loading";
+  signedOutView.hidden = normalizedView !== "signed-out";
+  accountView.hidden = normalizedView !== "account";
 }
 
-function applyFlameTheme(mode) {
-  const normalizedMode = normalizeFlameMode(mode);
-  popupRoot.dataset.flameMode = normalizedMode;
-  popupFlame.setMode(normalizedMode);
-}
+function renderStatistics() {
+  // TODO : (통계 API)
+  const tradeLogCount = 0;
+  // TODO : (통계 API)
+  const emotionalFeedbackCount = 0;
 
-function showForm(type) {
-  const isLogin = type === "login";
-
-  loginForm.hidden = !isLogin;
-  signupForm.hidden = isLogin;
-  loginTab.classList.toggle("is-active", isLogin);
-  signupTab.classList.toggle("is-active", !isLogin);
-  loginTab.setAttribute("aria-selected", String(isLogin));
-  signupTab.setAttribute("aria-selected", String(!isLogin));
+  statisticsSummary.textContent =
+    `불씨와 함께 (${tradeLogCount})개의 기록을 쌓고 ` +
+    `(${emotionalFeedbackCount})개의 감정 매도를 막았어요!`;
 }
 
 function showAccount(user) {
-  accountName.textContent = user.name || "Fireguard 사용자";
-  accountEmail.textContent = user.email;
-  consentView.hidden = true;
-  authView.hidden = true;
-  accountView.hidden = false;
+  const userName = user.name || "불씨 사용자";
+  const onboardingReady =
+    Boolean(user.personalDataConsentAgreed) &&
+    Boolean(user.onboardingCompleted);
+  accountGreeting.textContent = onboardingReady
+    ? `${userName} 님, 오늘도 좋은 하루에요.`
+    : `${userName} 님, 개인정보 동의와 온보딩을 완료해 주세요.`;
+  openOnboardingButton.hidden = onboardingReady;
+  accountMessage.textContent = "";
+  setPopupView("account");
+  renderStatistics();
   refreshCredentialStatus();
 }
 
-function showAuth() {
-  consentView.hidden = true;
-  authView.hidden = false;
-  accountView.hidden = true;
-  accountMessage.textContent = "";
+function showLoading() {
+  setPopupView("loading");
 }
 
-function showConsent() {
-  behaviorConsentCheckbox.checked = false;
-  acceptConsentButton.disabled = true;
-  consentView.hidden = false;
-  authView.hidden = true;
-  accountView.hidden = true;
-}
-
-function showSignedOutEntry() {
-  if (hasBehaviorDataConsent) {
-    showAuth();
-    return;
-  }
-
-  showConsent();
-}
-
-function setMessage(form, text, isSuccess = false) {
-  const message = form.querySelector(".message");
-  message.textContent = text;
-  message.classList.toggle("is-success", isSuccess);
-}
-
-function setSubmitting(form, isSubmitting) {
-  const button = form.querySelector("button[type='submit']");
-  button.disabled = isSubmitting;
-  button.textContent = isSubmitting
-    ? "처리 중..."
-    : form === loginForm
-      ? "로그인"
-      : "회원가입";
+function showSignedOut() {
+  loginMessage.textContent = "";
+  setPopupView("signed-out");
 }
 
 function setApiKeyMessage(text, isSuccess = false) {
   apiKeyMessage.textContent = text;
   apiKeyMessage.classList.toggle("is-success", isSuccess);
+}
+
+function setApiKeyExpanded(isExpanded) {
+  apiKeyToggle.setAttribute("aria-expanded", String(isExpanded));
+  apiKeyDetails.hidden = !isExpanded;
 }
 
 async function sendBackgroundMessage(type, payload = undefined) {
@@ -121,9 +90,9 @@ async function refreshCredentialStatus() {
       "GET_UPBIT_CREDENTIAL_STATUS",
     );
     apiKeyStatus.textContent = !status.configured
-      ? "미설정"
+      ? "연결 전"
       : status.unlocked
-        ? "정상 연결"
+        ? "연결됨"
         : "잠김";
     apiKeyStatus.dataset.state = !status.configured
       ? "empty"
@@ -133,155 +102,48 @@ async function refreshCredentialStatus() {
     unlockApiKeyButton.hidden = !status.configured || status.unlocked;
     deleteApiKeyButton.hidden = !status.configured;
     saveApiKeyButton.textContent = status.configured
-      ? "API 키 다시 등록하기"
-      : "암호화 저장";
+      ? "새 키 검증 후 다시 저장"
+      : "검증 후 암호화 저장";
   } catch (error) {
     setApiKeyMessage(error.message);
   }
 }
 
-async function request(path, options = {}) {
-  let response;
+async function openAuth(mode, button) {
+  button.disabled = true;
+  loginMessage.textContent = "";
 
   try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
-      credentials: "include",
-      ...options,
-      headers: {
-        ...(options.body ? { "Content-Type": "application/json" } : {}),
-        ...options.headers,
-      },
-    });
-  } catch {
-    throw new Error("서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.");
+    await sendBackgroundMessage("OPEN_AUTH", { mode });
+    window.close();
+  } catch (error) {
+    loginMessage.textContent = error.message;
+    button.disabled = false;
   }
-
-  const data = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    const statusMessages = {
-      400: "입력한 정보를 다시 확인해 주세요.",
-      401: "이메일 또는 비밀번호가 올바르지 않습니다.",
-      409: "이미 사용 중인 이메일입니다.",
-    };
-
-    throw new Error(
-      data.message || statusMessages[response.status] || "요청에 실패했습니다.",
-    );
-  }
-
-  return data;
 }
 
-loginTab.addEventListener("click", () => showForm("login"));
-signupTab.addEventListener("click", () => showForm("signup"));
-
-behaviorConsentCheckbox.addEventListener("change", () => {
-  acceptConsentButton.disabled = !behaviorConsentCheckbox.checked;
-});
-
-acceptConsentButton.addEventListener("click", async () => {
-  if (!behaviorConsentCheckbox.checked) {
-    return;
-  }
-
-  acceptConsentButton.disabled = true;
+openLoginButton.addEventListener("click", () =>
+  openAuth("login", openLoginButton),
+);
+openSignupButton.addEventListener("click", () =>
+  openAuth("signup", openSignupButton),
+);
+openOnboardingButton.addEventListener("click", async () => {
+  openOnboardingButton.disabled = true;
+  accountMessage.textContent = "";
 
   try {
-    await chrome.storage.local.set({
-      [CONSENT_STORAGE_KEY]: {
-        accepted: true,
-        version: CONSENT_VERSION,
-        acceptedAt: new Date().toISOString(),
-      },
-    });
-    hasBehaviorDataConsent = true;
-    await initialize();
-
-    if (!authView.hidden) {
-      loginForm.elements.email.focus();
-    }
-  } finally {
-    acceptConsentButton.disabled = !behaviorConsentCheckbox.checked;
-  }
-});
-
-declineConsentButton.addEventListener("click", () => {
-  window.close();
-});
-
-loginForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  setMessage(loginForm, "");
-
-  if (!loginForm.reportValidity()) {
-    return;
-  }
-
-  const formData = new FormData(loginForm);
-  setSubmitting(loginForm, true);
-
-  try {
-    const data = await request("/api/auth/login", {
-      method: "POST",
-      body: JSON.stringify({
-        email: formData.get("email").trim(),
-        password: formData.get("password"),
-      }),
-    });
-
-    await chrome.storage.local.set({
-      auth: {
-        accessToken: data.accessToken,
-        expiresAt: Date.now() + data.expiresIn * 1000,
-        user: data.user,
-      },
-    });
-    showAccount(data.user);
-    loginForm.reset();
+    await sendBackgroundMessage("OPEN_ONBOARDING");
+    window.close();
   } catch (error) {
-    setMessage(loginForm, error.message);
-  } finally {
-    setSubmitting(loginForm, false);
+    accountMessage.textContent = error.message;
+    openOnboardingButton.disabled = false;
   }
 });
 
-signupForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  setMessage(signupForm, "");
-
-  if (!signupForm.reportValidity()) {
-    return;
-  }
-
-  const formData = new FormData(signupForm);
-  const email = formData.get("email").trim();
-  setSubmitting(signupForm, true);
-
-  try {
-    const data = await request("/api/auth/signup", {
-      method: "POST",
-      body: JSON.stringify({
-        name: formData.get("name").trim(),
-        email,
-        password: formData.get("password"),
-      }),
-    });
-
-    signupForm.reset();
-    showForm("login");
-    loginForm.elements.email.value = email;
-    setMessage(
-      loginForm,
-      data.message || "회원가입이 완료되었습니다. 로그인해 주세요.",
-      true,
-    );
-    loginForm.elements.password.focus();
-  } catch (error) {
-    setMessage(signupForm, error.message);
-  } finally {
-    setSubmitting(signupForm, false);
-  }
+apiKeyToggle.addEventListener("click", () => {
+  const isExpanded = apiKeyToggle.getAttribute("aria-expanded") === "true";
+  setApiKeyExpanded(!isExpanded);
 });
 
 apiKeyForm.addEventListener("submit", async (event) => {
@@ -299,6 +161,7 @@ apiKeyForm.addEventListener("submit", async (event) => {
   }
 
   saveApiKeyButton.disabled = true;
+  saveApiKeyButton.textContent = "권한을 검증하고 있어요...";
 
   try {
     await sendBackgroundMessage("SAVE_UPBIT_CREDENTIALS", {
@@ -307,12 +170,16 @@ apiKeyForm.addEventListener("submit", async (event) => {
       passphrase,
     });
     apiKeyForm.reset();
-    setApiKeyMessage("API 키를 암호화해 저장하고 잠금을 해제했습니다.", true);
+    setApiKeyMessage(
+      "API 키와 필수 권한을 확인하고 암호화해 저장했습니다.",
+      true,
+    );
     await refreshCredentialStatus();
   } catch (error) {
     setApiKeyMessage(error.message);
   } finally {
     saveApiKeyButton.disabled = false;
+    await refreshCredentialStatus();
   }
 });
 
@@ -357,82 +224,52 @@ deleteApiKeyButton.addEventListener("click", async () => {
 
 logoutButton.addEventListener("click", async () => {
   logoutButton.disabled = true;
-  logoutButton.textContent = "처리 중...";
   accountMessage.textContent = "";
 
   try {
-    const { auth } = await chrome.storage.local.get("auth");
-
-    await request("/api/auth/logout", {
-      method: "POST",
-      headers: auth?.accessToken
-        ? { Authorization: `Bearer ${auth.accessToken}` }
-        : {},
-    });
-  } catch {
-    // 서버 세션이 이미 만료되었어도 로컬 인증 정보는 제거합니다.
+    const response = await sendBackgroundMessage("LOGOUT_EVERYWHERE");
+    if (response.serverError) {
+      accountMessage.textContent =
+        "서버 세션은 이미 만료됐지만 이 브라우저의 정보는 모두 정리했어요.";
+    }
+    showSignedOut();
+  } catch (error) {
+    accountMessage.textContent = error.message;
   } finally {
-    await chrome.runtime.sendMessage({ type: "LOCK_UPBIT_CREDENTIALS" });
-    await chrome.storage.local.remove("auth");
     logoutButton.disabled = false;
-    logoutButton.textContent = "로그아웃";
-    showSignedOutEntry();
   }
 });
 
 async function initialize() {
-  const { auth, flameTheme, behaviorDataConsent } =
-    await chrome.storage.local.get([
-      "auth",
-      "flameTheme",
-      CONSENT_STORAGE_KEY,
-    ]);
-  applyFlameTheme(flameTheme?.mode);
-  hasBehaviorDataConsent =
-    behaviorDataConsent?.accepted === true &&
-    behaviorDataConsent.version === CONSENT_VERSION;
+  const requestId = authLoadRequestId + 1;
+  authLoadRequestId = requestId;
+  showLoading();
 
-  if (!hasBehaviorDataConsent) {
-    showConsent();
-    return;
-  }
+  try {
+    const { auth } = await sendBackgroundMessage("GET_AUTH_STATE");
+    if (requestId !== authLoadRequestId) {
+      return;
+    }
 
-  if (auth?.user && auth.expiresAt > Date.now()) {
-    showAccount(auth.user);
-    return;
-  }
-
-  if (auth?.user && auth.accessToken) {
-    try {
-      const data = await request("/api/auth/refresh", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${auth.accessToken}` },
-      });
-
-      if (data.accessToken && data.expiresIn) {
-        await chrome.storage.local.set({
-          auth: {
-            ...auth,
-            accessToken: data.accessToken,
-            expiresAt: Date.now() + data.expiresIn * 1000,
-          },
-        });
-        showAccount(auth.user);
-        return;
-      }
-    } catch {
-      // refresh token까지 만료된 경우 아래에서 로컬 인증 정보를 제거합니다.
+    if (auth?.user) {
+      showAccount(auth.user);
+      return;
+    }
+  } catch {
+    // 만료된 세션은 background에서 정리하고 비로그인 화면을 표시합니다.
+    if (requestId !== authLoadRequestId) {
+      return;
     }
   }
 
-  await chrome.storage.local.remove("auth");
-  showSignedOutEntry();
+  showSignedOut();
 }
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName === "local" && changes.flameTheme) {
-    applyFlameTheme(changes.flameTheme.newValue?.mode);
+  if (areaName === "local" && changes.auth) {
+    initialize();
   }
 });
 
+setApiKeyExpanded(false);
 initialize();

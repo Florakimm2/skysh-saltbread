@@ -1,8 +1,9 @@
 // backend/modules/market/types.ts
 
-export interface UpbitTickerResponse {
+  export interface UpbitTickerResponse {
     market: string;
     trade_price: number;
+    signed_change_rate?: number;
     timestamp: number;
   }
   
@@ -25,6 +26,8 @@ export interface UpbitTickerResponse {
     currentPrice: number;
     price15mAgo: number;
     changeRate15m: number;
+    signedChangeRate: number | null;
+    shortTermReturn5m: number | null;
     latestVolume: number;
     avgVolume10m: number;
     volumeSpikeRatio: number;

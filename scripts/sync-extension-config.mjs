@@ -62,7 +62,6 @@ globalThis.SALTBREAD_CONFIG = Object.freeze({
   appOrigins: ${JSON.stringify(appOrigins)},
   apiBaseUrl: ${JSON.stringify(appUrl)},
   dashboardUrl: ${JSON.stringify(`${appUrl}/dashboard`)},
-  detectPath: "/api/ext/detect",
   behaviorEventsPath: "/api/behavior/events",
   upbitApiBaseUrl: "https://api.upbit.com",
 });

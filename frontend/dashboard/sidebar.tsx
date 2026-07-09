@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import FlameIcon from "./flame-icon";
-import { SparklesIcon, TrendIcon } from "./icons";
+import FlameMascot from "@/frontend/auth/flame-mascot";
+import { SparklesIcon, TrendIcon, UserIcon } from "./icons";
+import LogoutButton from "./logout-button";
 import styles from "./dashboard.module.css";
 
 const navigation = [
@@ -17,6 +18,11 @@ const navigation = [
     label: "AI 인사이트",
     icon: SparklesIcon,
   },
+  {
+    href: "/dashboard/my-page",
+    label: "마이페이지",
+    icon: UserIcon,
+  },
 ];
 
 export default function Sidebar() {
@@ -26,18 +32,18 @@ export default function Sidebar() {
     <aside className={styles.sidebar}>
       <Link className={styles.brand} href="/dashboard" aria-label="대시보드 홈">
         <span className={styles.brandMark}>
-          <FlameIcon />
+          <FlameMascot label="" size={48} speed="slow" />
         </span>
         <span className={styles.brandText}>
-          <strong>Fireguard</strong>
-          <span>details</span>
+          <strong>불씨</strong>
+          <span>CALM INVESTING</span>
         </span>
       </Link>
 
       <p className={styles.navLabel}>ANALYTICS</p>
       <nav className={styles.nav} aria-label="대시보드 메뉴">
         {navigation.map(({ href, label, icon: Icon }) => {
-          const isActive = pathname === href;
+          const isActive = pathname === href || pathname.startsWith(`${href}/`);
 
           return (
             <Link
@@ -58,7 +64,12 @@ export default function Sidebar() {
       </nav>
 
       <div className={styles.sidebarFooter}>
-        <p>더 나은 투자 판단을 위한<br />개인 트레이딩 대시보드</p>
+        <p>
+          더 차분한 투자 판단을 위한
+          <br />
+          나만의 트레이딩 가드레일
+        </p>
+        <LogoutButton />
       </div>
     </aside>
   );

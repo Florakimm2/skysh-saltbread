@@ -6,14 +6,18 @@ const {
   calculateAverageBuyAmount,
   calculateMarketData,
   detectOrderActionSide,
+  evaluateGuardrailRules,
+  evaluateRuleExpression,
   mapUpbitOrder,
   parseMarket,
-  resolveFlameMode,
+  resolveVisualMode,
 } = require("../chrome-extension/data-core.js");
 
 test("매수하기와 매도하기를 주문 액션으로 구분한다", () => {
   assert.equal(detectOrderActionSide("매수하기"), "BUY");
+  assert.equal(detectOrderActionSide("매수확인"), "BUY");
   assert.equal(detectOrderActionSide(" 매도하기 "), "SELL");
+  assert.equal(detectOrderActionSide("매도확인"), "SELL");
   assert.equal(detectOrderActionSide("매수주문"), "BUY");
   assert.equal(detectOrderActionSide("매도"), "SELL");
   assert.equal(detectOrderActionSide("매수 탭"), null);
@@ -136,19 +140,331 @@ test("최근 매수 체결 금액 평균을 계산한다", () => {
   assert.equal(calculateAverageBuyAmount(orders), 200_000);
 });
 
-test("감정 매매 감지 결과와 주문 방향을 불꽃 모드로 바꾼다", () => {
-  assert.equal(resolveFlameMode({ detected: true }, "BUY"), "pink");
-  assert.equal(resolveFlameMode({ detected: true }, "SELL"), "blue");
+test("사용자 규칙 expression은 AND/OR와 null 조건을 판정한다", () => {
+  const expression = {
+    nodeType: "GROUP",
+    operator: "OR",
+    children: [
+      {
+        nodeType: "GROUP",
+        operator: "AND",
+        children: [
+          {
+            nodeType: "CONDITION",
+            leftField: "side",
+            operator: "EQ",
+            rightOperand: { operandType: "LITERAL", value: "BUY" },
+          },
+          {
+            nodeType: "CONDITION",
+            leftField: "requestedBalanceRatio",
+            operator: "GTE",
+            rightOperand: { operandType: "LITERAL", value: 0.7 },
+          },
+        ],
+      },
+      {
+        nodeType: "CONDITION",
+        leftField: "baseAssetAvgBuyPriceBeforeSnapshot",
+        operator: "IS_NULL",
+      },
+    ],
+  };
+
   assert.equal(
-    resolveFlameMode(
-      { detected: true, type: "REVENGE_TRADING" },
-      "BUY",
+    evaluateRuleExpression(expression, {
+      side: "BUY",
+      requestedBalanceRatio: 0.8,
+      baseAssetAvgBuyPriceBeforeSnapshot: "100",
+    }),
+    true,
+  );
+  assert.equal(
+    evaluateRuleExpression(expression, {
+      side: "SELL",
+      requestedBalanceRatio: 0.8,
+      baseAssetAvgBuyPriceBeforeSnapshot: null,
+    }),
+    true,
+  );
+  assert.equal(
+    evaluateRuleExpression(expression, {
+      side: "SELL",
+      requestedBalanceRatio: 0.8,
+      baseAssetAvgBuyPriceBeforeSnapshot: "100",
+    }),
+    false,
+  );
+});
+
+test("사용자 규칙은 우선순위와 비활성 규칙을 반영한다", () => {
+  const rules = [
+    {
+      ruleId: "disabled",
+      isEnabled: false,
+      priority: 0,
+      visualMode: "SCARED",
+      expression: {
+        nodeType: "CONDITION",
+        leftField: "side",
+        operator: "EQ",
+        rightOperand: { operandType: "LITERAL", value: "BUY" },
+      },
+    },
+    {
+      ruleId: "medium",
+      isEnabled: true,
+      priority: 10,
+      visualMode: "CURIOUS",
+      warningTitle: "중간",
+      warningMessage: "중간 규칙",
+      expression: {
+        nodeType: "CONDITION",
+        leftField: "side",
+        operator: "EQ",
+        rightOperand: { operandType: "LITERAL", value: "BUY" },
+      },
+    },
+    {
+      ruleId: "top",
+      isEnabled: true,
+      priority: 1,
+      visualMode: "FAST_BURN",
+      warningTitle: "우선",
+      warningMessage: "우선 규칙",
+      expression: {
+        nodeType: "CONDITION",
+        leftField: "orderMode",
+        operator: "IN",
+        rightOperand: { operandType: "LITERAL", value: ["MARKET", "BEST"] },
+      },
+    },
+  ];
+  const result = evaluateGuardrailRules(rules, {
+    side: "BUY",
+    orderMode: "MARKET",
+  });
+
+  assert.equal(result.detected, true);
+  assert.deepEqual(result.matchedRuleIds, ["top", "medium"]);
+  assert.equal(result.primaryRuleId, "top");
+  assert.equal(result.visualMode, "FAST_BURN");
+});
+
+test("snapshot 기반 시장·개인·행동 규칙 6종을 평가한다", () => {
+  const rules = [
+    {
+      ruleId: "rapid-buy",
+      isEnabled: true,
+      priority: 1,
+      expression: {
+        nodeType: "GROUP",
+        operator: "AND",
+        children: [
+          {
+            nodeType: "CONDITION",
+            leftField: "signedChangeRate",
+            operator: "GTE",
+            rightOperand: { operandType: "LITERAL", value: 0.1 },
+          },
+          {
+            nodeType: "CONDITION",
+            leftField: "side",
+            operator: "EQ",
+            rightOperand: { operandType: "LITERAL", value: "BUY" },
+          },
+        ],
+      },
+    },
+    {
+      ruleId: "short-return-market",
+      isEnabled: true,
+      priority: 2,
+      expression: {
+        nodeType: "GROUP",
+        operator: "AND",
+        children: [
+          {
+            nodeType: "CONDITION",
+            leftField: "shortTermReturn5m",
+            operator: "GTE",
+            rightOperand: { operandType: "LITERAL", value: 0.05 },
+          },
+          {
+            nodeType: "CONDITION",
+            leftField: "orderMode",
+            operator: "EQ",
+            rightOperand: { operandType: "LITERAL", value: "MARKET" },
+          },
+        ],
+      },
+    },
+    {
+      ruleId: "large-balance-ratio",
+      isEnabled: true,
+      priority: 3,
+      expression: {
+        nodeType: "CONDITION",
+        leftField: "requestedBalanceRatio",
+        operator: "GTE",
+        rightOperand: { operandType: "LITERAL", value: 0.5 },
+      },
+    },
+    {
+      ruleId: "many-orders",
+      isEnabled: true,
+      priority: 4,
+      expression: {
+        nodeType: "CONDITION",
+        leftField: "actualOrderCreatedCount10m",
+        operator: "GTE",
+        rightOperand: { operandType: "LITERAL", value: 3 },
+      },
+    },
+    {
+      ruleId: "loss-sell",
+      isEnabled: true,
+      priority: 5,
+      expression: {
+        nodeType: "GROUP",
+        operator: "AND",
+        children: [
+          {
+            nodeType: "CONDITION",
+            leftField: "priceVsAvgBuyRateAtSnapshot",
+            operator: "LTE",
+            rightOperand: { operandType: "LITERAL", value: -0.08 },
+          },
+          {
+            nodeType: "CONDITION",
+            leftField: "side",
+            operator: "EQ",
+            rightOperand: { operandType: "LITERAL", value: "SELL" },
+          },
+        ],
+      },
+    },
+    {
+      ruleId: "repeat-intent",
+      isEnabled: true,
+      priority: 6,
+      expression: {
+        nodeType: "CONDITION",
+        leftField: "orderIntentCount1m",
+        operator: "GTE",
+        rightOperand: { operandType: "LITERAL", value: 3 },
+      },
+    },
+  ];
+
+  const buyResult = evaluateGuardrailRules(rules, {
+    side: "BUY",
+    orderMode: "MARKET",
+    signedChangeRate: 0.11,
+    shortTermReturn5m: 0.06,
+    requestedBalanceRatio: 0.5,
+    actualOrderCreatedCount10m: 3,
+    priceVsAvgBuyRateAtSnapshot: -0.09,
+    orderIntentCount1m: 3,
+  });
+  assert.deepEqual(buyResult.matchedRuleIds, [
+    "rapid-buy",
+    "short-return-market",
+    "large-balance-ratio",
+    "many-orders",
+    "repeat-intent",
+  ]);
+
+  const sellResult = evaluateGuardrailRules(rules, {
+    side: "SELL",
+    orderMode: "LIMIT",
+    priceVsAvgBuyRateAtSnapshot: -0.09,
+    orderIntentCount1m: 1,
+  });
+  assert.deepEqual(sellResult.matchedRuleIds, ["loss-sell"]);
+
+  const missingDataResult = evaluateGuardrailRules(rules, {
+    side: "BUY",
+    orderMode: "MARKET",
+  });
+  assert.equal(missingDataResult.detected, false);
+});
+
+test("사용자 규칙은 decimal string FIELD 비교와 NOT_IN을 처리한다", () => {
+  assert.equal(
+    evaluateRuleExpression(
+      {
+        nodeType: "CONDITION",
+        leftField: "tradePriceAtSnapshot",
+        operator: "LT",
+        rightOperand: {
+          operandType: "FIELD",
+          field: "baseAssetAvgBuyPriceBeforeSnapshot",
+        },
+      },
+      {
+        tradePriceAtSnapshot: "99.99",
+        baseAssetAvgBuyPriceBeforeSnapshot: "100.00",
+      },
     ),
-    "blue",
+    true,
   );
   assert.equal(
-    resolveFlameMode({ detected: true, type: "HESITATION" }, "BUY"),
-    "blue",
+    evaluateRuleExpression(
+      {
+        nodeType: "CONDITION",
+        leftField: "orderMode",
+        operator: "NOT_IN",
+        rightOperand: { operandType: "LITERAL", value: ["LIMIT"] },
+      },
+      { orderMode: "MARKET" },
+    ),
+    true,
   );
-  assert.equal(resolveFlameMode({ detected: false }, "SELL"), "default");
+});
+
+test("content snapshot 숫자·불리언 필드는 문자열이 아니라 타입에 맞게 비교한다", () => {
+  assert.equal(
+    evaluateRuleExpression(
+      {
+        nodeType: "CONDITION",
+        leftField: "orderIntentCount1m",
+        operator: "GT",
+        rightOperand: { operandType: "LITERAL", value: 2 },
+      },
+      { orderIntentCount1m: 10 },
+    ),
+    true,
+  );
+  assert.equal(
+    evaluateRuleExpression(
+      {
+        nodeType: "CONDITION",
+        leftField: "modeChangedToMarket",
+        operator: "EQ",
+        rightOperand: { operandType: "LITERAL", value: true },
+      },
+      { modeChangedToMarket: true },
+    ),
+    true,
+  );
+  assert.equal(
+    evaluateRuleExpression(
+      {
+        nodeType: "CONDITION",
+        leftField: "spreadRate",
+        operator: "LT",
+        rightOperand: { operandType: "LITERAL", value: 0.01 },
+      },
+      { spreadRate: 0.001 },
+    ),
+    true,
+  );
+});
+
+test("visualMode는 DTO 값과 기존 alias를 모두 지원한다", () => {
+  assert.equal(resolveVisualMode("SCARED"), "SCARED");
+  assert.equal(resolveVisualMode("pink"), "SCARED");
+  assert.equal(resolveVisualMode("blue"), "SAD");
+  assert.equal(resolveVisualMode(null), "DEFAULT");
 });

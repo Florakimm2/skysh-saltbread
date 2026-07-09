@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Fireguard",
-  "description": "Fireguard 서비스에 로그인하고 계정을 관리합니다.",
+  "name": "불씨",
+  "description": "업비트 주문 전 감정적 매매 패턴을 감지하고 사이드바 경고 및 쿨다운을 통해 올바른 투자 결정을 돕는 서비스입니다.",
   "version": "1.0.0",
   "icons": {
     "16": "icon-16.png",
@@ -9,13 +9,22 @@
     "48": "icon-48.png",
     "128": "icon-128.png"
   },
-  "permissions": ["alarms", "storage", "tabs"],
+  "permissions": ["cookies", "storage", "tabs", "alarms"],
   "host_permissions": [
     "https://skysh-saltbread.vercel.app/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
     "https://api.upbit.com/*"
   ],
+  "externally_connectable": {
+    "matches": [
+      "https://skysh-saltbread.vercel.app/*",
+      "http://localhost/*",
+      "http://127.0.0.1/*"
+    ]
+  },
   "action": {
-    "default_title": "Fireguard",
+    "default_title": "불씨",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icon-16.png",
@@ -30,10 +39,11 @@
       "matches": [
         "https://upbit.com/exchange*",
         "https://www.upbit.com/exchange*",
-        "http://localhost:3000/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*",
         "https://skysh-saltbread.vercel.app/*"
       ],
-      "js": ["config.js", "cute-idle-flame.js", "data-core.js", "content.js"],
+      "js": ["config.js", "flame-animation.js", "data-core.js", "content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
     }

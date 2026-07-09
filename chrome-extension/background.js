@@ -2,32 +2,210 @@ importScripts("config.js", "data-core.js");
 
 const {
   calculateAverageBuyAmount,
-  calculateMarketData,
+  evaluateGuardrailRules,
   mapUpbitOrder,
-  resolveFlameMode,
+  parseMarket,
+  resolveVisualMode,
+  toNumber,
 } = globalThis.SaltbreadCore;
 const {
   appUrl: APP_URL,
   appOrigins,
   apiBaseUrl: API_BASE_URL,
-  dashboardUrl: DASHBOARD_URL,
-  detectPath: DETECT_PATH,
   behaviorEventsPath: BEHAVIOR_EVENTS_PATH,
   upbitApiBaseUrl: UPBIT_API_BASE_URL,
 } = globalThis.SALTBREAD_CONFIG;
-const APP_TAB_URL_PATTERNS = [...new Set([APP_URL, ...(appOrigins || [])])].map(
-  (origin) => `${origin}/*`,
-);
-const COLLECTION_ALARM = "saltbread-minute-collection";
+const DEVELOPMENT_APP_HOSTNAMES = new Set(["localhost", "127.0.0.1"]);
+const ALLOWED_APP_ORIGINS = [
+  ...new Set([APP_URL, ...(appOrigins || [])]),
+];
+const APP_TAB_URL_PATTERNS = [
+  ...ALLOWED_APP_ORIGINS.map((origin) => `${origin}/*`),
+  "http://localhost/*",
+  "http://127.0.0.1/*",
+];
 const CREDENTIALS_STORAGE_KEY = "upbitCredentials";
 const SESSION_KEY_STORAGE_KEY = "upbitCredentialSessionKey";
+const GUARDRAIL_RULES_CACHE_KEY = "guardrailRulesCache";
+const MARKET_SNAPSHOT_CACHE_KEY = "marketSnapshotCache";
+const PERSONAL_SNAPSHOT_CACHE_KEY = "personalSnapshotCache";
+const SNAPSHOT_REFRESH_ALARM_NAME = "saltbread-snapshot-refresh";
+const REFRESH_TOKEN_COOKIE_NAME = "refreshToken";
 const PUBLIC_REQUEST_INTERVAL_MS = 10_100;
 const MARKET_DETAILS_CACHE_MS = 10 * 60 * 1000;
 const DETECTION_MARKET_CACHE_MS = 2 * 60 * 1000;
+const SNAPSHOT_REFRESH_PERIOD_MINUTES = 0.5;
+const LOG_SAVE_RETRY_DELAYS_MS = [500, 1_500];
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 let publicRequestQueue = Promise.resolve();
 let lastPublicRequestAt = 0;
+const loggedGuardrailRuleUsers = new Set();
+
+function normalizeAllowedAppOrigin(value) {
+  if (!value || typeof value !== "string") {
+    return null;
+  }
+
+  try {
+    const url = new URL(value);
+    const origin = url.origin;
+    const isDevelopmentOrigin =
+      url.protocol === "http:" &&
+      DEVELOPMENT_APP_HOSTNAMES.has(url.hostname);
+
+    return ALLOWED_APP_ORIGINS.includes(origin) || isDevelopmentOrigin
+      ? origin
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isDemoPageUrl(value) {
+  try {
+    const url = new URL(value || "");
+    return normalizeAllowedAppOrigin(url.href) === url.origin &&
+      url.pathname === "/demo";
+  } catch {
+    return false;
+  }
+}
+
+function isUpbitExchangeUrl(value) {
+  try {
+    const url = new URL(value || "");
+    return (
+      ["upbit.com", "www.upbit.com"].includes(url.hostname) &&
+      url.pathname.startsWith("/exchange")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isCollectableTradingUrl(value) {
+  return isUpbitExchangeUrl(value) || isDemoPageUrl(value);
+}
+
+async function reloadCollectableTradingTabs() {
+  const tabs = await chrome.tabs.query({});
+  await Promise.all(
+    tabs
+      .filter((tab) => tab?.id && isCollectableTradingUrl(tab.url))
+      .map(async (tab) => {
+        try {
+          await chrome.tabs.reload?.(tab.id);
+        } catch {
+          // best effort: credential save should not fail because a page reload failed
+        }
+      }),
+  );
+}
+
+function getSenderOrigin(sender) {
+  return normalizeAllowedAppOrigin(sender?.origin || sender?.url || "");
+}
+
+function getAuthApiBase(auth) {
+  return normalizeAllowedAppOrigin(auth?.appOrigin) || API_BASE_URL;
+}
+
+async function resolveCurrentAppOrigin() {
+  const activeTabs = await chrome.tabs.query({
+    active: true,
+    currentWindow: true,
+  });
+  const activeOrigin = normalizeAllowedAppOrigin(activeTabs[0]?.url);
+
+  if (activeOrigin) {
+    return activeOrigin;
+  }
+
+  const appTabs = await chrome.tabs.query({ url: APP_TAB_URL_PATTERNS });
+  const mostRecentOrigin = [...appTabs]
+    .sort((left, right) => (right.lastAccessed || 0) - (left.lastAccessed || 0))
+    .map((tab) => normalizeAllowedAppOrigin(tab.url))
+    .find(Boolean);
+
+  return mostRecentOrigin || normalizeAllowedAppOrigin(APP_URL) || APP_URL;
+}
+
+async function readRefreshCookie(appOrigin) {
+  if (!chrome.cookies?.get) {
+    throw new Error("확장 프로그램의 쿠키 권한을 확인해 주세요.");
+  }
+
+  return chrome.cookies.get({
+    url: `${appOrigin}/`,
+    name: REFRESH_TOKEN_COOKIE_NAME,
+  });
+}
+
+async function rotateRefreshCookie(appOrigin, refreshToken) {
+  if (!refreshToken || !chrome.cookies?.set) {
+    return;
+  }
+
+  await chrome.cookies.set({
+    url: `${appOrigin}/`,
+    name: REFRESH_TOKEN_COOKIE_NAME,
+    value: refreshToken,
+    path: "/",
+    httpOnly: true,
+    secure: appOrigin.startsWith("https://"),
+    sameSite: "lax",
+  });
+}
+
+async function refreshAuthForOrigin(appOrigin, currentAuth = {}) {
+  const cookie = await readRefreshCookie(appOrigin);
+
+  if (!cookie?.value) {
+    throw new Error("웹 로그인 세션을 찾지 못했어요. 다시 로그인해 주세요.");
+  }
+
+  const refreshed = await fetchJson(
+    `${appOrigin}/api/auth/extension/refresh`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refreshToken: cookie.value }),
+    },
+  );
+
+  if (!refreshed?.accessToken || !refreshed?.refreshToken || !refreshed?.user) {
+    throw new Error("서버에서 올바른 로그인 정보를 받지 못했어요.");
+  }
+
+  await rotateRefreshCookie(appOrigin, refreshed.refreshToken);
+
+  const auth = {
+    ...currentAuth,
+    accessToken: refreshed.accessToken,
+    expiresAt: Date.now() + Number(refreshed.expiresIn) * 1000,
+    user: refreshed.user,
+    appOrigin,
+  };
+  await chrome.storage.local.set({ auth });
+  if (hasCompletedOnboarding(auth)) {
+    void fetchGuardrailRules(auth).catch(() => {});
+  }
+  return auth;
+}
+
+async function handleAuthHandoff(appOrigin, sender = {}) {
+  const normalizedAppOrigin = normalizeAllowedAppOrigin(appOrigin);
+  const senderOrigin = getSenderOrigin(sender);
+
+  if (!normalizedAppOrigin || senderOrigin !== normalizedAppOrigin) {
+    throw new Error("허용되지 않은 앱 주소에서 보낸 연결 요청입니다.");
+  }
+
+  return refreshAuthForOrigin(normalizedAppOrigin);
+}
+
+globalThis.handleAuthHandoff = handleAuthHandoff;
 
 function bytesToBase64(bytes) {
   let binary = "";
@@ -184,6 +362,13 @@ async function removeCredentials() {
   ]);
 }
 
+async function clearExtensionSession() {
+  await Promise.all([
+    chrome.storage.local.remove("auth"),
+    removeCredentials(),
+  ]);
+}
+
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, options);
   const data = await response.json().catch(() => null);
@@ -193,13 +378,17 @@ async function fetchJson(url, options = {}) {
       data?.error?.message ||
       data?.message ||
       `요청에 실패했습니다. (${response.status})`;
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = response.status;
+    error.code = data?.error?.name || data?.name || null;
+    throw error;
   }
 
   return data;
 }
 
-async function getValidBackendAuth() {
+async function getValidBackendAuth(options = {}) {
+  const { refreshProfile = false } = options;
   const { auth } = await chrome.storage.local.get("auth");
 
   if (!auth?.accessToken || !auth?.user) {
@@ -207,7 +396,19 @@ async function getValidBackendAuth() {
   }
 
   if (auth.expiresAt > Date.now() + 60_000) {
-    return auth;
+    return refreshProfile ? refreshStoredAuthProfile(auth) : auth;
+  }
+
+  const appOrigin = normalizeAllowedAppOrigin(auth.appOrigin);
+
+  if (appOrigin) {
+    try {
+      const refreshed = await refreshAuthForOrigin(appOrigin, auth);
+      return refreshProfile ? refreshStoredAuthProfile(refreshed) : refreshed;
+    } catch (error) {
+      await clearExtensionSession();
+      throw error;
+    }
   }
 
   const refreshed = await fetchJson(`${API_BASE_URL}/api/auth/refresh`, {
@@ -220,7 +421,64 @@ async function getValidBackendAuth() {
     expiresAt: Date.now() + Number(refreshed.expiresIn) * 1000,
   };
   await chrome.storage.local.set({ auth: nextAuth });
-  return nextAuth;
+  return refreshProfile ? refreshStoredAuthProfile(nextAuth) : nextAuth;
+}
+
+async function getOptionalBackendAuth() {
+  try {
+    return await getValidBackendAuth();
+  } catch {
+    return null;
+  }
+}
+
+async function removeRefreshCookie(appOrigin) {
+  if (!chrome.cookies?.remove) {
+    return;
+  }
+
+  await chrome.cookies.remove({
+    url: `${appOrigin}/`,
+    name: REFRESH_TOKEN_COOKIE_NAME,
+  });
+}
+
+async function redirectAppTabsToLogin(appOrigin) {
+  const tabs = await chrome.tabs.query({ url: [`${appOrigin}/*`] });
+
+  await Promise.all(
+    tabs
+      .filter((tab) => typeof tab.id === "number")
+      .map((tab) => chrome.tabs.update?.(tab.id, { url: `${appOrigin}/login` })),
+  );
+}
+
+async function logoutEverywhere() {
+  const { auth } = await chrome.storage.local.get("auth");
+  const appOrigin =
+    normalizeAllowedAppOrigin(auth?.appOrigin) ||
+    (await resolveCurrentAppOrigin());
+  let serverError = null;
+
+  try {
+    await fetchJson(`${appOrigin}/api/auth/logout`, {
+      method: "POST",
+      credentials: "include",
+      headers: auth?.accessToken
+        ? { Authorization: `Bearer ${auth.accessToken}` }
+        : {},
+    });
+  } catch (error) {
+    serverError = error.message;
+  } finally {
+    await Promise.all([
+      removeRefreshCookie(appOrigin),
+      clearExtensionSession(),
+    ]);
+    await redirectAppTabsToLogin(appOrigin);
+  }
+
+  return { appOrigin, serverError };
 }
 
 function createBackendHeaders(auth, includeUserId = false) {
@@ -236,12 +494,144 @@ function createBackendHeaders(auth, includeUserId = false) {
   return headers;
 }
 
-async function postDetectionRequest(requestBody, auth) {
-  return fetchJson(`${API_BASE_URL}${DETECT_PATH}`, {
-    method: "POST",
+function hasCompletedOnboarding(auth) {
+  return Boolean(
+    auth?.user?.personalDataConsentAgreed &&
+      auth?.user?.onboardingCompleted,
+  );
+}
+
+async function refreshStoredAuthProfile(auth) {
+  if (!auth?.accessToken || !auth?.user) {
+    return auth;
+  }
+
+  const response = await fetchJson(`${getAuthApiBase(auth)}/api/me/profile`, {
+    method: "GET",
     headers: createBackendHeaders(auth),
-    body: JSON.stringify(requestBody),
   });
+  const profile = response?.data || {};
+  const nextAuth = {
+    ...auth,
+    user: {
+      ...auth.user,
+      email: profile.email || auth.user.email || "",
+      name: profile.displayName || auth.user.name || "",
+      personalDataConsentAgreed: Boolean(
+        profile.personalDataConsentAgreed,
+      ),
+      personalDataConsentAgreedAt:
+        profile.personalDataConsentAgreedAt || null,
+      personalDataConsentVersion:
+        profile.personalDataConsentVersion || null,
+      onboardingCompleted: Boolean(profile.onboardingCompleted),
+      onboardingCompletedAt: profile.onboardingCompletedAt || null,
+    },
+  };
+
+  if (JSON.stringify(nextAuth.user) !== JSON.stringify(auth.user)) {
+    await chrome.storage.local.set({ auth: nextAuth });
+  }
+
+  return nextAuth;
+}
+
+async function getCachedGuardrailRules() {
+  const result = await chrome.storage.local.get(GUARDRAIL_RULES_CACHE_KEY);
+  return result[GUARDRAIL_RULES_CACHE_KEY]?.rules || [];
+}
+
+async function getCachedGuardrailRulesState(auth = null) {
+  const result = await chrome.storage.local.get(GUARDRAIL_RULES_CACHE_KEY);
+  const cache = result[GUARDRAIL_RULES_CACHE_KEY] || {};
+  const rules = Array.isArray(cache.rules) ? cache.rules : [];
+
+  return {
+    rules,
+    source: cache.fetchedAt
+      ? "page-cache"
+      : auth?.accessToken
+        ? "not-loaded"
+        : "none",
+    error: null,
+    fetchedAt: cache.fetchedAt || null,
+    userId: cache.userId || null,
+  };
+}
+
+function summarizeGuardrailRulesForLog(rules) {
+  return rules.map((rule) => ({
+    ruleId: rule.ruleId,
+    name: rule.name,
+    isEnabled: rule.isEnabled,
+    priority: rule.priority,
+    riskLevel: rule.riskLevel,
+    visualMode: rule.visualMode,
+    warningTitle: rule.warningTitle,
+    requiresPrivateApi: rule.requiresPrivateApi,
+  }));
+}
+
+function logGuardrailRulesOnce(auth, rules) {
+  const userKey = auth?.user?.id || auth?.user?.email || "unknown-user";
+
+  if (loggedGuardrailRuleUsers.has(userKey)) {
+    return;
+  }
+
+  loggedGuardrailRuleUsers.add(userKey);
+  console.log(
+    "[Saltbread] Loaded user guardrail rules",
+    summarizeGuardrailRulesForLog(rules),
+  );
+}
+
+async function fetchGuardrailRules(existingAuth = null) {
+  const auth = existingAuth || (await getValidBackendAuth());
+
+  if (!auth?.accessToken) {
+    await chrome.storage.local.set({
+      [GUARDRAIL_RULES_CACHE_KEY]: {
+        rules: [],
+        userId: null,
+        fetchedAt: new Date().toISOString(),
+      },
+    });
+    return [];
+  }
+
+  const response = await fetchJson(`${getAuthApiBase(auth)}/api/me/guardrail-rules`, {
+    method: "GET",
+    headers: createBackendHeaders(auth),
+  });
+  const rules = Array.isArray(response?.data) ? response.data : [];
+  logGuardrailRulesOnce(auth, rules);
+
+  await chrome.storage.local.set({
+    [GUARDRAIL_RULES_CACHE_KEY]: {
+      rules,
+      userId: auth.user?.id || null,
+      fetchedAt: new Date().toISOString(),
+    },
+  });
+
+  return rules;
+}
+
+async function loadGuardrailRules(existingAuth = null) {
+  try {
+    return {
+      rules: await fetchGuardrailRules(existingAuth),
+      source: "network",
+      error: null,
+    };
+  } catch (error) {
+    return {
+      rules: await getCachedGuardrailRules(),
+      source: "cache",
+      error: error instanceof Error ? error.message : "규칙을 불러오지 못했습니다.",
+    };
+  }
 }
 
 async function postBehaviorEvent(eventPayload, existingAuth = null) {
@@ -251,10 +641,371 @@ async function postBehaviorEvent(eventPayload, existingAuth = null) {
     throw new Error("로그인 후 행동 로그 저장을 다시 시도해 주세요.");
   }
 
-  return fetchJson(`${API_BASE_URL}${BEHAVIOR_EVENTS_PATH}`, {
+  return fetchJson(`${getAuthApiBase(auth)}${BEHAVIOR_EVENTS_PATH}`, {
     method: "POST",
     headers: createBackendHeaders(auth, true),
     body: JSON.stringify(eventPayload),
+  });
+}
+
+async function postBackendLog(path, payload, existingAuth = null) {
+  const auth = existingAuth || (await getValidBackendAuth());
+
+  if (!auth?.accessToken) {
+    throw new Error("로그인 후 로그 저장을 다시 시도해 주세요.");
+  }
+
+  return fetchJson(`${getAuthApiBase(auth)}${path}`, {
+    method: "POST",
+    headers: createBackendHeaders(auth),
+    body: JSON.stringify(payload),
+  });
+}
+
+async function patchBackendLog(path, payload, existingAuth = null) {
+  const auth = existingAuth || (await getValidBackendAuth());
+
+  if (!auth?.accessToken) {
+    throw new Error("로그인 후 로그 저장을 다시 시도해 주세요.");
+  }
+
+  return fetchJson(`${getAuthApiBase(auth)}${path}`, {
+    method: "PATCH",
+    headers: createBackendHeaders(auth),
+    body: JSON.stringify(payload),
+  });
+}
+
+function isRetriableLogSaveError(error) {
+  return !error?.status || error.status >= 500;
+}
+
+async function sendLogSaveStatus(tabId, payload) {
+  if (!tabId) {
+    return;
+  }
+
+  await sendTabMessage(tabId, {
+    type: "LOG_SAVE_STATUS",
+    payload,
+  });
+}
+
+async function runLogSaveWithRetry(tabId, kind, taskFactory) {
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= LOG_SAVE_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      await taskFactory();
+      await sendLogSaveStatus(tabId, { kind, ok: true, message: "" });
+      return;
+    } catch (error) {
+      lastError = error;
+
+      if (
+        attempt >= LOG_SAVE_RETRY_DELAYS_MS.length ||
+        !isRetriableLogSaveError(error)
+      ) {
+        break;
+      }
+
+      await wait(LOG_SAVE_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+
+  await sendLogSaveStatus(tabId, {
+    kind,
+    ok: false,
+    message: lastError?.message || "로그를 저장하지 못했습니다.",
+  });
+}
+
+function enqueueLogSave(tabId, kind, taskFactory) {
+  void runLogSaveWithRetry(tabId, kind, taskFactory);
+}
+
+function pickDefinedFields(source, fields) {
+  const result = {};
+
+  for (const field of fields) {
+    if (source?.[field] !== undefined) {
+      result[field] = source[field];
+    }
+  }
+
+  return result;
+}
+
+function normalizeArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizeOrderContextSnapshotLog(snapshot) {
+  const payload = pickDefinedFields(snapshot || {}, [
+    "snapshotId",
+    "attemptId",
+    "snapshotTrigger",
+    "capturedAt",
+    "market",
+    "side",
+    "orderMode",
+    "entryPoint",
+    "intentPrice",
+    "intentQuantity",
+    "intentAmount",
+    "requestedBalanceRatio",
+    "draftDurationMs",
+    "lastEditToSnapshotMs",
+    "draftEditCount",
+    "amountChangeRate",
+    "modeChangedToMarket",
+    "orderbookClickToSnapshotMs",
+    "orderIntentCount1m",
+    "actualOrderCreatedCount10m",
+    "sameSideIntentCount1m",
+    "marketChangeCount5m",
+    "sideChangeCount3m",
+    "priceEditCount3m",
+    "quantityEditCount3m",
+    "amountEditCount3m",
+    "inputRevertCount",
+    "priceDirectionChangeCount",
+    "priceChangeRate",
+    "orderModeChangeCount3m",
+    "allocationPresetPercent",
+    "draftResetCount3m",
+    "matchedRuleIdsAtSnapshot",
+    "primaryShownRuleId",
+    "shownRuleIds",
+    "tradePriceAtSnapshot",
+    "shortTermReturn5m",
+    "signedChangeRate",
+    "spreadRate",
+    "marketRiskFlags",
+    "pricePositionIn5mRange",
+    "volumeSpikeRatio5m",
+    "baseAssetAvgBuyPriceBeforeSnapshot",
+    "priceVsAvgBuyRateAtSnapshot",
+  ]);
+
+  payload.matchedRuleIdsAtSnapshot = normalizeArray(
+    payload.matchedRuleIdsAtSnapshot,
+  );
+  payload.shownRuleIds = normalizeArray(payload.shownRuleIds);
+  payload.marketRiskFlags = normalizeArray(payload.marketRiskFlags);
+
+  return payload;
+}
+
+function normalizeGuardrailReactionLog(reaction) {
+  return pickDefinedFields(reaction || {}, [
+    "snapshotId",
+    "action",
+    "reactedAt",
+    "reactionUiVersion",
+  ]);
+}
+
+function normalizeTradeFeedbackLog(feedback) {
+  return pickDefinedFields(feedback || {}, [
+    "attemptId",
+    "feedbackStatus",
+    "selfAssessment",
+    "feedbackShownAt",
+    "respondedAt",
+    "feedbackUiVersion",
+  ]);
+}
+
+function normalizeConfirmedTradeLog(log) {
+  return pickDefinedFields(log || {}, [
+    "attemptId",
+    "upbitOrderUuid",
+    "orderCreatedAt",
+    "market",
+    "side",
+    "ordType",
+    "limitPrice",
+    "requestedFunds",
+    "requestedVolume",
+    "timeInForce",
+    "state",
+    "executedVolume",
+    "executedFunds",
+    "paidFee",
+    "remainingVolume",
+    "outcomeObservedAt",
+  ]);
+}
+
+function normalizeOrderOutcomePatch(patch) {
+  return pickDefinedFields(patch || {}, [
+    "upbitOrderUuid",
+    "state",
+    "executedVolume",
+    "executedFunds",
+    "paidFee",
+    "remainingVolume",
+    "outcomeObservedAt",
+  ]);
+}
+
+function normalizeUpbitOrderSide(order) {
+  return String(order?.side).toLowerCase() === "ask" ? "SELL" : "BUY";
+}
+
+function normalizeUpbitOrderMode(order) {
+  if (order?.ord_type === "limit") return "LIMIT";
+  if (order?.ord_type === "price") return "MARKET";
+  if (order?.ord_type === "market") return "MARKET";
+  return String(order?.ord_type || "").toUpperCase();
+}
+
+function numbersAreSimilar(left, right, toleranceRate = 0.03) {
+  const leftNumber = toNumber(left);
+  const rightNumber = toNumber(right);
+
+  if (leftNumber === null || rightNumber === null) {
+    return false;
+  }
+
+  const tolerance = Math.max(1, Math.abs(rightNumber) * toleranceRate);
+  return Math.abs(leftNumber - rightNumber) <= tolerance;
+}
+
+function orderMatchesAttemptIntent(order, attemptContext = {}) {
+  const snapshot = attemptContext.orderContextSnapshot || {};
+  const currentOrder = attemptContext.currentOrder || {};
+  const capturedAt = Date.parse(snapshot.capturedAt || "");
+  const orderCreatedAt = Date.parse(order?.created_at || "");
+
+  if (
+    !attemptContext.attemptId ||
+    !Number.isFinite(capturedAt) ||
+    !Number.isFinite(orderCreatedAt) ||
+    orderCreatedAt < capturedAt
+  ) {
+    return false;
+  }
+
+  const market = snapshot.market || currentOrder.market;
+  if (market && order.market !== market) {
+    return false;
+  }
+
+  const side = snapshot.side || currentOrder.order_side;
+  if (side && normalizeUpbitOrderSide(order) !== side) {
+    return false;
+  }
+
+  const orderMode = snapshot.orderMode || currentOrder.order_type;
+  if (orderMode && normalizeUpbitOrderMode(order) !== orderMode) {
+    return false;
+  }
+
+  const requestedFunds =
+    snapshot.intentAmount ?? currentOrder.order_amount ?? null;
+  const requestedVolume =
+    snapshot.intentQuantity ?? currentOrder.order_volume ?? null;
+
+  if (order.ord_type === "price") {
+    return numbersAreSimilar(order.price, requestedFunds);
+  }
+
+  if (order.ord_type === "market") {
+    return numbersAreSimilar(order.volume, requestedVolume);
+  }
+
+  if (order.ord_type === "limit") {
+    const priceMatches =
+      snapshot.intentPrice === null && currentOrder.order_price === null
+        ? true
+        : numbersAreSimilar(
+            order.price,
+            snapshot.intentPrice ?? currentOrder.order_price,
+          );
+    return priceMatches && numbersAreSimilar(order.volume, requestedVolume);
+  }
+
+  return (
+    numbersAreSimilar(order.price, requestedFunds) ||
+    numbersAreSimilar(order.volume, requestedVolume)
+  );
+}
+
+function resolveAttemptMatchedOrderUuid(orderData, attemptContext = {}) {
+  const orders = [
+    ...(orderData?.rawOpenOrders || []),
+    ...(orderData?.rawClosedOrders || []),
+  ].filter((order) => order?.uuid && orderMatchesAttemptIntent(order, attemptContext));
+
+  if (orders.length !== 1) {
+    return null;
+  }
+
+  return orders[0].uuid;
+}
+
+function saveOrderContextSnapshotLog(snapshot, tabId) {
+  const payload = normalizeOrderContextSnapshotLog(snapshot);
+
+  enqueueLogSave(tabId, "order-context-snapshot", () =>
+    postBackendLog("/api/me/logs/order-context-snapshots", payload),
+  );
+}
+
+function saveGuardrailReactionLog(reaction, tabId) {
+  const payload = normalizeGuardrailReactionLog(reaction);
+
+  enqueueLogSave(tabId, "guardrail-reaction", () =>
+    postBackendLog("/api/me/logs/guardrail-reactions", payload),
+  );
+}
+
+function saveTradeFeedbackLog(feedback, tabId) {
+  const payload = normalizeTradeFeedbackLog(feedback);
+
+  enqueueLogSave(tabId, "trade-feedback", () =>
+    postBackendLog("/api/me/logs/trade-feedbacks", payload),
+  );
+}
+
+function saveConfirmedTradeLogBatch(orderData, attemptContext = {}, tabId) {
+  const matchedOrderUuid = resolveAttemptMatchedOrderUuid(
+    orderData,
+    attemptContext,
+  );
+  const tradeLogs = toConfirmedTradeLogs(orderData, null)
+    .map((log) => ({
+      ...log,
+      attemptId:
+        matchedOrderUuid && log.upbitOrderUuid === matchedOrderUuid
+          ? attemptContext.attemptId
+          : null,
+    }))
+    .map(normalizeConfirmedTradeLog);
+  const outcomePatches = toOrderOutcomePatches(orderData).map(
+    normalizeOrderOutcomePatch,
+  );
+
+  if (tradeLogs.length === 0 && outcomePatches.length === 0) {
+    return;
+  }
+
+  enqueueLogSave(tabId, "confirmed-trade-logs", async () => {
+    const auth = await getValidBackendAuth();
+
+    for (const log of tradeLogs) {
+      await postBackendLog("/api/me/logs/confirmed-trade-logs", log, auth);
+    }
+
+    for (const patch of outcomePatches) {
+      await patchBackendLog(
+        "/api/me/logs/confirmed-trade-logs/outcome",
+        patch,
+        auth,
+      );
+    }
   });
 }
 
@@ -306,32 +1057,99 @@ async function getMarketDetails() {
   return data;
 }
 
-async function collectMarketData(market) {
-  const encodedMarket = encodeURIComponent(market);
-  const [candles, tickers, marketDetails] = await Promise.all([
-    fetchPublicUpbit(
-      `/v1/candles/minutes/1?market=${encodedMarket}&count=20`,
-    ),
-    fetchPublicUpbit(
-      "/v1/ticker/all?quote_currencies=KRW",
-    ),
-    getMarketDetails(),
-  ]);
-  const collected = {
-    market,
-    ...calculateMarketData({
-      market,
-      candles,
-      tickers,
-      marketDetails,
-    }),
-    collected_at: new Date().toISOString(),
+function normalizeBackendMarketSnapshot(rawSnapshot, market) {
+  const snapshot = rawSnapshot?.data || rawSnapshot || {};
+  const fetchedAt = snapshot.fetchedAt || new Date().toISOString();
+  const fetchedAtMs = Date.parse(fetchedAt);
+  const tradePrice =
+    snapshot.tradePrice ??
+    snapshot.tradePriceAtSnapshot ??
+    snapshot.currentPrice ??
+    snapshot.current_price ??
+    null;
+
+  return {
+    market: snapshot.market || snapshot.symbol || market,
+    tradePrice: tradePrice === null || tradePrice === undefined
+      ? null
+      : String(tradePrice),
+    signedChangeRate: snapshot.signedChangeRate ?? null,
+    shortTermReturn5m: snapshot.shortTermReturn5m ?? null,
+    spreadRate: snapshot.spreadRate ?? null,
+    marketRiskFlags: Array.isArray(snapshot.marketRiskFlags)
+      ? snapshot.marketRiskFlags
+      : [],
+    pricePositionIn5mRange: snapshot.pricePositionIn5mRange ?? null,
+    volumeSpikeRatio5m:
+      snapshot.volumeSpikeRatio5m ?? snapshot.volumeSpikeRatio ?? null,
+    fetchedAt,
+    freshnessMs: Number.isFinite(fetchedAtMs) ? Date.now() - fetchedAtMs : 0,
+    source: "backend-market-snapshot",
   };
-  const { marketDataCache = {} } =
-    await chrome.storage.local.get("marketDataCache");
-  marketDataCache[market] = collected;
-  await chrome.storage.local.set({ marketDataCache });
-  return collected;
+}
+
+function marketSnapshotToMarketData(snapshot) {
+  const currentPrice = toNumber(snapshot?.tradePrice);
+  const changeRate =
+    snapshot?.shortTermReturn5m ?? snapshot?.signedChangeRate ?? null;
+
+  return {
+    market: snapshot?.market || "UNKNOWN",
+    current_price: currentPrice,
+    tradePriceAtSnapshot: snapshot?.tradePrice ?? null,
+    shortTermReturn5m: snapshot?.shortTermReturn5m ?? null,
+    signedChangeRate: snapshot?.signedChangeRate ?? null,
+    spreadRate: snapshot?.spreadRate ?? null,
+    marketRiskFlags: snapshot?.marketRiskFlags || [],
+    pricePositionIn5mRange: snapshot?.pricePositionIn5mRange ?? null,
+    volumeSpikeRatio5m: snapshot?.volumeSpikeRatio5m ?? null,
+    market_data: {
+      price_change_rate_15m:
+        changeRate === null || changeRate === undefined
+          ? null
+          : Number(changeRate) * 100,
+      volume_change_rate_1m: snapshot?.volumeSpikeRatio5m ?? null,
+      is_top3_volatility: false,
+      has_warning_badge: (snapshot?.marketRiskFlags || []).length > 0,
+    },
+    collected_at: snapshot?.fetchedAt || new Date().toISOString(),
+    source: snapshot?.source || "backend-market-snapshot",
+  };
+}
+
+async function fetchBackendMarketSnapshot(market) {
+  const appOrigin = await resolveCurrentAppOrigin();
+  const url = new URL("/api/market-snapshot", appOrigin);
+  url.searchParams.set("market", market);
+
+  return normalizeBackendMarketSnapshot(await fetchJson(url.toString()), market);
+}
+
+const MarketDataProvider = {
+  async fetchSnapshot(market) {
+    return fetchBackendMarketSnapshot(market);
+  },
+};
+
+async function writeMarketSnapshotCache(market, snapshot) {
+  const [{ [MARKET_SNAPSHOT_CACHE_KEY]: snapshotCache = {} }, { marketDataCache = {} }] =
+    await Promise.all([
+      chrome.storage.local.get(MARKET_SNAPSHOT_CACHE_KEY),
+      chrome.storage.local.get("marketDataCache"),
+    ]);
+
+  snapshotCache[market] = snapshot;
+  marketDataCache[market] = marketSnapshotToMarketData(snapshot);
+  await chrome.storage.local.set({
+    [MARKET_SNAPSHOT_CACHE_KEY]: snapshotCache,
+    marketDataCache,
+  });
+}
+
+async function collectMarketData(market) {
+  const snapshot = await MarketDataProvider.fetchSnapshot(market);
+  await writeMarketSnapshotCache(market, snapshot);
+  return marketSnapshotToMarketData(snapshot);
 }
 
 async function createJwt(accessKey, secretKey, queryString = "") {
@@ -410,6 +1228,63 @@ async function fetchPrivateUpbit(path, entries, credentials) {
   });
 }
 
+function toUpbitCredentialValidationError(error, checkLabel) {
+  if (error.code === "no_authorization_ip") {
+    return new Error(
+      "현재 네트워크의 공인 IP가 업비트 API Key에 등록되어 있지 않습니다.",
+    );
+  }
+
+  if (error.code === "out_of_scope") {
+    return new Error(
+      `${checkLabel} 권한이 없습니다. 업비트 API Key에 자산조회와 주문조회 권한을 추가해 주세요.`,
+    );
+  }
+
+  if (
+    [
+      "invalid_access_key",
+      "expired_access_key",
+      "jwt_verification",
+    ].includes(error.code) ||
+    error.status === 401
+  ) {
+    return new Error(
+      "Access Key 또는 Secret Key가 올바르지 않거나 만료되었습니다.",
+    );
+  }
+
+  return new Error(`${checkLabel} 검증에 실패했습니다. ${error.message}`);
+}
+
+async function validateUpbitCredentials(credentials) {
+  const checks = [
+    {
+      label: "자산조회",
+      path: "/v1/accounts",
+      entries: [],
+    },
+    {
+      label: "체결 대기 주문조회",
+      path: "/v1/orders/open",
+      entries: [["limit", "1"]],
+    },
+    {
+      label: "종료 주문조회",
+      path: "/v1/orders/closed",
+      entries: [["limit", "1"]],
+    },
+  ];
+
+  for (const check of checks) {
+    try {
+      await fetchPrivateUpbit(check.path, check.entries, credentials);
+    } catch (error) {
+      throw toUpbitCredentialValidationError(error, check.label);
+    }
+  }
+}
+
 async function collectOrderData(market) {
   const credentials = await decryptCredentials();
   const [closedOrders, openOrders, accounts] = await Promise.all([
@@ -442,6 +1317,9 @@ async function collectOrderData(market) {
     market,
     recentOrders,
     clientAverageBuyAmount,
+    accounts,
+    rawClosedOrders: closedOrders,
+    rawOpenOrders: openOrders,
     collected_at: new Date().toISOString(),
   };
   const { orderDataCache = {} } =
@@ -451,19 +1329,149 @@ async function collectOrderData(market) {
   return collected;
 }
 
+function toPersonalSnapshot(orderData, market) {
+  if (!orderData?.privateDataAvailable && orderData?.privateDataAvailable !== undefined) {
+    return null;
+  }
+
+  const fetchedAt = orderData?.collected_at || new Date().toISOString();
+  const fetchedAtMs = Date.parse(fetchedAt);
+  const baseCurrency = String(market || orderData?.market || "").split("-")[1];
+  const baseAccount = (orderData?.accounts || []).find(
+    (account) => account.currency === baseCurrency,
+  );
+
+  return {
+    market: orderData?.market || market,
+    balances: orderData?.accounts || [],
+    openOrders: orderData?.rawOpenOrders || [],
+    recentOrders: orderData?.recentOrders || [],
+    recentTrades: orderData?.rawClosedOrders || [],
+    baseAssetAvgBuyPrice: baseAccount?.avg_buy_price
+      ? String(baseAccount.avg_buy_price)
+      : null,
+    actualOrderCreatedCount10m: countActualOrders10m(orderData),
+    fetchedAt,
+    freshnessMs: Number.isFinite(fetchedAtMs) ? Date.now() - fetchedAtMs : 0,
+    source: "extension-private-cache",
+  };
+}
+
+async function writePersonalSnapshotCache(market, snapshot) {
+  const { [PERSONAL_SNAPSHOT_CACHE_KEY]: snapshotCache = {} } =
+    await chrome.storage.local.get(PERSONAL_SNAPSHOT_CACHE_KEY);
+
+  snapshotCache[market] = snapshot;
+  await chrome.storage.local.set({ [PERSONAL_SNAPSHOT_CACHE_KEY]: snapshotCache });
+}
+
 async function collectOrderDataForDetection(market) {
   try {
     const orderData = await collectOrderData(market);
-    return { ...orderData, privateDataAvailable: true };
+    const collected = { ...orderData, privateDataAvailable: true };
+    await writePersonalSnapshotCache(market, toPersonalSnapshot(collected, market));
+    return collected;
   } catch {
-    return {
+    const unavailable = {
       market,
       recentOrders: [],
       clientAverageBuyAmount: null,
+      accounts: [],
+      rawClosedOrders: [],
+      rawOpenOrders: [],
       collected_at: new Date().toISOString(),
       privateDataAvailable: false,
     };
+    await writePersonalSnapshotCache(market, null);
+    return unavailable;
   }
+}
+
+function createDemoOrderData(context = {}) {
+  const demoData = context.demoData || {};
+
+  return {
+    market: context.market,
+    recentOrders: Array.isArray(demoData.recentOrders)
+      ? demoData.recentOrders
+      : [],
+    clientAverageBuyAmount:
+      demoData.clientAverageBuyAmount ??
+      context.behaviorData?.client_avg_buy_amount ??
+      null,
+    accounts: Array.isArray(demoData.accounts) ? demoData.accounts : [],
+    rawClosedOrders: Array.isArray(demoData.rawClosedOrders)
+      ? demoData.rawClosedOrders
+      : [],
+    rawOpenOrders: Array.isArray(demoData.rawOpenOrders)
+      ? demoData.rawOpenOrders
+      : [],
+    collected_at: new Date().toISOString(),
+    privateDataAvailable: false,
+  };
+}
+
+async function refreshMarketSnapshot(market) {
+  if (!market) {
+    return null;
+  }
+
+  const snapshot = await MarketDataProvider.fetchSnapshot(market);
+  await writeMarketSnapshotCache(market, snapshot);
+  return snapshot;
+}
+
+async function refreshPersonalSnapshot(market) {
+  if (!market) {
+    return null;
+  }
+
+  const orderData = await collectOrderDataForDetection(market);
+  return toPersonalSnapshot(orderData, market);
+}
+
+async function refreshSnapshotCaches(market) {
+  if (!market) {
+    return { marketSnapshot: null, personalSnapshot: null };
+  }
+
+  const [marketResult, personalResult] = await Promise.allSettled([
+    refreshMarketSnapshot(market),
+    refreshPersonalSnapshot(market),
+  ]);
+
+  return {
+    marketSnapshot:
+      marketResult.status === "fulfilled" ? marketResult.value : null,
+    personalSnapshot:
+      personalResult.status === "fulfilled" ? personalResult.value : null,
+  };
+}
+
+async function resolveActiveTradingMarket() {
+  const activeTabs = await chrome.tabs.query({
+    active: true,
+    currentWindow: true,
+  });
+  const activeTab = activeTabs.find((tab) => isCollectableTradingUrl(tab.url));
+
+  if (!activeTab?.url) {
+    return null;
+  }
+
+  return parseMarket(activeTab.url);
+}
+
+function requestSnapshotRefresh(market) {
+  const refreshTask = (market
+    ? Promise.resolve(market)
+    : resolveActiveTradingMarket())
+    .then((resolvedMarket) =>
+      resolvedMarket ? refreshSnapshotCaches(resolvedMarket) : null,
+    )
+    .catch(() => null);
+
+  return refreshTask;
 }
 
 async function sendTabMessage(tabId, message) {
@@ -480,26 +1488,43 @@ async function callDetectionApi(
   marketData,
   options = {},
 ) {
-  if (!context.currentOrder || !context.behaviorData) {
+  const initialMarketResolution = resolveMarketForContext(context);
+  const normalizedContext = normalizeDemoContextMarket(
+    context,
+    initialMarketResolution.market,
+  );
+  const normalizedMarketData =
+    isDemoPageUrl(normalizedContext.pageUrl || "") && initialMarketResolution.market
+      ? { ...marketData, market: initialMarketResolution.market }
+      : marketData;
+
+  if (!normalizedContext.currentOrder || !normalizedContext.behaviorData) {
+    return null;
+  }
+
+  const pageUrl = normalizedContext.pageUrl || "";
+  const isDemo = isDemoPageUrl(pageUrl);
+  const isUpbitExchange = isUpbitExchangeUrl(pageUrl);
+
+  if (!isDemo && !isUpbitExchange) {
     return null;
   }
 
   const [auth, { orderDataCache = {} }] = await Promise.all([
-    getValidBackendAuth(),
+    isDemo ? getOptionalBackendAuth() : getValidBackendAuth(),
     chrome.storage.local.get("orderDataCache"),
   ]);
 
-  if (!auth?.accessToken) {
+  if (!isDemo && !auth?.accessToken) {
     return null;
   }
 
-  const orderData = context.demoData
-    ? {
-        recentOrders: context.demoData.recentOrders || [],
-        clientAverageBuyAmount:
-          context.demoData.clientAverageBuyAmount ?? null,
-      }
-    : options.orderData || orderDataCache[context.market];
+  const orderData =
+    options.orderData ||
+    (isDemo
+      ? createDemoOrderData(normalizedContext)
+      : orderDataCache[normalizedContext.market] ||
+        createDemoOrderData(normalizedContext));
   const recentOrders = orderData?.recentOrders || [];
   const lastLoss = recentOrders.find(
     (order) =>
@@ -508,25 +1533,25 @@ async function callDetectionApi(
       Date.now() - Date.parse(order.order_request_time) <= 60 * 60 * 1000,
   );
   const requestBody = {
-    market: context.market,
-    current_price: marketData.current_price,
-    market_data: marketData.market_data,
+    market: normalizedContext.market,
+    current_price: normalizedMarketData.current_price,
+    market_data: normalizedMarketData.market_data,
     current_order: {
-      ...context.currentOrder,
+      ...normalizedContext.currentOrder,
       realized_loss_pct_1h: lastLoss?.realized_loss_pct_1h ?? null,
     },
     behavior_data: {
-      ...context.behaviorData,
+      ...normalizedContext.behaviorData,
       client_avg_buy_amount:
         orderData
           ? orderData.clientAverageBuyAmount ?? null
-          : context.behaviorData.client_avg_buy_amount ?? null,
+          : normalizedContext.behaviorData.client_avg_buy_amount ?? null,
     },
     recent_orders: recentOrders,
   };
 
   const behaviorEvent = {
-    ...(context.sessionId ? { sessionId: context.sessionId } : {}),
+    ...(normalizedContext.sessionId ? { sessionId: normalizedContext.sessionId } : {}),
     symbol: requestBody.market,
     eventType: "ORDER_SUBMIT_ATTEMPT",
     side: requestBody.current_order.order_side,
@@ -534,7 +1559,7 @@ async function callDetectionApi(
     price: requestBody.current_order.order_price,
     amount: requestBody.current_order.order_amount,
     quantity: requestBody.current_order.order_volume,
-    ...(context.pageUrl ? { pageUrl: context.pageUrl } : {}),
+    ...(normalizedContext.pageUrl ? { pageUrl: normalizedContext.pageUrl } : {}),
     occurredAt: requestBody.current_order.order_request_time,
     metadata: {
       behaviorData: requestBody.behavior_data,
@@ -542,11 +1567,11 @@ async function callDetectionApi(
       marketData: requestBody.market_data,
     },
   };
-  const detectionPromise = postDetectionRequest(requestBody, auth);
   const behaviorSaveTask =
     options.logSubmitAttempt === false
       ? Promise.resolve()
-      : postBehaviorEvent(behaviorEvent, auth)
+      : auth?.accessToken
+        ? postBehaviorEvent(behaviorEvent, auth)
           .then(() =>
             sendTabMessage(tabId, {
               type: "BEHAVIOR_EVENT_STATUS",
@@ -560,36 +1585,187 @@ async function callDetectionApi(
                 message: `행동 로그 저장 실패: ${error.message}`,
               },
             }),
-          );
-  let result;
+          )
+        : Promise.resolve();
+  const rulesState = await getCachedGuardrailRulesState(auth);
+  const orderContextSnapshot = enrichOrderContextSnapshot(
+    normalizedContext,
+    normalizedMarketData,
+    orderData,
+  );
+  const expectedMarket = initialMarketResolution.market || orderContextSnapshot.market;
+  const actualMarkets = {
+    orderContextMarket: orderContextSnapshot.market || null,
+    marketDataMarket: normalizedMarketData?.market || null,
+    currentOrderMarket: normalizedContext.currentOrder?.market || null,
+    orderDataMarket: orderData?.market || null,
+  };
+  const relevantMarkets = Object.values(actualMarkets).filter(Boolean);
+  const mismatchedMarket = relevantMarkets.find(
+    (market) => expectedMarket && market !== expectedMarket,
+  );
+  const marketMismatch = Boolean(mismatchedMarket);
+  const marketDebugFields = {
+    marketResolutionTrace: initialMarketResolution.trace,
+    marketDataSource:
+      normalizedMarketData?.source ||
+      (isDemo ? "demo-data" : "cache"),
+    marketMismatch,
+    expectedMarket: expectedMarket || null,
+    actualMarket:
+      mismatchedMarket ||
+      actualMarkets.marketDataMarket ||
+      actualMarkets.orderContextMarket ||
+      null,
+    usedForRuleEvaluation: !marketMismatch,
+  };
 
-  try {
-    result = await detectionPromise;
-  } catch (error) {
+  if (marketMismatch) {
+    await sendDtoDebugSnapshot(tabId, {
+      ...marketDebugFields,
+      behavior: normalizedContext.behaviorData || null,
+      market: normalizedMarketData,
+      personal: {
+        privateDataAvailable: orderData?.privateDataAvailable ?? null,
+        accounts: orderData?.accounts || [],
+        confirmedTradeLogs: [],
+        orderOutcomePatches: [],
+        recentOrders,
+        clientAverageBuyAmount: orderData?.clientAverageBuyAmount ?? null,
+      },
+      orderContext: orderContextSnapshot,
+      ruleEvaluation: {
+        source: rulesState.source,
+        loadError: rulesState.error,
+        ruleCount: rulesState.rules.length,
+        detected: false,
+        matchedRuleIds: [],
+        primaryRuleId: null,
+        primaryRule: null,
+        skippedReason: "MARKET_MISMATCH",
+        ...actualMarkets,
+      },
+    });
     await behaviorSaveTask;
-    throw error;
+    return {
+      detected: false,
+      type: "USER_GUARDRAIL_RULE",
+      message: "시장 데이터가 현재 주문 종목과 달라 가드레일 평가를 건너뛰었습니다.",
+      marketMismatch: true,
+      orderContextSnapshot,
+      ruleEvaluation: {
+        detected: false,
+        matchedRuleIds: [],
+        primaryRuleId: null,
+        primaryRule: null,
+        skippedReason: "MARKET_MISMATCH",
+      },
+    };
+  }
+  const ruleEvaluation = evaluateGuardrailRules(
+    rulesState.rules,
+    orderContextSnapshot,
+  );
+  const evaluatedSnapshot = {
+    ...orderContextSnapshot,
+    matchedRuleIdsAtSnapshot: ruleEvaluation.matchedRuleIds,
+    primaryShownRuleId: ruleEvaluation.primaryRuleId,
+    shownRuleIds: ruleEvaluation.primaryRuleId
+      ? [ruleEvaluation.primaryRuleId]
+      : [],
+  };
+
+  await sendDtoDebugSnapshot(tabId, {
+    ...marketDebugFields,
+    behavior: normalizedContext.behaviorData || null,
+    market: normalizedMarketData,
+    personal: {
+      privateDataAvailable: orderData?.privateDataAvailable ?? null,
+      accounts: orderData?.accounts || [],
+      confirmedTradeLogs: toConfirmedTradeLogs(
+        orderData,
+        orderContextSnapshot.attemptId,
+      ),
+      orderOutcomePatches: toOrderOutcomePatches(orderData),
+      recentOrders: recentOrders,
+      clientAverageBuyAmount: orderData?.clientAverageBuyAmount ?? null,
+    },
+    orderContext: evaluatedSnapshot,
+    ruleEvaluation: {
+      source: rulesState.source,
+      loadError: rulesState.error,
+      ruleCount: rulesState.rules.length,
+      detected: ruleEvaluation.detected,
+      matchedRuleIds: ruleEvaluation.matchedRuleIds,
+      primaryRuleId: ruleEvaluation.primaryRuleId,
+      primaryRule: ruleEvaluation.primaryRule,
+    },
+  });
+
+  if (ruleEvaluation.detected) {
+    const flameMode = resolveVisualMode(ruleEvaluation.primaryRule);
+    const ruleResult = {
+      detected: true,
+      type: "USER_GUARDRAIL_RULE",
+      message:
+        ruleEvaluation.warningMessage ||
+        "사용자 규칙에 해당하는 주문 조건이 감지되었습니다.",
+      warningTitle: ruleEvaluation.warningTitle,
+      riskLevel: ruleEvaluation.riskLevel,
+      matchedRuleIds: ruleEvaluation.matchedRuleIds,
+      primaryRuleId: ruleEvaluation.primaryRuleId,
+      primaryRule: ruleEvaluation.primaryRule,
+      visualMode: flameMode,
+      flameMode,
+      orderContextSnapshot: evaluatedSnapshot,
+      ruleEvaluation,
+    };
+
+    await chrome.storage.local.set({
+      flameTheme: {
+        mode: flameMode,
+        detected: true,
+        type: ruleResult.type,
+        orderSide: context.currentOrder.order_side,
+        primaryRuleId: ruleEvaluation.primaryRuleId,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+    await sendTabMessage(tabId, {
+      type: "DETECTION_RESULT",
+      payload: ruleResult,
+    });
+    await behaviorSaveTask;
+    return ruleResult;
   }
 
-  const flameMode = resolveFlameMode(
-    result,
-    context.currentOrder.order_side,
-  );
-  const themedResult = { ...result, flameMode };
+  const safeResult = {
+    detected: false,
+    type: "USER_GUARDRAIL_RULE",
+    message: "설정된 가드레일에 해당하는 주문 조건은 감지되지 않았어요.",
+    matchedRuleIds: [],
+    primaryRuleId: null,
+    primaryRule: null,
+    visualMode: "DEFAULT",
+    flameMode: "DEFAULT",
+    orderContextSnapshot: evaluatedSnapshot,
+    ruleEvaluation,
+  };
   await chrome.storage.local.set({
     flameTheme: {
-      mode: flameMode,
-      detected: Boolean(result?.detected),
-      type: result?.type || null,
+      mode: "DEFAULT",
+      detected: false,
+      type: safeResult.type,
       orderSide: context.currentOrder.order_side,
       updatedAt: new Date().toISOString(),
     },
   });
   await sendTabMessage(tabId, {
     type: "DETECTION_RESULT",
-    payload: themedResult,
+    payload: safeResult,
   });
   await behaviorSaveTask;
-  return themedResult;
+  return safeResult;
 }
 
 async function getMarketDataForDetection(market) {
@@ -603,97 +1779,351 @@ async function getMarketDataForDetection(market) {
   return isFresh ? cached : collectMarketData(market);
 }
 
-function getDemoMarketData(context) {
-  const currentPrice = Number(context.demoData?.currentPrice);
-  const marketData = context.demoData?.marketData;
+async function getMarketDataForContext(context) {
+  const { market: resolvedMarket } = resolveMarketForContext(context);
+  const normalizedContext = normalizeDemoContextMarket(context, resolvedMarket);
+  const demoData = normalizedContext?.demoData;
+  const demoMarketData = demoData?.marketData || {};
+  const demoCurrentPrice = toNumber(
+    firstDefined(
+      demoData?.currentPrice,
+      demoMarketData.tradePrice,
+      demoMarketData.tradePriceAtSnapshot,
+      demoMarketData.currentPrice,
+      demoMarketData.current_price,
+    ),
+  );
 
   if (
-    !Number.isFinite(currentPrice) ||
-    currentPrice <= 0 ||
-    !marketData ||
-    !Number.isFinite(marketData.price_change_rate_15m) ||
-    !Number.isFinite(marketData.volume_change_rate_1m) ||
-    typeof marketData.is_top3_volatility !== "boolean" ||
-    typeof marketData.has_warning_badge !== "boolean"
+    isDemoPageUrl(normalizedContext?.pageUrl) &&
+    demoMarketData &&
+    demoCurrentPrice !== null
   ) {
-    return null;
+    return {
+      market: resolvedMarket || normalizedContext.market,
+      current_price: demoCurrentPrice,
+      tradePriceAtSnapshot: decimalString(demoCurrentPrice),
+      shortTermReturn5m:
+        demoMarketData.shortTermReturn5m ??
+        demoMarketData.short_term_return_5m ??
+        demoMarketData.price_change_rate_5m_decimal ??
+        percentageLikeToRatio(demoMarketData.price_change_rate_5m) ??
+        null,
+      signedChangeRate:
+        demoMarketData.signedChangeRate ??
+        demoMarketData.signed_change_rate ??
+        demoMarketData.price_change_rate_15m_decimal ??
+        percentageLikeToRatio(demoMarketData.price_change_rate_15m) ??
+        null,
+      spreadRate:
+        demoMarketData.spreadRate ?? demoMarketData.spread_rate ?? null,
+      marketRiskFlags: Array.isArray(demoMarketData.marketRiskFlags)
+        ? demoMarketData.marketRiskFlags
+        : demoMarketData.has_warning_badge
+          ? ["WARNING"]
+          : [],
+      pricePositionIn5mRange:
+        demoMarketData.pricePositionIn5mRange ??
+        demoMarketData.price_position_in_5m_range ??
+        null,
+      volumeSpikeRatio5m:
+        demoMarketData.volumeSpikeRatio5m ??
+        demoMarketData.volume_spike_ratio_5m ??
+        percentageLikeToRatio(demoMarketData.volume_change_rate_1m) ??
+        null,
+      market_data: demoMarketData,
+      source: "demo-data",
+    };
   }
 
+  if (isDemoPageUrl(normalizedContext?.pageUrl)) {
+    return {
+      market: resolvedMarket || normalizedContext.market || "UNKNOWN",
+      current_price: null,
+      tradePriceAtSnapshot: null,
+      shortTermReturn5m: null,
+      signedChangeRate: null,
+      spreadRate: null,
+      marketRiskFlags: [],
+      pricePositionIn5mRange: null,
+      volumeSpikeRatio5m: null,
+      market_data: demoMarketData || {},
+      source: "demo-data",
+    };
+  }
+
+  return getMarketDataForDetection(resolvedMarket || normalizedContext.market);
+}
+
+function percentageLikeToRatio(value) {
+  const numeric = toNumber(value);
+  return numeric === null ? null : numeric / 100;
+}
+
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null);
+}
+
+function decimalString(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = toNumber(value);
+  return numeric === null ? null : String(numeric);
+}
+
+function resolveMarketForContext(context = {}) {
+  const isDemo = isDemoPageUrl(context.pageUrl || "");
+  const candidates = isDemo
+    ? [
+        context.demoData?.market,
+        context.demoData?.marketData?.market,
+        context.currentOrder?.market,
+        context.orderContextSnapshot?.market,
+        context.market,
+      ]
+    : [
+        context.market,
+        context.currentOrder?.market,
+        context.orderContextSnapshot?.market,
+      ];
+  const market = candidates.find((candidate) => typeof candidate === "string" && candidate);
+
   return {
-    market: context.market,
-    current_price: currentPrice,
-    market_data: marketData,
-    collected_at: new Date().toISOString(),
-    isDemo: true,
+    market: market || null,
+    trace: {
+      isDemo,
+      candidates: {
+        contextMarket: context.market || null,
+        currentOrderMarket: context.currentOrder?.market || null,
+        orderContextMarket: context.orderContextSnapshot?.market || null,
+        demoDataMarket: context.demoData?.market || null,
+        demoMarketDataMarket: context.demoData?.marketData?.market || null,
+      },
+      resolvedMarket: market || null,
+    },
   };
 }
 
-async function getMarketDataForContext(context) {
-  return (
-    getDemoMarketData(context) ||
-    getMarketDataForDetection(context.market)
-  );
+function normalizeDemoContextMarket(context = {}, market) {
+  if (!isDemoPageUrl(context.pageUrl || "") || !market) {
+    return context;
+  }
+
+  return {
+    ...context,
+    market,
+    currentOrder: context.currentOrder
+      ? { ...context.currentOrder, market }
+      : context.currentOrder,
+    orderContextSnapshot: context.orderContextSnapshot
+      ? { ...context.orderContextSnapshot, market }
+      : context.orderContextSnapshot,
+    demoData: context.demoData
+      ? {
+          ...context.demoData,
+          market,
+          marketData: context.demoData.marketData
+            ? { ...context.demoData.marketData, market }
+            : context.demoData.marketData,
+        }
+      : context.demoData,
+  };
 }
 
-async function runMinuteCycleForTab(tab) {
-  const context = await sendTabMessage(tab.id, {
-    type: "GET_CONTEXT_SNAPSHOT",
+function getAccount(accounts, currency) {
+  return (accounts || []).find((account) => account.currency === currency);
+}
+
+function countActualOrders10m(orderData, now = Date.now()) {
+  return [
+    ...(orderData?.rawClosedOrders || []),
+    ...(orderData?.rawOpenOrders || []),
+  ].filter((order) => {
+    const createdAt = Date.parse(order.created_at || "");
+    return Number.isFinite(createdAt) && now - createdAt <= 10 * 60_000;
+  }).length;
+}
+
+function enrichOrderContextSnapshot(context, marketData, orderData = {}) {
+  const now = Date.now();
+  const base = context.orderContextSnapshot || {};
+  const currentOrder = context.currentOrder || {};
+  const market = context.market || currentOrder.market || base.market || "UNKNOWN";
+  const side = currentOrder.order_side || base.side || "UNKNOWN";
+  const orderMode = currentOrder.order_type || base.orderMode || "UNKNOWN";
+  const coinCurrency = String(market).split("-")[1];
+  const accounts = orderData.accounts || [];
+  const account =
+    side === "BUY" ? getAccount(accounts, "KRW") : getAccount(accounts, coinCurrency);
+  const available = toNumber(account?.balance);
+  const requested =
+    side === "BUY"
+      ? toNumber(currentOrder.order_amount)
+      : toNumber(currentOrder.order_volume);
+  const baseAccount = getAccount(accounts, coinCurrency);
+  const avgBuyPrice = toNumber(baseAccount?.avg_buy_price);
+  const tradePrice = toNumber(marketData.tradePriceAtSnapshot) ||
+    toNumber(marketData.current_price);
+  const requestedBalanceRatio =
+    base.requestedBalanceRatio ??
+    (available && requested !== null
+      ? Math.max(0, Math.min(1, requested / available))
+      : null);
+
+  return {
+    snapshotId: base.snapshotId || crypto.randomUUID(),
+    attemptId: base.attemptId || null,
+    snapshotTrigger: base.snapshotTrigger || "ORDER_INTENT_CLICK",
+    capturedAt: base.capturedAt || new Date().toISOString(),
+    market,
+    side,
+    orderMode,
+    entryPoint: base.entryPoint || "NORMAL",
+    intentPrice:
+      base.intentPrice ?? decimalString(currentOrder.order_price),
+    intentQuantity:
+      base.intentQuantity ?? decimalString(currentOrder.order_volume),
+    intentAmount:
+      base.intentAmount ?? decimalString(currentOrder.order_amount),
+    requestedBalanceRatio,
+    draftDurationMs: base.draftDurationMs ?? null,
+    lastEditToSnapshotMs: base.lastEditToSnapshotMs ?? null,
+    draftEditCount: base.draftEditCount ?? null,
+    amountChangeRate: base.amountChangeRate ?? null,
+    modeChangedToMarket: base.modeChangedToMarket ?? false,
+    orderbookClickToSnapshotMs: base.orderbookClickToSnapshotMs ?? null,
+    orderIntentCount1m:
+      base.orderIntentCount1m ?? context.behaviorData?.buy_click_count_1m ?? 0,
+    actualOrderCreatedCount10m:
+      base.actualOrderCreatedCount10m ??
+      (orderData?.privateDataAvailable === false
+        ? null
+        : countActualOrders10m(orderData, now)),
+    sameSideIntentCount1m:
+      base.sameSideIntentCount1m ?? context.behaviorData?.buy_click_count_1m ?? 0,
+    marketChangeCount5m: base.marketChangeCount5m ?? 0,
+    sideChangeCount3m: base.sideChangeCount3m ?? 0,
+    priceEditCount3m:
+      base.priceEditCount3m ?? context.behaviorData?.input_edit_count ?? 0,
+    quantityEditCount3m: base.quantityEditCount3m ?? 0,
+    amountEditCount3m:
+      base.amountEditCount3m ?? context.behaviorData?.input_edit_count ?? 0,
+    inputRevertCount: base.inputRevertCount ?? 0,
+    priceDirectionChangeCount: base.priceDirectionChangeCount ?? 0,
+    priceChangeRate: base.priceChangeRate ?? null,
+    orderModeChangeCount3m: base.orderModeChangeCount3m ?? 0,
+    allocationPresetPercent: base.allocationPresetPercent ?? null,
+    draftResetCount3m: base.draftResetCount3m ?? 0,
+    matchedRuleIdsAtSnapshot: base.matchedRuleIdsAtSnapshot || [],
+    primaryShownRuleId: base.primaryShownRuleId || null,
+    shownRuleIds: base.shownRuleIds || [],
+    tradePriceAtSnapshot:
+      base.tradePriceAtSnapshot ??
+      marketData.tradePriceAtSnapshot ??
+      decimalString(marketData.current_price),
+    shortTermReturn5m: base.shortTermReturn5m ?? marketData.shortTermReturn5m ?? null,
+    signedChangeRate: base.signedChangeRate ?? marketData.signedChangeRate ?? null,
+    spreadRate: base.spreadRate ?? marketData.spreadRate ?? null,
+    marketRiskFlags: base.marketRiskFlags || marketData.marketRiskFlags || [],
+    pricePositionIn5mRange:
+      base.pricePositionIn5mRange ?? marketData.pricePositionIn5mRange ?? null,
+    volumeSpikeRatio5m:
+      base.volumeSpikeRatio5m ?? marketData.volumeSpikeRatio5m ?? null,
+    baseAssetAvgBuyPriceBeforeSnapshot:
+      base.baseAssetAvgBuyPriceBeforeSnapshot ??
+      (avgBuyPrice && avgBuyPrice > 0 ? String(avgBuyPrice) : null),
+    priceVsAvgBuyRateAtSnapshot:
+      base.priceVsAvgBuyRateAtSnapshot ??
+      (avgBuyPrice && tradePrice
+        ? (tradePrice - avgBuyPrice) / avgBuyPrice
+        : null),
+  };
+}
+
+function toConfirmedTradeLogs(orderData, attemptId = null) {
+  const orders = [
+    ...(orderData?.rawOpenOrders || []),
+    ...(orderData?.rawClosedOrders || []),
+  ];
+
+  return orders
+    .filter((order) => order.uuid)
+    .map((order) => ({
+      tradeLogId: crypto.randomUUID(),
+      attemptId,
+      upbitOrderUuid: order.uuid,
+      orderCreatedAt: order.created_at,
+      market: order.market,
+      side: String(order.side).toLowerCase() === "ask" ? "SELL" : "BUY",
+      ordType:
+        order.ord_type === "limit"
+          ? "LIMIT"
+          : order.ord_type === "price"
+            ? "MARKET_BUY"
+            : order.ord_type === "best"
+              ? "BEST"
+              : "MARKET_SELL",
+      limitPrice:
+        order.ord_type === "limit" ? decimalString(order.price) : null,
+      requestedFunds:
+        order.ord_type === "price" ? decimalString(order.price) : null,
+      requestedVolume: decimalString(order.volume),
+      timeInForce: order.time_in_force || null,
+    }));
+}
+
+function toOrderOutcomePatches(orderData) {
+  const orders = [
+    ...(orderData?.rawOpenOrders || []),
+    ...(orderData?.rawClosedOrders || []),
+  ];
+
+  return orders
+    .filter((order) => order.uuid)
+    .map((order) => ({
+      upbitOrderUuid: order.uuid,
+      state: order.state,
+      executedVolume: decimalString(order.executed_volume),
+      executedFunds: decimalString(order.executed_funds),
+      paidFee: decimalString(order.paid_fee),
+      remainingVolume: decimalString(order.remaining_volume),
+      outcomeObservedAt: new Date().toISOString(),
+    }));
+}
+
+async function sendDtoDebugSnapshot(tabId, payload) {
+  await sendTabMessage(tabId, {
+    type: "DTO_DEBUG_SNAPSHOT",
+    payload: {
+      ...payload,
+      collectedAt: new Date().toISOString(),
+    },
   });
-
-  if (!context?.market) {
-    return;
-  }
-
-  try {
-    await sendTabMessage(tab.id, { type: "COLLECTION_STARTED" });
-    const marketData =
-      getDemoMarketData(context) || (await collectMarketData(context.market));
-    await callDetectionApi(tab.id, context, marketData, {
-      logSubmitAttempt: false,
-    });
-  } catch (error) {
-    await sendTabMessage(tab.id, {
-      type: "COLLECTION_ERROR",
-      payload: { message: error.message },
-    });
-  }
 }
-
-async function runMinuteCycle() {
-  const tabs = await chrome.tabs.query({
-    url: [
-      "https://upbit.com/exchange*",
-      "https://www.upbit.com/exchange*",
-      ...APP_TAB_URL_PATTERNS,
-    ],
-  });
-  await Promise.all(tabs.map(runMinuteCycleForTab));
-}
-
-async function ensureCollectionAlarm() {
-  const alarm = await chrome.alarms.get(COLLECTION_ALARM);
-
-  if (!alarm) {
-    await chrome.alarms.create(COLLECTION_ALARM, {
-      delayInMinutes: 1,
-      periodInMinutes: 1,
-    });
-  }
-}
-
-chrome.runtime.onInstalled.addListener(ensureCollectionAlarm);
-chrome.runtime.onStartup.addListener(ensureCollectionAlarm);
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === COLLECTION_ALARM) {
-    runMinuteCycle();
-  }
-});
-ensureCollectionAlarm();
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "OPEN_AUTH") {
+    const mode = message.payload?.mode === "signup" ? "signup" : "login";
+
+    resolveCurrentAppOrigin()
+      .then((appOrigin) => {
+        const url = new URL(`/${mode}`, appOrigin);
+        if (chrome.runtime.id) {
+          url.searchParams.set("extensionId", chrome.runtime.id);
+        }
+        return chrome.tabs.create({ url: url.toString() });
+      })
+      .then(() => sendResponse({ ok: true }))
+      .catch(() =>
+        sendResponse({ ok: false, error: "로그인 페이지를 열 수 없습니다." }),
+      );
+    return true;
+  }
+
   if (message?.type === "OPEN_DASHBOARD") {
-    chrome.tabs
-      .create({ url: DASHBOARD_URL })
+    resolveCurrentAppOrigin()
+      .then((appOrigin) =>
+        chrome.tabs.create({ url: `${appOrigin}/dashboard` }),
+      )
       .then(() => sendResponse({ ok: true }))
       .catch(() =>
         sendResponse({ ok: false, error: "대시보드를 열 수 없습니다." }),
@@ -701,9 +2131,68 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === "REGISTER_MARKET_CONTEXT") {
-    collectMarketData(message.payload.market)
+  if (message?.type === "OPEN_ONBOARDING") {
+    resolveCurrentAppOrigin()
+      .then((appOrigin) =>
+        chrome.tabs.create({ url: `${appOrigin}/onboarding` }),
+      )
       .then(() => sendResponse({ ok: true }))
+      .catch(() =>
+        sendResponse({ ok: false, error: "온보딩 페이지를 열 수 없습니다." }),
+      );
+    return true;
+  }
+
+  if (message?.type === "GET_AUTH_STATE") {
+    getValidBackendAuth({ refreshProfile: true })
+      .then((auth) =>
+        sendResponse({
+          ok: true,
+          auth,
+          onboardingReady: hasCompletedOnboarding(auth),
+        }),
+      )
+      .catch((error) =>
+        sendResponse({ ok: false, error: error.message }),
+      );
+    return true;
+  }
+
+  if (message?.type === "LOAD_GUARDRAIL_RULES") {
+    loadGuardrailRules()
+      .then((guardrailRules) =>
+        sendResponse({ ok: true, guardrailRules }),
+      )
+      .catch((error) =>
+        sendResponse({ ok: false, error: error.message }),
+      );
+    return true;
+  }
+
+  if (message?.type === "LOGOUT_EVERYWHERE") {
+    logoutEverywhere()
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "REGISTER_MARKET_CONTEXT") {
+    if (isDemoPageUrl(message.payload?.pageUrl)) {
+      sendResponse({ ok: true, skipped: "demo-page" });
+      return false;
+    }
+    void requestSnapshotRefresh(message.payload?.market);
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  if (message?.type === "REFRESH_SNAPSHOTS_NOW") {
+    if (isDemoPageUrl(message.payload?.pageUrl)) {
+      sendResponse({ ok: true, snapshots: null, skipped: "demo-page" });
+      return false;
+    }
+    requestSnapshotRefresh(message.payload?.market)
+      .then((snapshots) => sendResponse({ ok: true, snapshots }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
@@ -715,8 +2204,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "SAVE_ORDER_CONTEXT_SNAPSHOT") {
+    saveOrderContextSnapshotLog(message.payload, sender.tab?.id);
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  if (message?.type === "SAVE_GUARDRAIL_REACTION") {
+    saveGuardrailReactionLog(message.payload, sender.tab?.id);
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  if (message?.type === "SAVE_TRADE_FEEDBACK") {
+    saveTradeFeedbackLog(message.payload, sender.tab?.id);
+    sendResponse({ ok: true });
+    return false;
+  }
+
   if (message?.type === "RUN_DETECTION_NOW") {
     const context = message.payload;
+    const pageUrl = context?.pageUrl || sender.tab?.url || "";
 
     if (
       !sender.tab?.id ||
@@ -727,6 +2235,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({
         ok: false,
         error: "즉시 감지에 필요한 현재 주문 정보가 없습니다.",
+      });
+      return false;
+    }
+
+    if (!isCollectableTradingUrl(pageUrl)) {
+      sendResponse({
+        ok: false,
+        error: "데모 페이지 또는 실제 Upbit 거래 화면에서만 감지를 실행합니다.",
       });
       return false;
     }
@@ -749,7 +2265,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === "RESET_DEMO_STATE") {
+  if (
+    message?.type === "RESET_DEMO_STATE" ||
+    message?.type === "RESET_FLAME_STATE"
+  ) {
     chrome.storage.local
       .set({
         flameTheme: {
@@ -766,16 +2285,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "ORDER_ACTION_DETECTED") {
-    const collectOrder = message.payload.demoData
-      ? Promise.resolve({
-          market: message.payload.market,
-          recentOrders: message.payload.demoData.recentOrders || [],
-          clientAverageBuyAmount:
-            message.payload.demoData.clientAverageBuyAmount ?? null,
-          collected_at: new Date().toISOString(),
-          isDemo: true,
-          privateDataAvailable: true,
-        })
+    const pageUrl = message.payload?.pageUrl || sender.tab?.url || "";
+
+    if (!isCollectableTradingUrl(pageUrl)) {
+      sendResponse({
+        ok: false,
+        error: "데모 페이지 또는 실제 Upbit 거래 화면에서만 주문 데이터를 수집합니다.",
+      });
+      return false;
+    }
+
+    if (!message.payload?.refreshAlreadyRequested) {
+      void requestSnapshotRefresh(message.payload?.market);
+    }
+
+    const collectOrder = isDemoPageUrl(pageUrl)
+      ? Promise.resolve(createDemoOrderData(message.payload))
       : collectOrderDataForDetection(message.payload.market);
 
     collectOrder
@@ -783,16 +2308,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         let detection = null;
 
         if (sender.tab?.id) {
+          if (!isDemoPageUrl(pageUrl)) {
+            saveConfirmedTradeLogBatch(
+              orderData,
+              {
+                attemptId:
+                  message.payload.orderContextSnapshot?.attemptId || null,
+                orderContextSnapshot:
+                  message.payload.orderContextSnapshot || null,
+                currentOrder: message.payload.currentOrder || null,
+              },
+              sender.tab.id,
+            );
+          }
           await sendTabMessage(sender.tab.id, {
             type: "ORDER_DATA_UPDATED",
             payload: orderData,
           });
-          const marketData = await getMarketDataForContext(message.payload);
+
+          const detectionContext = {
+            ...message.payload,
+            pageUrl,
+            market: message.payload?.market || orderData?.market,
+          };
+          const marketData = await getMarketDataForContext(detectionContext);
           detection = await callDetectionApi(
             sender.tab.id,
-            message.payload,
+            detectionContext,
             marketData,
-            { orderData },
+            {
+              orderData,
+              logSubmitAttempt: false,
+            },
           );
         }
 
@@ -813,10 +2360,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
 
-    encryptAndStoreCredentials(accessKey.trim(), secretKey.trim(), passphrase)
+    const credentials = {
+      accessKey: accessKey.trim(),
+      secretKey: secretKey.trim(),
+    };
+
+    validateUpbitCredentials(credentials)
+      .then(() =>
+        encryptAndStoreCredentials(
+          credentials.accessKey,
+          credentials.secretKey,
+          passphrase,
+        ),
+      )
+      .then(() => reloadCollectableTradingTabs())
       .then(() => sendResponse({ ok: true }))
-      .catch(() =>
-        sendResponse({ ok: false, error: "API 키 암호화 저장에 실패했습니다." }),
+      .catch((error) =>
+        sendResponse({
+          ok: false,
+          error: error.message || "API 키 검증 및 저장에 실패했습니다.",
+        }),
       );
     return true;
   }
@@ -855,11 +2418,82 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "RUN_COLLECTION_NOW") {
-    runMinuteCycle()
+    Promise.all([
+      loadGuardrailRules(),
+      requestSnapshotRefresh(message.payload?.market),
+    ])
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
 
   return false;
+});
+
+chrome.runtime.onMessageExternal?.addListener(
+  (message, sender, sendResponse) => {
+    if (message?.type !== "AUTH_HANDOFF") {
+      return false;
+    }
+
+    handleAuthHandoff(message.payload?.appOrigin, sender)
+      .then((auth) =>
+        sendResponse({
+          ok: true,
+          auth: {
+            expiresAt: auth.expiresAt,
+            user: auth.user,
+            appOrigin: auth.appOrigin,
+          },
+        }),
+      )
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  },
+);
+
+chrome.cookies?.onChanged?.addListener((changeInfo) => {
+  if (
+    !changeInfo.removed ||
+    changeInfo.cause === "overwrite" ||
+    changeInfo.cookie?.name !== REFRESH_TOKEN_COOKIE_NAME
+  ) {
+    return;
+  }
+
+  chrome.storage.local.get("auth").then(({ auth }) => {
+    const appOrigin = normalizeAllowedAppOrigin(auth?.appOrigin);
+
+    if (
+      appOrigin &&
+      new URL(appOrigin).hostname ===
+        String(changeInfo.cookie.domain || "").replace(/^\./, "")
+    ) {
+      void clearExtensionSession().catch(() => {});
+    }
+  });
+});
+
+function installSnapshotRefreshAlarm() {
+  chrome.alarms?.create(SNAPSHOT_REFRESH_ALARM_NAME, {
+    periodInMinutes: SNAPSHOT_REFRESH_PERIOD_MINUTES,
+  });
+}
+
+installSnapshotRefreshAlarm();
+
+chrome.runtime.onInstalled?.addListener(() => {
+  installSnapshotRefreshAlarm();
+});
+
+chrome.runtime.onStartup?.addListener(() => {
+  installSnapshotRefreshAlarm();
+});
+
+chrome.alarms?.onAlarm?.addListener((alarm) => {
+  if (alarm?.name !== SNAPSHOT_REFRESH_ALARM_NAME) {
+    return;
+  }
+
+  void requestSnapshotRefresh();
 });

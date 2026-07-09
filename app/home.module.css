@@ -1,0 +1,79 @@
+.page {
+  display: grid;
+  min-height: 100vh;
+  padding: 40px 24px;
+  place-items: center;
+  background:
+    radial-gradient(circle at 18% 15%, rgb(36 110 213 / 16%), transparent 34%),
+    radial-gradient(circle at 82% 75%, rgb(255 111 97 / 14%), transparent 34%),
+    #f6f8fb;
+}
+
+.hero {
+  width: min(760px, 100%);
+  padding: 64px;
+  border: 1px solid #e5e9f0;
+  border-radius: 28px;
+  background: rgb(255 255 255 / 92%);
+  box-shadow: 0 24px 80px rgb(25 38 65 / 12%);
+}
+
+.eyebrow {
+  color: #246ed5;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.hero h1 {
+  max-width: 620px;
+  margin: 18px 0;
+  color: #172036;
+  font-size: clamp(38px, 6vw, 64px);
+  letter-spacing: -0.05em;
+  line-height: 1.08;
+}
+
+.hero p {
+  max-width: 620px;
+  margin: 0;
+  color: #687387;
+  font-size: 18px;
+  line-height: 1.75;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 34px 0 22px;
+}
+
+.actions a {
+  padding: 14px 20px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.primary {
+  color: #fff;
+  background: #246ed5;
+}
+
+.secondary {
+  color: #344158;
+  background: #eef2f7;
+}
+
+.hero small {
+  color: #9098a7;
+  line-height: 1.6;
+}
+
+@media (max-width: 640px) {
+  .hero {
+    padding: 40px 26px;
+  }
+}
