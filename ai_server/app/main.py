@@ -1,7 +1,14 @@
+import os
+from dotenv import load_dotenv
+
 import logging
 import sys
 from pathlib import Path
 from threading import Lock
+
+# 애플리케이션 시작 전 환경 변수를 명시적으로 프로세스에 주입
+load_dotenv()
+
 
 AI_SERVER_ROOT = Path(__file__).resolve().parents[1]  # ai-server/
 if str(AI_SERVER_ROOT) not in sys.path:
