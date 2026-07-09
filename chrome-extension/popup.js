@@ -1,4 +1,5 @@
 const popupRoot = document.documentElement;
+const loadingView = document.querySelector("#loading-view");
 const signedOutView = document.querySelector("#signed-out-view");
 const accountView = document.querySelector("#account-view");
 const openLoginButton = document.querySelector("#open-login-button");
@@ -17,12 +18,15 @@ const apiKeyMessage = document.querySelector("#api-key-message");
 const saveApiKeyButton = document.querySelector("#save-api-key-button");
 const unlockApiKeyButton = document.querySelector("#unlock-api-key-button");
 const deleteApiKeyButton = document.querySelector("#delete-api-key-button");
+let authLoadRequestId = 0;
 
 function setPopupView(view) {
-  const isAccount = view === "account";
-  popupRoot.dataset.view = isAccount ? "account" : "signed-out";
-  signedOutView.hidden = isAccount;
-  accountView.hidden = !isAccount;
+  const normalizedView =
+    view === "account" || view === "signed-out" ? view : "loading";
+  popupRoot.dataset.view = normalizedView;
+  loadingView.hidden = normalizedView !== "loading";
+  signedOutView.hidden = normalizedView !== "signed-out";
+  accountView.hidden = normalizedView !== "account";
 }
 
 function renderStatistics() {
@@ -49,6 +53,10 @@ function showAccount(user) {
   setPopupView("account");
   renderStatistics();
   refreshCredentialStatus();
+}
+
+function showLoading() {
+  setPopupView("loading");
 }
 
 function showSignedOut() {
@@ -233,14 +241,25 @@ logoutButton.addEventListener("click", async () => {
 });
 
 async function initialize() {
+  const requestId = authLoadRequestId + 1;
+  authLoadRequestId = requestId;
+  showLoading();
+
   try {
     const { auth } = await sendBackgroundMessage("GET_AUTH_STATE");
+    if (requestId !== authLoadRequestId) {
+      return;
+    }
+
     if (auth?.user) {
       showAccount(auth.user);
       return;
     }
   } catch {
     // 만료된 세션은 background에서 정리하고 비로그인 화면을 표시합니다.
+    if (requestId !== authLoadRequestId) {
+      return;
+    }
   }
 
   showSignedOut();

@@ -137,16 +137,12 @@ function createHarness({ queryTabs } = {}) {
       mapUpbitOrder(order) {
         return order;
       },
-      resolveFlameMode() {
-        return "default";
-      },
     },
     SALTBREAD_CONFIG: {
       appUrl: "https://example.com",
       appOrigins: ["https://example.com"],
       apiBaseUrl: "https://example.com",
       dashboardUrl: "https://example.com/dashboard",
-      detectPath: "/api/ext/detect",
       behaviorEventsPath: "/api/behavior/events",
       upbitApiBaseUrl: "https://api.upbit.com",
     },
@@ -355,7 +351,7 @@ test("만료된 토큰은 저장된 appOrigin의 쿠키로 갱신한다", async 
   assert.equal(response.auth.appOrigin, "https://example.com");
 });
 
-test("감지와 행동 로그는 인증에 저장된 appOrigin으로 전송한다", async () => {
+test("행동 로그는 인증에 저장된 appOrigin으로 전송한다", async () => {
   const harness = createHarness();
   const requestedUrls = [];
   harness.context.fetch = async (url) => {
@@ -363,17 +359,6 @@ test("감지와 행동 로그는 인증에 저장된 appOrigin으로 전송한�
     return jsonResponse({ ok: true });
   };
 
-  await vm.runInContext(
-    `postDetectionRequest(
-      { symbol: "KRW-BTC" },
-      {
-        accessToken: "token",
-        user: { id: "user-1" },
-        appOrigin: "http://127.0.0.1:3000"
-      }
-    )`,
-    harness.context,
-  );
   await vm.runInContext(
     `postBehaviorEvent(
       { eventType: "BUY_CLICK" },
@@ -387,7 +372,6 @@ test("감지와 행동 로그는 인증에 저장된 appOrigin으로 전송한�
   );
 
   assert.deepEqual(requestedUrls, [
-    "http://127.0.0.1:3000/api/ext/detect",
     "http://127.0.0.1:3000/api/behavior/events",
   ]);
 });

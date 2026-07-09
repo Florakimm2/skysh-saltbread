@@ -9,7 +9,7 @@
     "48": "icon-48.png",
     "128": "icon-128.png"
   },
-  "permissions": ["cookies", "storage", "tabs"],
+  "permissions": ["cookies", "storage", "tabs", "alarms"],
   "host_permissions": [
     "__APP_MATCH_PATTERN__",
     "http://localhost/*",

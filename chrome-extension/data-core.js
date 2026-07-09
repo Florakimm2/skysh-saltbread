@@ -9,6 +9,9 @@
     pricePositionIn5mRange: { valueType: "NUMBER", requiresPrivateApi: false },
     requestedBalanceRatio: { valueType: "NUMBER", requiresPrivateApi: false },
     orderbookClickToSnapshotMs: { valueType: "NUMBER", requiresPrivateApi: false },
+    intentPrice: { valueType: "DECIMAL_STRING", requiresPrivateApi: false },
+    intentQuantity: { valueType: "DECIMAL_STRING", requiresPrivateApi: false },
+    intentAmount: { valueType: "DECIMAL_STRING", requiresPrivateApi: false },
     tradePriceAtSnapshot: { valueType: "DECIMAL_STRING", requiresPrivateApi: false },
     baseAssetAvgBuyPriceBeforeSnapshot: {
       valueType: "DECIMAL_STRING",
@@ -16,6 +19,25 @@
     },
     priceVsAvgBuyRateAtSnapshot: { valueType: "NUMBER", requiresPrivateApi: true },
     actualOrderCreatedCount10m: { valueType: "NUMBER", requiresPrivateApi: true },
+    orderIntentCount1m: { valueType: "NUMBER", requiresPrivateApi: false },
+    sameSideIntentCount1m: { valueType: "NUMBER", requiresPrivateApi: false },
+    marketChangeCount5m: { valueType: "NUMBER", requiresPrivateApi: false },
+    sideChangeCount3m: { valueType: "NUMBER", requiresPrivateApi: false },
+    priceEditCount3m: { valueType: "NUMBER", requiresPrivateApi: false },
+    quantityEditCount3m: { valueType: "NUMBER", requiresPrivateApi: false },
+    amountEditCount3m: { valueType: "NUMBER", requiresPrivateApi: false },
+    inputRevertCount: { valueType: "NUMBER", requiresPrivateApi: false },
+    priceDirectionChangeCount: { valueType: "NUMBER", requiresPrivateApi: false },
+    priceChangeRate: { valueType: "NUMBER", requiresPrivateApi: false },
+    amountChangeRate: { valueType: "NUMBER", requiresPrivateApi: false },
+    draftDurationMs: { valueType: "NUMBER", requiresPrivateApi: false },
+    lastEditToSnapshotMs: { valueType: "NUMBER", requiresPrivateApi: false },
+    draftEditCount: { valueType: "NUMBER", requiresPrivateApi: false },
+    orderModeChangeCount3m: { valueType: "NUMBER", requiresPrivateApi: false },
+    allocationPresetPercent: { valueType: "NUMBER", requiresPrivateApi: false },
+    spreadRate: { valueType: "NUMBER", requiresPrivateApi: false },
+    volumeSpikeRatio5m: { valueType: "NUMBER", requiresPrivateApi: false },
+    modeChangedToMarket: { valueType: "BOOLEAN", requiresPrivateApi: false },
   };
   const VISUAL_MODES = new Set([
     "DEFAULT",
@@ -410,20 +432,6 @@
     return amounts.reduce((sum, amount) => sum + amount, 0) / amounts.length;
   }
 
-  function resolveFlameMode(detection, orderSide) {
-    if (!detection?.detected) {
-      return "default";
-    }
-
-    if (
-      ["REVENGE_TRADING", "HESITATION"].includes(detection.type)
-    ) {
-      return "blue";
-    }
-
-    return String(orderSide).toUpperCase() === "SELL" ? "blue" : "pink";
-  }
-
   function getRuleFieldValue(context, field) {
     return context && Object.prototype.hasOwnProperty.call(context, field)
       ? context[field]
@@ -623,7 +631,6 @@
     mapUpbitOrder,
     parseMarket,
     pruneTimestamps,
-    resolveFlameMode,
     resolveVisualMode,
     RULE_FIELD_CATALOG,
     toNumber,

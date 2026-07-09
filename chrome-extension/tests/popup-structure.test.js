@@ -18,6 +18,18 @@ const contentScript = fs.readFileSync(
   "utf8",
 );
 
+test("팝업은 profile 확인 전 로딩 화면으로 시작한다", () => {
+  assert.match(popupHtml, /<html lang="ko" data-view="loading">/);
+  assert.match(popupHtml, /id="loading-view"/);
+  assert.match(popupHtml, /로그인 상태를 확인하고 있어요/);
+  assert.match(popupHtml, /id="signed-out-view" class="signed-out-view" hidden/);
+  assert.match(popupScript, /function showLoading\(\)/);
+  assert.match(
+    popupScript,
+    /showLoading\(\);[\s\S]*sendBackgroundMessage\("GET_AUTH_STATE"\)/,
+  );
+});
+
 test("비로그인 팝업은 불씨 브랜드와 분리된 로그인·회원가입 버튼을 제공한다", () => {
   const signedOutView = popupHtml.match(
     /<section id="signed-out-view"[\s\S]*?<\/section>/,

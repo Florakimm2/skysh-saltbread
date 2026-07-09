@@ -31,13 +31,11 @@ handoff code를 교환하는 로직은 `background.js`의 `handleAuthHandoff`에
 최대 금액 선택, 최근 1분 매수 클릭, 최근 3분 입력 수정, 최근 평균 매수 금액,
 종목별 체류 시간을 집계해 실시간으로 표시합니다.
 
-확장 프로그램의 background service worker는 Chrome Alarm을 사용하여 매 1분마다
-현재 종목의 Upbit 공개 시장 데이터를 갱신하고 `/api/ext/detect`를 호출합니다.
-감정 매매가 감지되면 백엔드가 반환한 문구를 패널 상단 상태 영역에 표시합니다.
-감지된 주문이 매수면 분홍 불꽃, 매도면 파란 불꽃으로 바뀌며 감지되지 않으면
-빨간 불꽃으로 돌아옵니다. 같은 색상 테마가 팝업과 거래 화면 패널에 동기화됩니다.
-브라우저 Origin이 포함된 Upbit 공개 API의 10초당 1회 제한을 지키기 위해 공개
-요청을 10.1초 이상 간격으로 직렬화하며, 종목 경고 목록은 10분간 캐시합니다.
+확장 프로그램의 background service worker는 Chrome Alarm을 사용하여 30초마다
+현재 종목의 백엔드 market snapshot과 Upbit 개인 주문/계좌 snapshot을 갱신합니다.
+주문 버튼을 누르는 순간에는 저장된 snapshot과 페이지 행동 데이터를 합친
+OrderContextSnapshot으로 사용자 설정 가드레일만 즉시 평가합니다. 설정된 가드레일이
+감지되면 해당 규칙의 문구와 불꽃 모드를 패널 상단 상태 영역에 표시합니다.
 
 ## Upbit API 키
 

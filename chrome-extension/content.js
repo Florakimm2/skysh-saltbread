@@ -6,24 +6,20 @@ const APP_ORIGINS = new Set([
 ]);
 const BEHAVIOR_INPUT_DEBOUNCE_MS = 650;
 const GUARDRAIL_RULES_CACHE_KEY = "guardrailRulesCache";
+const MARKET_SNAPSHOT_CACHE_KEY = "marketSnapshotCache";
+const PERSONAL_SNAPSHOT_CACHE_KEY = "personalSnapshotCache";
+const SNAPSHOT_CACHE_MAX_AGE_MS = 2 * 60 * 1000;
 const {
   buildBehaviorSnapshot,
   detectOrderActionSide,
   evaluateGuardrailRules,
+  evaluateRuleExpression,
   parseMarket,
   resolveVisualMode,
+  RULE_FIELD_CATALOG,
   toNumber,
 } =
   globalThis.SaltbreadCore;
-const DETECTION_TITLES = {
-  FOMO_CHASING: "FOMO 추격 매수",
-  REVENGE_TRADING: "복수 매매",
-  HESITATION: "주문 망설임",
-  ALL_IN_IMPULSE: "충동적 올인",
-  AMOUNT_SPIKE: "주문 금액 급증",
-  MACHINE_GUN_TRADING: "연속 시장가 매수",
-  HIGH_RISK_HOPPING: "고위험 종목 이동",
-};
 const VISUAL_MODE_LABELS = {
   DEFAULT: "기본",
   CURIOUS: "확인",
@@ -31,6 +27,40 @@ const VISUAL_MODE_LABELS = {
   FAST_BURN: "반복",
   SCARED: "위험",
   SAD: "손실",
+};
+const RULE_FIELD_LABELS = {
+  side: "주문 타입",
+  orderMode: "주문 방식",
+  snapshotTrigger: "감지 시점",
+  signedChangeRate: "등락률",
+  shortTermReturn5m: "5분 수익률",
+  pricePositionIn5mRange: "5분 가격 위치",
+  requestedBalanceRatio: "주문 비중",
+  orderbookClickToSnapshotMs: "호가 클릭 후 경과 시간",
+  intentPrice: "주문 가격",
+  intentQuantity: "주문 수량",
+  intentAmount: "주문 금액",
+  tradePriceAtSnapshot: "현재가",
+  baseAssetAvgBuyPriceBeforeSnapshot: "평균 매수가",
+  priceVsAvgBuyRateAtSnapshot: "평균 매수가 대비 가격",
+  actualOrderCreatedCount10m: "10분 주문 횟수",
+  orderIntentCount1m: "1분 주문 시도 횟수",
+  sameSideIntentCount1m: "같은 방향 주문 시도 횟수",
+  marketChangeCount5m: "5분 종목 변경 횟수",
+  sideChangeCount3m: "3분 매수/매도 변경 횟수",
+  priceEditCount3m: "3분 가격 수정 횟수",
+  quantityEditCount3m: "3분 수량 수정 횟수",
+  amountEditCount3m: "3분 금액 수정 횟수",
+  inputRevertCount: "입력 되돌림 횟수",
+  priceDirectionChangeCount: "가격 방향 변경 횟수",
+  priceChangeRate: "입력 가격 변화율",
+  orderModeChangeCount3m: "3분 주문 방식 변경 횟수",
+  allocationPresetPercent: "주문 비중 버튼",
+  draftDurationMs: "주문 작성 시간",
+  lastEditToSnapshotMs: "마지막 수정 후 경과 시간",
+  draftEditCount: "주문 수정 횟수",
+  amountChangeRate: "주문 금액 변화율",
+  modeChangedToMarket: "시장가 전환 여부",
 };
 
 let behaviorState = null;
@@ -53,6 +83,10 @@ let pageGuardrailRulesState = {
   fetchedAt: null,
 };
 let guardrailRulesLoadPromise = null;
+let cachedMarketSnapshotCache = {};
+let cachedPersonalSnapshotCache = {};
+let privateApiReady = false;
+let extensionContextInvalidated = false;
 
 function isAppPage() {
   return APP_ORIGINS.has(location.origin);
@@ -104,6 +138,15 @@ function decimalString(value) {
   if (value === null || value === undefined || value === "") return null;
   const numeric = toNumber(value);
   return numeric === null ? null : String(numeric);
+}
+
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null);
+}
+
+function ratioFromPercentLike(value) {
+  const numeric = toNumber(value);
+  return numeric === null ? null : numeric / 100;
 }
 
 function acknowledgePageEvent(event) {
@@ -180,6 +223,7 @@ function applyFlameTheme(mode) {
   }
 
   setFlameAnimationMode(panelFlame, normalizedMode);
+  setFlameAnimationMode(collapsedPanelFlame, normalizedMode);
 }
 
 function resetPanelFlameState() {
@@ -237,6 +281,243 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function getRuleFieldLabel(field) {
+  return RULE_FIELD_LABELS[field] || field || "조건";
+}
+
+function getRuleFieldValue(snapshot, field) {
+  return snapshot && Object.prototype.hasOwnProperty.call(snapshot, field)
+    ? snapshot[field]
+    : null;
+}
+
+function getRuleOperandValue(operand, snapshot) {
+  if (!operand || typeof operand !== "object") {
+    return null;
+  }
+
+  if (operand.operandType === "FIELD") {
+    return getRuleFieldValue(snapshot, operand.field);
+  }
+
+  return operand.value ?? null;
+}
+
+function formatRuleValue(value, field = null) {
+  if (value === null || value === undefined || value === "") {
+    return "없음";
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => formatRuleValue(item, field)).join(", ");
+  }
+
+  if (typeof value === "boolean") {
+    return value ? "예" : "아니요";
+  }
+
+  const numeric = toNumber(value);
+  const fieldType = RULE_FIELD_CATALOG?.[field]?.valueType || null;
+
+  if (numeric !== null && fieldType === "NUMBER") {
+    if (
+      /Rate|Ratio|ChangeRate|Return|Position/.test(String(field || "")) &&
+      Math.abs(numeric) <= 10
+    ) {
+      return `${Number((numeric * 100).toFixed(2))}%`;
+    }
+
+    if (/Ms$/.test(String(field || ""))) {
+      return `${Number((numeric / 1000).toFixed(1))}초`;
+    }
+
+    return String(Number(numeric.toFixed(4)));
+  }
+
+  return String(value);
+}
+
+function collectMatchedRuleConditions(expression, snapshot) {
+  if (!expression || typeof expression !== "object") {
+    return [];
+  }
+
+  if (expression.nodeType === "CONDITION") {
+    return evaluateRuleExpression(expression, snapshot) ? [expression] : [];
+  }
+
+  if (expression.nodeType !== "GROUP") {
+    return [];
+  }
+
+  const children = Array.isArray(expression.children)
+    ? expression.children
+    : [];
+
+  return children.flatMap((child) =>
+    collectMatchedRuleConditions(child, snapshot),
+  );
+}
+
+function buildConditionDescription(condition, snapshot) {
+  const label = getRuleFieldLabel(condition.leftField);
+  const leftValue = getRuleFieldValue(snapshot, condition.leftField);
+  const rightValue = getRuleOperandValue(condition.rightOperand, snapshot);
+  const leftText = formatRuleValue(leftValue, condition.leftField);
+  const rightField = condition.rightOperand?.field || condition.leftField;
+  const rightText = formatRuleValue(rightValue, rightField);
+  const rightLabel = condition.rightOperand?.field
+    ? getRuleFieldLabel(condition.rightOperand.field)
+    : null;
+
+  if (condition.operator === "IS_NULL") {
+    return {
+      parts: [{ text: `${label}이 비어 있어요.` }],
+    };
+  }
+
+  if (condition.operator === "IS_NOT_NULL") {
+    return {
+      parts: [{ text: `${label}이 들어 있어요.` }],
+    };
+  }
+
+  if (condition.operator === "EQ") {
+    return {
+      parts: [
+        { text: `${label}이 ` },
+        { text: leftText, emphasis: true },
+        { text: " 에요." },
+      ],
+    };
+  }
+
+  if (condition.operator === "NEQ") {
+    return {
+      parts: [
+        { text: `${label}이 ` },
+        { text: rightText, emphasis: true },
+        { text: "이 아니에요. 현재 값은 " },
+        { text: leftText, emphasis: true },
+        { text: " 에요." },
+      ],
+    };
+  }
+
+  if (condition.operator === "GT" || condition.operator === "GTE") {
+    return {
+      parts: [
+        { text: `${label}이 ` },
+        { text: leftText, emphasis: true },
+        { text: `로 ${rightLabel ? `${rightLabel} ` : ""}` },
+        { text: rightText, emphasis: true },
+        {
+          text: condition.operator === "GT"
+            ? "보다 커요."
+            : "보다 크거나 같아요.",
+        },
+      ],
+    };
+  }
+
+  if (condition.operator === "LT" || condition.operator === "LTE") {
+    return {
+      parts: [
+        { text: `${label}이 ` },
+        { text: leftText, emphasis: true },
+        { text: `로 ${rightLabel ? `${rightLabel} ` : ""}` },
+        { text: rightText, emphasis: true },
+        {
+          text: condition.operator === "LT"
+            ? "보다 작아요."
+            : "보다 작거나 같아요.",
+        },
+      ],
+    };
+  }
+
+  if (condition.operator === "IN" || condition.operator === "NOT_IN") {
+    return {
+      parts: [
+        { text: `${label}이 ` },
+        { text: leftText, emphasis: true },
+        {
+          text: condition.operator === "IN"
+            ? "로 허용된 값 "
+            : "로 제외된 값 ",
+        },
+        { text: rightText, emphasis: true },
+        {
+          text: condition.operator === "IN"
+            ? " 중 하나예요."
+            : "에 포함되지 않아요.",
+        },
+      ],
+    };
+  }
+
+  return {
+    parts: [
+      { text: `${label}이 ` },
+      { text: leftText, emphasis: true },
+      { text: `이고 기준값은 ` },
+      { text: rightText, emphasis: true },
+      { text: " 에요." },
+    ],
+  };
+}
+
+function buildMatchedRuleDescriptions(result) {
+  const snapshot = result?.orderContextSnapshot;
+  const matchedRules = Array.isArray(result?.ruleEvaluation?.matchedRules)
+    ? result.ruleEvaluation.matchedRules
+    : result?.primaryRule
+      ? [result.primaryRule]
+      : [];
+
+  return matchedRules.flatMap((rule) => {
+    const conditions = collectMatchedRuleConditions(rule.expression, snapshot);
+    const ruleTitle = rule.warningTitle || rule.name || "가드레일";
+
+    return conditions.map((condition) => ({
+      ruleId: rule.ruleId || null,
+      ruleTitle,
+      ...buildConditionDescription(condition, snapshot),
+    }));
+  });
+}
+
+function renderDetectedStatusMessage(messageElement, message, result = null) {
+  const descriptions = buildMatchedRuleDescriptions(result);
+  messageElement.replaceChildren();
+  messageElement.append(document.createTextNode(message));
+
+  if (descriptions.length === 0) {
+    return;
+  }
+
+  messageElement.append(document.createElement("br"));
+  messageElement.append(document.createElement("br"));
+
+  const list = document.createElement("span");
+  list.className = "saltbread-rule-match-list";
+
+  descriptions.forEach((description) => {
+    const line = document.createElement("span");
+    line.className = "saltbread-rule-match-line";
+
+    description.parts.forEach((part) => {
+      const node = document.createElement(part.emphasis ? "strong" : "span");
+      node.textContent = part.text;
+      line.append(node);
+    });
+
+    list.append(line);
+  });
+
+  messageElement.append(list);
+}
+
 function summarizeRuleForLog(rule) {
   return {
     ruleId: rule.ruleId,
@@ -256,7 +537,6 @@ function renderRuleRows(rules = []) {
   if (userRules.length === 0) {
     return `
       <article class="saltbread-rule-row saltbread-rule-row--empty">
-        <span class="saltbread-rule-row__swatch" aria-hidden="true"></span>
         <span class="saltbread-rule-row__title">설정된 규칙 없음</span>
         <strong class="saltbread-rule-row__mode">대기</strong>
       </article>
@@ -267,6 +547,16 @@ function renderRuleRows(rules = []) {
     const visualMode = normalizeFlameMode(rule.visualMode);
     const title = rule.warningTitle || rule.name || "이름 없는 규칙";
     const modeLabel = VISUAL_MODE_LABELS[visualMode] || visualMode;
+    const requiresPrivateApi = Boolean(rule.requiresPrivateApi);
+    const isPrivateApiReady = !requiresPrivateApi || privateApiReady;
+    const description = rule.description || rule.warningMessage || title;
+    const apiNotice =
+      requiresPrivateApi && !privateApiReady
+        ? "개인 API 연결 시 감시 가능"
+        : requiresPrivateApi
+          ? "개인 API 기반 규칙"
+          : "";
+    const titleText = [description, apiNotice].filter(Boolean).join(" · ");
 
     return `
       <article
@@ -274,11 +564,13 @@ function renderRuleRows(rules = []) {
         data-rule-id="${escapeHtml(rule.ruleId || "")}"
         data-rule-mode="${toDatasetFlameMode(visualMode)}"
         data-enabled="${String(rule.isEnabled !== false)}"
-        title="${escapeHtml(rule.description || rule.warningMessage || title)}"
+        data-private-api-required="${String(requiresPrivateApi)}"
+        data-private-api-ready="${String(isPrivateApiReady)}"
+        title="${escapeHtml(titleText)}"
       >
-        <span class="saltbread-rule-row__swatch" aria-hidden="true"></span>
         <span class="saltbread-rule-row__title">${escapeHtml(title)}</span>
         <strong class="saltbread-rule-row__mode">${escapeHtml(modeLabel)}</strong>
+        ${requiresPrivateApi ? `<span class="saltbread-rule-row__api-badge">API</span>` : ""}
       </article>
     `;
   }).join("");
@@ -321,13 +613,113 @@ function setPageGuardrailRulesState(state = {}) {
   return pageGuardrailRulesState;
 }
 
+function refreshPrivateApiReadyState() {
+  return safeRuntimeSendMessage({ type: "GET_UPBIT_CREDENTIAL_STATUS" })
+    .then((response) => {
+      const status = response?.status || {};
+      privateApiReady = Boolean(status.configured && status.unlocked);
+      renderGuardrailRulesFromCache(pageGuardrailRulesState);
+      return privateApiReady;
+    })
+    .catch(() => {
+      privateApiReady = false;
+      renderGuardrailRulesFromCache(pageGuardrailRulesState);
+      return false;
+    });
+}
+
+function isExtensionContextInvalidatedError(error) {
+  return /Extension context invalidated/i.test(String(error?.message || error));
+}
+
+function markExtensionContextInvalidated() {
+  extensionContextInvalidated = true;
+  if (behaviorTimerId) {
+    window.clearInterval(behaviorTimerId);
+    behaviorTimerId = null;
+  }
+}
+
+function safeRuntimeSendMessage(message) {
+  try {
+    if (extensionContextInvalidated) {
+      return Promise.resolve({
+        ok: false,
+        error: "확장 프로그램이 새로고침되었습니다. 페이지를 새로고침해 주세요.",
+      });
+    }
+
+    if (!chrome?.runtime?.sendMessage) {
+      return Promise.resolve({ ok: false, error: "확장 프로그램 연결이 끊겼습니다." });
+    }
+
+    return Promise.resolve(chrome.runtime.sendMessage(message)).catch((error) => {
+      if (isExtensionContextInvalidatedError(error)) {
+        markExtensionContextInvalidated();
+        return {
+          ok: false,
+          error: "확장 프로그램이 새로고침되었습니다. 페이지를 새로고침해 주세요.",
+        };
+      }
+
+      console.warn("[Saltbread] chrome.runtime.sendMessage failed", error);
+      return {
+        ok: false,
+        error: error?.message || "확장 프로그램과 연결할 수 없습니다.",
+      };
+    });
+  } catch (error) {
+    if (isExtensionContextInvalidatedError(error)) {
+      markExtensionContextInvalidated();
+    } else {
+      console.warn("[Saltbread] chrome.runtime.sendMessage failed", error);
+    }
+
+    return Promise.resolve({
+      ok: false,
+      error: "확장 프로그램이 새로고침되었습니다. 페이지를 새로고침해 주세요.",
+    });
+  }
+}
+
+function safeStorageLocalGet(keys) {
+  try {
+    if (extensionContextInvalidated) {
+      return Promise.resolve({});
+    }
+
+    if (!chrome?.storage?.local?.get) {
+      return Promise.resolve({});
+    }
+
+    return Promise.resolve(chrome.storage.local.get(keys)).catch((error) => {
+      if (isExtensionContextInvalidatedError(error)) {
+        markExtensionContextInvalidated();
+      } else {
+        console.warn("[Saltbread] chrome.storage.local.get failed", error);
+      }
+
+      return {};
+    });
+  } catch (error) {
+    if (isExtensionContextInvalidatedError(error)) {
+      markExtensionContextInvalidated();
+    } else {
+      console.warn("[Saltbread] chrome.storage.local.get failed", error);
+    }
+
+    return Promise.resolve({});
+  }
+}
+
 function loadPageGuardrailRules() {
   if (guardrailRulesLoadPromise) {
     return guardrailRulesLoadPromise;
   }
 
-  guardrailRulesLoadPromise = chrome.runtime
-    .sendMessage({ type: "LOAD_GUARDRAIL_RULES" })
+  guardrailRulesLoadPromise = safeRuntimeSendMessage({
+      type: "LOAD_GUARDRAIL_RULES",
+    })
     .then((response) => {
       if (!response?.ok) {
         throw new Error(response?.error || "규칙을 불러오지 못했습니다.");
@@ -336,8 +728,7 @@ function loadPageGuardrailRules() {
       return setPageGuardrailRulesState(response.guardrailRules || {});
     })
     .catch((error) =>
-      chrome.storage.local
-        .get(GUARDRAIL_RULES_CACHE_KEY)
+      safeStorageLocalGet(GUARDRAIL_RULES_CACHE_KEY)
         .then((result) =>
           setPageGuardrailRulesState({
             ...(result[GUARDRAIL_RULES_CACHE_KEY] || {}),
@@ -586,13 +977,14 @@ function createPanel(auth) {
     },
   );
   resetPanelFlameState();
-  chrome.runtime.sendMessage({ type: "RESET_FLAME_STATE" }).catch(() => {});
+  safeRuntimeSendMessage({ type: "RESET_FLAME_STATE" }).catch(() => {});
   void loadPageGuardrailRules();
+  void refreshPrivateApiReadyState();
   startBehaviorTracking();
 }
 
 function openDashboard() {
-  chrome.runtime.sendMessage({ type: "OPEN_DASHBOARD" });
+  safeRuntimeSendMessage({ type: "OPEN_DASHBOARD" });
 }
 
 function setPanelCollapsed(panel, isCollapsed) {
@@ -611,7 +1003,19 @@ function setPanelCollapsed(panel, isCollapsed) {
 }
 
 function normalizedText(element) {
-  return element?.textContent?.replace(/\s/g, "") || "";
+  if (!element) {
+    return "";
+  }
+
+  return [
+    element.textContent,
+    element.getAttribute?.("aria-label"),
+    element.getAttribute?.("title"),
+    element.getAttribute?.("value"),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s/g, "");
 }
 
 function findOrderPanel(element) {
@@ -622,14 +1026,21 @@ function findOrderPanel(element) {
     const text = normalizedText(candidate);
     const inputCount = candidate.querySelectorAll?.("input").length || 0;
     const keywordCount = [
+      text.includes("주문"),
+      text.includes("가격"),
+      text.includes("수량"),
+      text.includes("총액") || text.includes("금액"),
+      text.includes("주문가능") || text.includes("보유") || text.includes("가능"),
+      text.includes("시장가") || text.includes("지정가"),
       text.includes("주문총액"),
       text.includes("주문수량"),
       text.includes("매수가격") || text.includes("매도가격"),
     ].filter(Boolean).length;
+    const hasOrderSideText = /매수|매도/.test(text);
 
     if (
       inputCount > 0 &&
-      keywordCount > 0
+      (keywordCount >= 2 || (keywordCount >= 1 && hasOrderSideText))
     ) {
       fallback = candidate;
 
@@ -647,6 +1058,103 @@ function findOrderPanel(element) {
   return fallback;
 }
 
+const ORDER_ACTION_BUTTON_SELECTOR =
+  "button, [role='button'], a, [class*='button'], [class*='Button'], [class*='btn'], [class*='Btn']";
+const UPBIT_ORDER_DIALOG_SELECTOR =
+  "#QuoteOrderConfirmPopup, #modal, #checkVerifMethodModal, [role='dialog'], [aria-modal='true'], [data-testid='popupWrapper']";
+
+function detectOrderSideFromConfirmText(text) {
+  const normalized = String(text || "").replace(/\s/g, "");
+
+  if (/매도(?:주문|확인|주문안내|주문을|주문하기)/.test(normalized)) {
+    return "SELL";
+  }
+
+  if (/매수(?:주문|확인|주문안내|주문을|주문하기)/.test(normalized)) {
+    return "BUY";
+  }
+
+  const hasBuy = normalized.includes("매수");
+  const hasSell = normalized.includes("매도");
+
+  if (hasBuy && !hasSell) {
+    return "BUY";
+  }
+
+  if (hasSell && !hasBuy) {
+    return "SELL";
+  }
+
+  return null;
+}
+
+function findUpbitOrderDialog(element) {
+  if (!(element instanceof Element)) {
+    return null;
+  }
+
+  const dialog = element.closest(UPBIT_ORDER_DIALOG_SELECTOR);
+
+  if (!dialog) {
+    return null;
+  }
+
+  const dialogText = normalizedText(dialog);
+
+  if (isUpbitOrderNoticeDialogText(dialogText)) {
+    return null;
+  }
+
+  return detectOrderSideFromConfirmText(dialogText)
+    ? dialog
+    : null;
+}
+
+function isUpbitOrderNoticeDialogText(text) {
+  const normalized = String(text || "").replace(/\s/g, "");
+  return /부족|실패|오류|거절|취소되었습니다|제한/.test(normalized);
+}
+
+function detectOrderTypeFromText(text) {
+  const normalized = String(text || "").replace(/\s/g, "");
+
+  if (normalized.includes("시장가")) {
+    return "MARKET";
+  }
+
+  if (normalized.includes("지정가")) {
+    return "LIMIT";
+  }
+
+  return null;
+}
+
+function findUpbitOrderConfirmButton(target) {
+  if (!(target instanceof Element)) {
+    return null;
+  }
+
+  const button = target.closest(ORDER_ACTION_BUTTON_SELECTOR);
+
+  if (!button || button.closest(`#${PANEL_ID}`)) {
+    return null;
+  }
+
+  const dialog = findUpbitOrderDialog(button);
+  const side = detectOrderSideFromConfirmText(normalizedText(dialog));
+  const buttonText = normalizedText(button);
+  const isConfirmButton =
+    /^(확인|매수확인|매도확인|주문하기|매수|매도)$/.test(buttonText);
+
+  if (!dialog || !side || !isConfirmButton) {
+    return null;
+  }
+
+  button.dataset.saltbreadOrderAction = side;
+  button.dataset.saltbreadOrderConfirm = "upbit";
+  return button;
+}
+
 function isOrderInput(target) {
   return (
     target instanceof HTMLInputElement &&
@@ -660,7 +1168,7 @@ function findOrderButton(target) {
     return null;
   }
 
-  const button = target.closest("button, [role='button']");
+  const button = target.closest(ORDER_ACTION_BUTTON_SELECTOR);
 
   if (
     !button ||
@@ -671,6 +1179,12 @@ function findOrderButton(target) {
     return null;
   }
 
+  const upbitConfirmButton = findUpbitOrderConfirmButton(button);
+
+  if (upbitConfirmButton) {
+    return upbitConfirmButton;
+  }
+
   const buttonText = normalizedText(button);
   const explicitSide = button.dataset.saltbreadOrderAction;
   const orderSide =
@@ -678,10 +1192,41 @@ function findOrderButton(target) {
       buttonText,
     );
   const isConfirmAction = /^(매수확인|매도확인)$/.test(buttonText);
+  const panel = findOrderPanel(button);
 
-  return orderSide && (findOrderPanel(button) || isConfirmAction)
+  return orderSide && (panel || isConfirmAction)
     ? button
     : null;
+}
+
+function emitIgnoredOrderButtonDebug(target) {
+  if (!(target instanceof Element)) {
+    return;
+  }
+
+  const button = target.closest(ORDER_ACTION_BUTTON_SELECTOR);
+
+  if (!button || button.closest(`#${PANEL_ID}`)) {
+    return;
+  }
+
+  const buttonText = normalizedText(button);
+  const orderSide = detectOrderActionSide(buttonText);
+
+  if (!orderSide) {
+    return;
+  }
+
+  emitExtensionDebug("behavior", "ORDER_BUTTON_CANDIDATE_IGNORED", {
+    kind: "ORDER_BUTTON_CANDIDATE_IGNORED",
+    market: behaviorState?.market || parseMarket(location.href),
+    buttonText,
+    orderSide,
+    role: button.getAttribute?.("role") || null,
+    hasPanel: Boolean(findOrderPanel(button)),
+    pageUrl: location.href,
+    occurredAt: new Date().toISOString(),
+  });
 }
 
 function isMaxButton(target) {
@@ -724,6 +1269,8 @@ function findInputValue(panel, labelPattern) {
 function inputMatchesLabel(input, panel, labelPattern) {
   const directLabels = [
     input.getAttribute("aria-label"),
+    input.getAttribute("placeholder"),
+    input.getAttribute("title"),
     ...[...(input.labels || [])].map((label) => label.textContent),
   ].filter(Boolean);
   let candidate = input.parentElement;
@@ -777,15 +1324,15 @@ function getOrderInputKind(input, panel = findOrderPanel(input)) {
   for (const text of candidates) {
     const normalized = String(text).replace(/\s/g, "");
 
-    if (/주문총액|매수금액|매도금액|총주문금액/.test(normalized)) {
+    if (/주문총액|매수금액|매도금액|총주문금액|주문금액|총액|금액/.test(normalized)) {
       return { eventType: "AMOUNT_INPUT", field: "amount" };
     }
 
-    if (/매수가격|매도가격|주문가격/.test(normalized)) {
+    if (/매수가격|매도가격|주문가격|가격/.test(normalized)) {
       return { eventType: "PRICE_INPUT", field: "price" };
     }
 
-    if (/주문수량|매수수량|매도수량/.test(normalized)) {
+    if (/주문수량|매수수량|매도수량|수량/.test(normalized)) {
       return { eventType: "QUANTITY_INPUT", field: "quantity" };
     }
   }
@@ -793,9 +1340,11 @@ function getOrderInputKind(input, panel = findOrderPanel(input)) {
   return null;
 }
 
-function detectOrderType(panel) {
+function detectOrderType(panel, contextElement = null) {
   if (!panel) {
-    return null;
+    return detectOrderTypeFromText(
+      normalizedText(findUpbitOrderDialog(contextElement) || contextElement),
+    );
   }
 
   const controls = [
@@ -819,7 +1368,9 @@ function detectOrderType(panel) {
     return "LIMIT";
   }
 
-  return null;
+  return detectOrderTypeFromText(
+    normalizedText(findUpbitOrderDialog(contextElement)),
+  );
 }
 
 function detectOrderSide(panel, orderButton) {
@@ -902,14 +1453,14 @@ function addOrderValues(eventPayload, panel) {
     return { price: null, quantity: null, amount: null };
   }
 
-  const price = findInputValue(panel, /매수가격|매도가격|주문가격/);
+  const price = findInputValue(panel, /매수가격|매도가격|주문가격|가격/);
   const quantity = findInputValue(
     panel,
-    /주문수량|매수수량|매도수량/,
+    /주문수량|매수수량|매도수량|수량/,
   );
   const explicitAmount = findInputValue(
     panel,
-    /주문총액|매수금액|매도금액|총주문금액/,
+    /주문총액|매수금액|매도금액|총주문금액|주문금액|총액|금액/,
   );
   const amount =
     explicitAmount ??
@@ -985,8 +1536,7 @@ function sendBehaviorEvent(eventPayload) {
     return;
   }
 
-  chrome.runtime
-    .sendMessage({
+  safeRuntimeSendMessage({
       type: "LOG_BEHAVIOR_EVENT",
       payload: eventPayload,
     })
@@ -1000,6 +1550,38 @@ function sendBehaviorEvent(eventPayload) {
     .catch(() =>
       setLoggingStatus("행동 로그 서버와 연결할 수 없습니다."),
     );
+}
+
+function sendBackendLogMessage(type, payload) {
+  if (!payload) {
+    return;
+  }
+
+  safeRuntimeSendMessage({ type, payload })
+    .then((response) => {
+      if (!response?.ok) {
+        setLoggingStatus(response?.error || "로그를 저장하지 못했습니다.");
+      }
+    })
+    .catch(() =>
+      setLoggingStatus("로그 서버와 연결할 수 없습니다."),
+    );
+}
+
+function sendSnapshotRefreshMessage(reason, market = null) {
+  if (isDemoPage()) {
+    return;
+  }
+
+  safeRuntimeSendMessage({
+      type: "REFRESH_SNAPSHOTS_NOW",
+      payload: {
+        reason,
+        market: market || behaviorState?.market || parseMarket(location.href),
+        pageUrl: location.href,
+      },
+    })
+    .catch(() => {});
 }
 
 function isLoggedInContext() {
@@ -1132,11 +1714,11 @@ function readOrderDraft(orderButton = null) {
 
   const side = detectOrderSide(panel, orderButton);
   const orderType = detectOrderType(panel);
-  const price = findInputValue(panel, /매수가격|매도가격|주문가격/);
-  const volume = findInputValue(panel, /주문수량|매수수량|매도수량/);
+  const price = findInputValue(panel, /매수가격|매도가격|주문가격|가격/);
+  const volume = findInputValue(panel, /주문수량|매수수량|매도수량|수량/);
   const explicitAmount = findInputValue(
     panel,
-    /주문총액|매수금액|매도금액|총주문금액/,
+    /주문총액|매수금액|매도금액|총주문금액|주문금액|총액|금액/,
   );
   const amount =
     explicitAmount ??
@@ -1238,6 +1820,142 @@ function handleAmountInput(event) {
   renderBehaviorMetrics();
 }
 
+function countRecentRawOrders10m(rawOrders, now = Date.now()) {
+  return (Array.isArray(rawOrders) ? rawOrders : []).filter((order) => {
+    const createdAt = Date.parse(
+      order?.created_at || order?.createdAt || order?.order_request_time || "",
+    );
+    return Number.isFinite(createdAt) && now - createdAt <= 10 * 60_000;
+  }).length;
+}
+
+function normalizeMarketRiskFlags(marketData = {}) {
+  if (Array.isArray(marketData.marketRiskFlags)) {
+    return marketData.marketRiskFlags;
+  }
+
+  if (Array.isArray(marketData.market_risk_flags)) {
+    return marketData.market_risk_flags;
+  }
+
+  return marketData.has_warning_badge ? ["WARNING"] : [];
+}
+
+function createDemoMarketSnapshot(detail) {
+  const marketData = detail.marketData || {};
+  const market = detail.market || detail.currentOrder?.market || behaviorState?.market;
+  const tradePrice = firstDefined(
+    detail.currentPrice,
+    marketData.tradePrice,
+    marketData.tradePriceAtSnapshot,
+    marketData.currentPrice,
+    marketData.current_price,
+  );
+  const signedChangeRate = firstDefined(
+    marketData.signedChangeRate,
+    marketData.signed_change_rate,
+    marketData.price_change_rate_15m_decimal,
+    ratioFromPercentLike(marketData.priceChangeRate15m),
+    ratioFromPercentLike(marketData.price_change_rate_15m),
+    ratioFromPercentLike(marketData.priceChangeRate15mPercent),
+  );
+  const shortTermReturn5m = firstDefined(
+    marketData.shortTermReturn5m,
+    marketData.short_term_return_5m,
+    marketData.shortTermReturn,
+    marketData.price_change_rate_5m_decimal,
+    ratioFromPercentLike(marketData.priceChangeRate5m),
+    ratioFromPercentLike(marketData.price_change_rate_5m),
+    ratioFromPercentLike(marketData.priceChangeRate5mPercent),
+    ratioFromPercentLike(marketData.price_change_rate_15m),
+  );
+  const volumeSpikeRatio5m = firstDefined(
+    marketData.volumeSpikeRatio5m,
+    marketData.volume_spike_ratio_5m,
+    ratioFromPercentLike(marketData.volume_change_rate_1m),
+  );
+  const fetchedAt = new Date().toISOString();
+
+  return {
+    market: market || "UNKNOWN",
+    tradePrice: decimalString(tradePrice),
+    signedChangeRate: signedChangeRate ?? null,
+    shortTermReturn5m: shortTermReturn5m ?? null,
+    spreadRate: firstDefined(marketData.spreadRate, marketData.spread_rate) ?? null,
+    marketRiskFlags: normalizeMarketRiskFlags(marketData),
+    pricePositionIn5mRange:
+      firstDefined(
+        marketData.pricePositionIn5mRange,
+        marketData.price_position_in_5m_range,
+      ) ?? null,
+    volumeSpikeRatio5m: volumeSpikeRatio5m ?? null,
+    fetchedAt,
+    freshnessMs: 0,
+    source: "demo-page",
+  };
+}
+
+function createDemoPersonalSnapshot(detail) {
+  const market = detail.market || detail.currentOrder?.market || behaviorState?.market;
+  const balances = Array.isArray(detail.accounts) ? detail.accounts : [];
+  const openOrders = Array.isArray(detail.rawOpenOrders) ? detail.rawOpenOrders : [];
+  const recentTrades = Array.isArray(detail.rawClosedOrders)
+    ? detail.rawClosedOrders
+    : [];
+  const baseCurrency = String(market || "").split("-")[1];
+  const baseAccount = balances.find((account) => account?.currency === baseCurrency);
+  const baseAssetAvgBuyPrice = firstDefined(
+    baseAccount?.avg_buy_price,
+    baseAccount?.avgBuyPrice,
+    detail.baseAssetAvgBuyPrice,
+    detail.base_asset_avg_buy_price,
+    detail.clientAverageBuyPrice,
+    detail.client_average_buy_price,
+  );
+  const fetchedAt = new Date().toISOString();
+
+  return {
+    market: market || "UNKNOWN",
+    balances,
+    openOrders,
+    recentOrders: Array.isArray(detail.recentOrders) ? detail.recentOrders : [],
+    recentTrades,
+    baseAssetAvgBuyPrice:
+      baseAssetAvgBuyPrice === undefined || baseAssetAvgBuyPrice === null
+        ? null
+        : String(baseAssetAvgBuyPrice),
+    actualOrderCreatedCount10m: countRecentRawOrders10m(
+      [...openOrders, ...recentTrades],
+    ),
+    fetchedAt,
+    freshnessMs: 0,
+    source: "demo-page",
+  };
+}
+
+function getDemoOverrideMarket(override = getActiveDemoOverride()) {
+  return (
+    override?.demoMarketSnapshot?.market ||
+    override?.currentOrder?.market ||
+    override?.demoData?.market ||
+    override?.demoData?.marketData?.market ||
+    null
+  );
+}
+
+function getAuthoritativeMarket() {
+  const demoMarket = isDemoPage() ? getDemoOverrideMarket() : null;
+  return demoMarket || behaviorState?.market || parseMarket(location.href);
+}
+
+function withAuthoritativeOrderMarket(order, market = getAuthoritativeMarket()) {
+  if (!order || !market) {
+    return order || null;
+  }
+
+  return { ...order, market };
+}
+
 function handleDemoScenario(event) {
   if (!behaviorState || !isAppPage()) {
     return;
@@ -1246,10 +1964,24 @@ function handleDemoScenario(event) {
   acknowledgePageEvent(event);
   const detail = event.detail || {};
   const expiresAt = Number(detail.expiresAt) || Date.now() + 180_000;
+  const demoMarketSnapshot = createDemoMarketSnapshot(detail);
+  const demoPersonalSnapshot = createDemoPersonalSnapshot(detail);
+  const demoMarket = demoMarketSnapshot.market || detail.market || "UNKNOWN";
+  const currentOrder = withAuthoritativeOrderMarket(
+    detail.currentOrder || null,
+    demoMarket,
+  );
+  const marketData = {
+    ...(detail.marketData || {}),
+    market: demoMarket,
+  };
   behaviorState.demoOverride = {
     behaviorData: detail.behaviorData || null,
-    currentOrder: detail.currentOrder || null,
+    currentOrder,
+    demoMarketSnapshot,
+    demoPersonalSnapshot,
     demoData: {
+      market: demoMarket,
       recentOrders: Array.isArray(detail.recentOrders)
         ? detail.recentOrders
         : [],
@@ -1258,7 +1990,7 @@ function handleDemoScenario(event) {
         detail.behaviorData?.client_avg_buy_amount ??
         null,
       currentPrice: detail.currentPrice ?? null,
-      marketData: detail.marketData || null,
+      marketData,
       accounts: Array.isArray(detail.accounts) ? detail.accounts : [],
       rawClosedOrders: Array.isArray(detail.rawClosedOrders)
         ? detail.rawClosedOrders
@@ -1270,11 +2002,16 @@ function handleDemoScenario(event) {
     expiresAt,
   };
 
-  if (typeof detail.market === "string") {
-    behaviorState.market = detail.market;
+  behaviorState.market = demoMarket;
+  if (toNumber(detail.orderbookClickToSnapshotMs) !== null) {
+    behaviorState.lastOrderbookClickAt =
+      Date.now() - Math.max(0, toNumber(detail.orderbookClickToSnapshotMs));
   }
 
   renderBehaviorMetrics();
+  registerCurrentContext();
+  sendSnapshotRefreshMessage("DEMO_SCENARIO", behaviorState.market);
+  reviewPendingAttemptWithPageRules();
   setAnalysisStatus("데모 시나리오 데이터를 연결했습니다.", "loading");
 }
 
@@ -1299,8 +2036,7 @@ function handleDetectNow(event) {
   }
 
   setAnalysisStatus("데이터 수집 중...", "loading");
-  chrome.runtime
-    .sendMessage({
+  safeRuntimeSendMessage({
       type: "RUN_DETECTION_NOW",
       payload: snapshot,
     })
@@ -1351,7 +2087,239 @@ function handleDemoReset(event) {
   setLoggingStatus();
   renderBehaviorMetrics();
   setAnalysisStatus("데이터 수집 중...", "loading");
-  chrome.runtime.sendMessage({ type: "RESET_DEMO_STATE" }).catch(() => {});
+  safeRuntimeSendMessage({ type: "RESET_DEMO_STATE" }).catch(() => {});
+}
+
+function updateLocalSnapshotCaches(values = {}) {
+  if (Object.prototype.hasOwnProperty.call(values, MARKET_SNAPSHOT_CACHE_KEY)) {
+    cachedMarketSnapshotCache = values[MARKET_SNAPSHOT_CACHE_KEY] || {};
+  }
+
+  if (Object.prototype.hasOwnProperty.call(values, PERSONAL_SNAPSHOT_CACHE_KEY)) {
+    cachedPersonalSnapshotCache = values[PERSONAL_SNAPSHOT_CACHE_KEY] || {};
+  }
+}
+
+function loadLocalSnapshotCaches() {
+  safeStorageLocalGet([MARKET_SNAPSHOT_CACHE_KEY, PERSONAL_SNAPSHOT_CACHE_KEY])
+    .then(updateLocalSnapshotCaches)
+    .catch(() => {});
+}
+
+function getCachedSnapshot(cache, market) {
+  if (!market) {
+    return null;
+  }
+
+  return cache?.[market] || null;
+}
+
+function isFreshCachedSnapshot(snapshot) {
+  if (!snapshot?.fetchedAt) {
+    return false;
+  }
+
+  const fetchedAtMs = Date.parse(snapshot.fetchedAt);
+  return (
+    Number.isFinite(fetchedAtMs) &&
+    Date.now() - fetchedAtMs <= SNAPSHOT_CACHE_MAX_AGE_MS
+  );
+}
+
+function findPersonalBalance(personalSnapshot, currency) {
+  return (personalSnapshot?.balances || []).find(
+    (balance) => balance?.currency === currency,
+  );
+}
+
+function getDemoSnapshotOverride(snapshot) {
+  const override = getActiveDemoOverride();
+
+  if (!override?.demoMarketSnapshot) {
+    return { marketSnapshot: null, personalSnapshot: null };
+  }
+
+  const demoMarket = getDemoOverrideMarket(override);
+  if (demoMarket && snapshot.market !== demoMarket) {
+    emitExtensionDebug("behavior", "MARKET_MISMATCH", {
+      kind: "MARKET_MISMATCH",
+      source: "demo-snapshot-override",
+      expectedMarket: demoMarket,
+      actualMarket: snapshot.market,
+      usedForRuleEvaluation: false,
+      message: "데모 페이지에서는 URL/backend cache market 대신 demo scenario market을 사용합니다.",
+    }, snapshot.capturedAt);
+  }
+
+  return {
+    marketSnapshot: {
+      ...override.demoMarketSnapshot,
+      market: demoMarket || override.demoMarketSnapshot.market,
+    },
+    personalSnapshot:
+      override.demoPersonalSnapshot
+        ? {
+            ...override.demoPersonalSnapshot,
+            market: demoMarket || override.demoPersonalSnapshot.market,
+          }
+        : null,
+  };
+}
+
+function getSnapshotsForOrderContext(snapshot) {
+  if (isDemoPage()) {
+    const demoSnapshots = getDemoSnapshotOverride(snapshot);
+    const freshMarketSnapshot = isFreshCachedSnapshot(
+      demoSnapshots.marketSnapshot,
+    )
+      ? demoSnapshots.marketSnapshot
+      : null;
+    const freshPersonalSnapshot = isFreshCachedSnapshot(
+      demoSnapshots.personalSnapshot,
+    )
+      ? demoSnapshots.personalSnapshot
+      : null;
+
+    return {
+      ...demoSnapshots,
+      freshMarketSnapshot,
+      freshPersonalSnapshot,
+    };
+  }
+
+  const marketSnapshot =
+    getCachedSnapshot(cachedMarketSnapshotCache, snapshot.market);
+  const personalSnapshot =
+    getCachedSnapshot(cachedPersonalSnapshotCache, snapshot.market);
+
+  const freshMarketSnapshot = isFreshCachedSnapshot(marketSnapshot)
+    ? marketSnapshot
+    : null;
+  const freshPersonalSnapshot = isFreshCachedSnapshot(personalSnapshot)
+    ? personalSnapshot
+    : null;
+
+  return {
+    marketSnapshot,
+    personalSnapshot,
+    freshMarketSnapshot,
+    freshPersonalSnapshot,
+  };
+}
+
+function mergeCachedSnapshotsIntoOrderContext(snapshot) {
+  const authoritativeMarket = isDemoPage()
+    ? getDemoOverrideMarket() || snapshot.market
+    : snapshot.market;
+  const normalizedSnapshot =
+    authoritativeMarket && authoritativeMarket !== snapshot.market
+      ? { ...snapshot, market: authoritativeMarket }
+      : snapshot;
+  const {
+    freshMarketSnapshot,
+    freshPersonalSnapshot,
+  } = getSnapshotsForOrderContext(normalizedSnapshot);
+  const tradePrice = toNumber(freshMarketSnapshot?.tradePrice);
+  const intentAmount = toNumber(normalizedSnapshot.intentAmount);
+  const intentQuantity = toNumber(normalizedSnapshot.intentQuantity);
+  const baseCurrency = String(normalizedSnapshot.market || "").split("-")[1];
+  const balance = normalizedSnapshot.side === "BUY"
+    ? findPersonalBalance(freshPersonalSnapshot, "KRW")
+    : findPersonalBalance(freshPersonalSnapshot, baseCurrency);
+  const availableBalance = toNumber(balance?.balance);
+  const requested =
+    normalizedSnapshot.side === "BUY" ? intentAmount : intentQuantity;
+  const baseAvgBuyPrice = toNumber(
+    freshPersonalSnapshot?.baseAssetAvgBuyPrice,
+  );
+  const requestedBalanceRatio =
+    normalizedSnapshot.requestedBalanceRatio ??
+    (availableBalance && requested !== null
+      ? Math.max(0, Math.min(1, requested / availableBalance))
+      : null);
+
+  return {
+    ...normalizedSnapshot,
+    tradePriceAtSnapshot:
+      normalizedSnapshot.tradePriceAtSnapshot ??
+      freshMarketSnapshot?.tradePrice ??
+      null,
+    shortTermReturn5m:
+      normalizedSnapshot.shortTermReturn5m ??
+      freshMarketSnapshot?.shortTermReturn5m ??
+      null,
+    signedChangeRate:
+      normalizedSnapshot.signedChangeRate ??
+      freshMarketSnapshot?.signedChangeRate ??
+      null,
+    spreadRate:
+      normalizedSnapshot.spreadRate ?? freshMarketSnapshot?.spreadRate ?? null,
+    marketRiskFlags:
+      normalizedSnapshot.marketRiskFlags?.length
+        ? normalizedSnapshot.marketRiskFlags
+        : freshMarketSnapshot?.marketRiskFlags || [],
+    pricePositionIn5mRange:
+      normalizedSnapshot.pricePositionIn5mRange ??
+      freshMarketSnapshot?.pricePositionIn5mRange ??
+      null,
+    volumeSpikeRatio5m:
+      normalizedSnapshot.volumeSpikeRatio5m ??
+      freshMarketSnapshot?.volumeSpikeRatio5m ??
+      null,
+    actualOrderCreatedCount10m:
+      normalizedSnapshot.actualOrderCreatedCount10m ??
+      freshPersonalSnapshot?.actualOrderCreatedCount10m ??
+      null,
+    baseAssetAvgBuyPriceBeforeSnapshot:
+      normalizedSnapshot.baseAssetAvgBuyPriceBeforeSnapshot ??
+      freshPersonalSnapshot?.baseAssetAvgBuyPrice ??
+      null,
+    priceVsAvgBuyRateAtSnapshot:
+      normalizedSnapshot.priceVsAvgBuyRateAtSnapshot ??
+      (baseAvgBuyPrice && tradePrice
+        ? (tradePrice - baseAvgBuyPrice) / baseAvgBuyPrice
+        : null),
+    requestedBalanceRatio,
+  };
+}
+
+function getSnapshotFreshnessMs(snapshot) {
+  if (!snapshot?.fetchedAt) {
+    return null;
+  }
+
+  const fetchedAtMs = Date.parse(snapshot.fetchedAt);
+  return Number.isFinite(fetchedAtMs) ? Date.now() - fetchedAtMs : null;
+}
+
+function emitOrderContextSnapshotDebug(snapshot) {
+  const {
+    freshMarketSnapshot,
+    freshPersonalSnapshot,
+  } = getSnapshotsForOrderContext(snapshot);
+
+  emitExtensionDebug("behavior", "ORDER_CONTEXT_WITH_SNAPSHOTS", {
+    kind: "ORDER_CONTEXT_WITH_SNAPSHOTS",
+    market: snapshot.market,
+    snapshotId: snapshot.snapshotId,
+    attemptId: snapshot.attemptId,
+    hasMarketSnapshot: Boolean(freshMarketSnapshot),
+    marketSnapshotSource: freshMarketSnapshot?.source || null,
+    marketSnapshotFreshnessMs: getSnapshotFreshnessMs(freshMarketSnapshot),
+    hasPersonalSnapshot: Boolean(freshPersonalSnapshot),
+    personalSnapshotSource: freshPersonalSnapshot?.source || null,
+    personalSnapshotFreshnessMs: getSnapshotFreshnessMs(freshPersonalSnapshot),
+    mergedFields: {
+      tradePriceAtSnapshot: snapshot.tradePriceAtSnapshot,
+      signedChangeRate: snapshot.signedChangeRate,
+      shortTermReturn5m: snapshot.shortTermReturn5m,
+      requestedBalanceRatio: snapshot.requestedBalanceRatio,
+      actualOrderCreatedCount10m: snapshot.actualOrderCreatedCount10m,
+      baseAssetAvgBuyPriceBeforeSnapshot:
+        snapshot.baseAssetAvgBuyPriceBeforeSnapshot,
+      priceVsAvgBuyRateAtSnapshot: snapshot.priceVsAvgBuyRateAtSnapshot,
+    },
+  }, snapshot.capturedAt);
 }
 
 function buildOrderContextSnapshot(orderButton, snapshotTrigger) {
@@ -1359,9 +2327,14 @@ function buildOrderContextSnapshot(orderButton, snapshotTrigger) {
   const draft = readOrderDraft(orderButton);
   const capturedAt = new Date().toISOString();
   const now = Date.now();
-  const market = draft?.market || behaviorState?.market || parseMarket(location.href);
+  const market = isDemoPage()
+    ? getDemoOverrideMarket() ||
+      draft?.market ||
+      behaviorState?.market ||
+      parseMarket(location.href)
+    : draft?.market || behaviorState?.market || parseMarket(location.href);
   const side = draft?.order_side || detectOrderSide(panel, orderButton) || "UNKNOWN";
-  const orderMode = draft?.order_type || detectOrderType(panel) || "UNKNOWN";
+  const orderMode = draft?.order_type || detectOrderType(panel, orderButton) || "UNKNOWN";
   const price = draft?.order_price ?? null;
   const amount = draft?.order_amount ?? null;
   const quantity = draft?.order_volume ?? null;
@@ -1468,6 +2441,7 @@ function emitOrderContextSnapshot(snapshot, detection = null) {
     payload,
     payload.capturedAt,
   );
+  sendBackendLogMessage("SAVE_ORDER_CONTEXT_SNAPSHOT", payload);
   return payload;
 }
 
@@ -1525,6 +2499,10 @@ function showDetectedGuardrailResult(result, snapshot) {
     return false;
   }
 
+  if (result.type !== "USER_GUARDRAIL_RULE") {
+    return false;
+  }
+
   if (isGuardrailSnapshotHandled(snapshot?.snapshotId)) {
     return false;
   }
@@ -1546,6 +2524,7 @@ function showDetectedGuardrailResult(result, snapshot) {
     "detected",
     result.type,
     result.warningTitle || result.primaryRule?.warningTitle || null,
+    result,
   );
   return true;
 }
@@ -1566,7 +2545,7 @@ function reviewPendingAttemptWithPageRules() {
   }
 
   const { snapshot, result } = evaluatePageGuardrailRulesForSnapshot(
-    pendingAttempt.snapshot,
+    mergeCachedSnapshotsIntoOrderContext(pendingAttempt.snapshot),
   );
   pendingAttempt.snapshot = snapshot;
 
@@ -1584,17 +2563,21 @@ function beginOrderAttempt(orderButton) {
     orderButton,
     "ORDER_INTENT_CLICK",
   );
+  const snapshotWithCache = mergeCachedSnapshotsIntoOrderContext(rawSnapshot);
   const { snapshot, result } =
-    evaluatePageGuardrailRulesForSnapshot(rawSnapshot);
+    evaluatePageGuardrailRulesForSnapshot(snapshotWithCache);
+  emitOrderContextSnapshotDebug(snapshot);
   pendingAttempt = {
     attemptId: snapshot.attemptId,
     snapshot,
     snapshotEmitted: true,
     feedbackShownAt: null,
+    feedbackRespondedAt: null,
   };
   emitOrderContextSnapshot(snapshot, result);
+  let warningShown = false;
   if (result?.detected) {
-    showDetectedGuardrailResult(result, snapshot);
+    warningShown = showDetectedGuardrailResult(result, snapshot);
   } else {
     clearActiveGuardrailResult();
   }
@@ -1604,24 +2587,32 @@ function beginOrderAttempt(orderButton) {
       pendingAttempt.snapshotEmitted = true;
     }
   }, 2500);
+  sendSnapshotRefreshMessage("ORDER_INTENT_CLICK", snapshot.market);
+  return Boolean(warningShown);
 }
 
 function closeGuardrail(action, options = {}) {
   const snapshotId = activeGuardrailSnapshotId;
   if (snapshotId) {
-    emitExtensionDebug("behavior", "GuardrailReactionDTO", {
+    const reaction = {
       reactionId: createUuid(),
       snapshotId,
       action,
       reactedAt: new Date().toISOString(),
       reactionUiVersion: "v1",
-    });
+    };
+
+    emitExtensionDebug("behavior", "GuardrailReactionDTO", reaction);
+    sendBackendLogMessage("SAVE_GUARDRAIL_REACTION", reaction);
   }
   rememberGuardrailSnapshot(closedGuardrailSnapshotIds, snapshotId);
   clearActiveGuardrailResult();
   setAnalysisStatus("데이터 수집 중...", "loading");
   if (action === "REVIEW" && options.dispatchReview !== false) {
     document.dispatchEvent(new CustomEvent("saltbread:demo-review-order"));
+  }
+  if (action === "PROCEED") {
+    sendSnapshotRefreshMessage("GUARDRAIL_PROCEED");
   }
 }
 
@@ -1636,7 +2627,7 @@ function emitTradeFeedback(feedbackAttempt, assessment) {
     return;
   }
 
-  emitExtensionDebug("behavior", "TradeFeedbackDTO", {
+  const feedback = {
     feedbackId: createUuid(),
     attemptId: feedbackAttempt.attemptId,
     feedbackStatus:
@@ -1646,12 +2637,18 @@ function emitTradeFeedback(feedbackAttempt, assessment) {
     feedbackShownAt: feedbackAttempt.feedbackShownAt,
     respondedAt: new Date().toISOString(),
     feedbackUiVersion: "v1",
-  });
+  };
+
+  emitExtensionDebug("behavior", "TradeFeedbackDTO", feedback);
+  sendBackendLogMessage("SAVE_TRADE_FEEDBACK", feedback);
 }
 
 function dismissActiveTradeFeedback() {
   if (activeTradeFeedback) {
     emitTradeFeedback(activeTradeFeedback, "DISMISSED");
+    if (pendingAttempt?.attemptId === activeTradeFeedback.attemptId) {
+      pendingAttempt.feedbackRespondedAt = new Date().toISOString();
+    }
   }
 
   activeTradeFeedback = null;
@@ -1663,7 +2660,11 @@ function answerTradeFeedback(assessment) {
     return;
   }
 
+  const respondedAt = new Date().toISOString();
   emitTradeFeedback(activeTradeFeedback, assessment);
+  if (pendingAttempt?.attemptId === activeTradeFeedback.attemptId) {
+    pendingAttempt.feedbackRespondedAt = respondedAt;
+  }
   activeTradeFeedback = null;
   setPanelFeedbackActive(false);
   setAnalysisStatus("주문·체결 데이터를 확인하고 있어요.", "loading");
@@ -1671,6 +2672,8 @@ function answerTradeFeedback(assessment) {
 
 function showTradeFeedback() {
   if (!pendingAttempt?.attemptId) return;
+  if (pendingAttempt.feedbackRespondedAt) return;
+  if (activeTradeFeedback?.attemptId === pendingAttempt.attemptId) return;
 
   if (activeDetectionResult?.detected) {
     closeGuardrail("PROCEED");
@@ -1697,6 +2700,80 @@ function showTradeFeedback() {
   }
 }
 
+function ensurePendingAttemptForConfirmedOrder(orderButton) {
+  if (pendingAttempt?.attemptId) {
+    return pendingAttempt;
+  }
+
+  const rawSnapshot = buildOrderContextSnapshot(
+    orderButton,
+    "ORDER_INTENT_CLICK",
+  );
+  const snapshotWithCache = mergeCachedSnapshotsIntoOrderContext(rawSnapshot);
+  const { snapshot, result } =
+    evaluatePageGuardrailRulesForSnapshot(snapshotWithCache);
+
+  emitOrderContextSnapshotDebug(snapshot);
+  pendingAttempt = {
+    attemptId: snapshot.attemptId,
+    snapshot,
+    snapshotEmitted: true,
+    feedbackShownAt: null,
+    feedbackRespondedAt: null,
+  };
+  emitOrderContextSnapshot(snapshot, result);
+  return pendingAttempt;
+}
+
+function notifyOrderActionDetectedForConfirmedOrder(orderButton) {
+  const orderPanel = findOrderPanel(orderButton);
+  const orderDraft = withAuthoritativeOrderMarket(
+    readOrderDraft(orderButton) ||
+      pendingAttempt?.snapshot?.currentOrder ||
+      null,
+  );
+  const behaviorData = getBehaviorData();
+
+  if (orderDraft) {
+    behaviorState.lastOrder = orderDraft;
+  }
+  behaviorState.lastOrderBehavior = behaviorData;
+  behaviorState.lastOrderAt = Date.now();
+  behaviorState.lastOrderSessionId = behaviorState.sessionId;
+
+  safeRuntimeSendMessage({
+      type: "ORDER_ACTION_DETECTED",
+      payload: {
+        market: behaviorState.market,
+        sessionId: behaviorState.sessionId,
+        pageUrl: location.href,
+        currentOrder: orderDraft,
+        behaviorData,
+        orderContextSnapshot: pendingAttempt?.snapshot || null,
+        demoData: getActiveDemoData(),
+        refreshAlreadyRequested: true,
+      },
+    })
+    .then((response) => {
+      if (!response?.ok && response?.error && !activeTradeFeedback) {
+        setAnalysisStatus(response.error, "error");
+      }
+    });
+
+  startNewOrderSession();
+  syncOrderType(orderPanel, false);
+}
+
+function handleUpbitOrderConfirmClick(orderButton) {
+  ensurePendingAttemptForConfirmedOrder(orderButton);
+  sendSnapshotRefreshMessage(
+    "ORDER_CONFIRM_MODAL",
+    pendingAttempt?.snapshot?.market || behaviorState?.market,
+  );
+  showTradeFeedback();
+  notifyOrderActionDetectedForConfirmedOrder(orderButton);
+}
+
 function handleDemoContext(event) {
   if (!isDemoPage()) return;
   acknowledgePageEvent(event);
@@ -1712,10 +2789,22 @@ function handleDocumentClick(event) {
     return;
   }
 
+  const upbitConfirmButton = findUpbitOrderConfirmButton(event.target);
+  if (upbitConfirmButton) {
+    try {
+      handleUpbitOrderConfirmClick(upbitConfirmButton);
+      return;
+    } catch (error) {
+      console.error("[Saltbread] Failed to capture Upbit confirm click", error);
+      setLoggingStatus("확인 팝업 스냅샷을 만들지 못했지만 행동 로그 수집은 계속합니다.");
+    }
+  }
+
   const confirmButton = event.target instanceof Element
     ? event.target.closest("[data-saltbread-order-confirm]")
     : null;
   if (confirmButton) {
+    sendSnapshotRefreshMessage("ORDER_CONFIRM_MODAL");
     showTradeFeedback();
     return;
   }
@@ -1757,6 +2846,7 @@ function handleDocumentClick(event) {
   const orderButton = findOrderButton(event.target);
 
   if (!orderButton) {
+    emitIgnoredOrderButtonDebug(event.target);
     return;
   }
 
@@ -1789,7 +2879,7 @@ function handleDocumentClick(event) {
   }
 
   const submittedSessionId = behaviorState.sessionId;
-  const orderDraft = readOrderDraft(orderButton);
+  const orderDraft = withAuthoritativeOrderMarket(readOrderDraft(orderButton));
 
   if (!orderDraft) {
     const orderType = detectOrderType(orderPanel);
@@ -1802,6 +2892,22 @@ function handleDocumentClick(event) {
       );
       addOrderValues(submitEvent, orderPanel);
       sendBehaviorEvent(submitEvent);
+    }
+
+    if (
+      pendingAttempt?.snapshot?.snapshotTrigger === "ORDER_INTENT_CLICK" &&
+      ["BUY", "SELL"].includes(pendingAttempt.snapshot.side)
+    ) {
+      syncOrderType(orderPanel, false);
+      sendSnapshotRefreshMessage(
+        "ORDER_DRAFT_UNAVAILABLE",
+        pendingAttempt.snapshot.market,
+      );
+      setAnalysisStatus(
+        "주문 확인 팝업을 확인하고 있어요.",
+        "loading",
+      );
+      return;
     }
 
     startNewOrderSession();
@@ -1832,8 +2938,7 @@ function handleDocumentClick(event) {
     setAnalysisStatus("주문·체결 데이터를 확인하고 있어요.", "loading");
   }
 
-  chrome.runtime
-    .sendMessage({
+  safeRuntimeSendMessage({
       type: "ORDER_ACTION_DETECTED",
       payload: {
         market: behaviorState.market,
@@ -1843,6 +2948,7 @@ function handleDocumentClick(event) {
         behaviorData,
         orderContextSnapshot: pendingAttempt?.snapshot || null,
         demoData: getActiveDemoData(),
+        refreshAlreadyRequested: true,
       },
     })
     .then((response) => {
@@ -1876,6 +2982,7 @@ function handleVisibilityChange() {
     updateVisibleDuration();
   } else {
     behaviorState.visibleSince = Date.now();
+    sendSnapshotRefreshMessage("TAB_ACTIVE_RETURN");
   }
 
   renderBehaviorMetrics();
@@ -1883,6 +2990,14 @@ function handleVisibilityChange() {
 
 function syncCurrentMarket() {
   if (!behaviorState) {
+    return;
+  }
+
+  if (isDemoPage() && getActiveDemoOverride()) {
+    const demoMarket = getDemoOverrideMarket();
+    if (demoMarket) {
+      behaviorState.market = demoMarket;
+    }
     return;
   }
 
@@ -1903,6 +3018,20 @@ function syncCurrentMarket() {
   behaviorState.lastOrderBehavior = null;
   behaviorState.lastOrderAt = null;
   behaviorState.lastOrderSessionId = null;
+  behaviorState.lastOrderbookClickAt = null;
+  behaviorState.firstAmount = null;
+  behaviorState.lastAmount = null;
+  behaviorState.draftStartedAt = null;
+  behaviorState.lastEditAt = null;
+  behaviorState.draftEditCount = 0;
+  behaviorState.inputRevertCount = 0;
+  behaviorState.priceDirectionChangeCount = 0;
+  pendingAttempt = null;
+  activeDetectionResult = null;
+  activeGuardrailSnapshotId = null;
+  activeTradeFeedback = null;
+  setPanelWarningActive(false);
+  setPanelFeedbackActive(false);
   startNewOrderSession();
   renderBehaviorMetrics();
   registerCurrentContext();
@@ -1932,14 +3061,20 @@ function getBehaviorData() {
 }
 
 function renderBehaviorMetrics() {
-  if (!behaviorState) {
+  if (!behaviorState || extensionContextInvalidated) {
     return;
   }
 
   getBehaviorData();
 }
 
-function setAnalysisStatus(message, state = "loading", type = null, title = null) {
+function setAnalysisStatus(
+  message,
+  state = "loading",
+  type = null,
+  title = null,
+  detectionResult = null,
+) {
   const status = document.querySelector(".saltbread-analysis-status");
   const badgeElement = status?.querySelector("[data-status-badge]");
   const titleElement = status?.querySelector("[data-status-title]");
@@ -1963,8 +3098,8 @@ function setAnalysisStatus(message, state = "loading", type = null, title = null
   if (state === "detected") {
     badgeElement.textContent = "주의";
     titleElement.textContent =
-      title || DETECTION_TITLES[type] || type || "감정 매매 패턴 감지";
-    messageElement.textContent = message;
+      title || "설정된 가드레일 감지";
+    renderDetectedStatusMessage(messageElement, message, detectionResult);
     return;
   }
 
@@ -2008,26 +3143,38 @@ function getContextSnapshot() {
         }
       : currentBehavior;
   const demoOverride = getActiveDemoOverride();
+  const market = getAuthoritativeMarket();
+  const currentOrder = withAuthoritativeOrderMarket(
+    behaviorState?.lastOrder ||
+      demoOverride?.currentOrder ||
+      readOrderDraft() ||
+      null,
+    market,
+  );
 
   return {
-    market: behaviorState?.market || parseMarket(location.href),
+    market,
     sessionId:
       hasRecentOrder && behaviorState.lastOrderSessionId
         ? behaviorState.lastOrderSessionId
         : behaviorState?.sessionId,
     pageUrl: location.href,
     behaviorData,
-    currentOrder:
-      behaviorState?.lastOrder ||
-      readOrderDraft() ||
-      demoOverride?.currentOrder ||
-      null,
+    currentOrder,
     orderContextSnapshot: pendingAttempt?.snapshot || null,
     demoData: demoOverride?.demoData || null,
   };
 }
 
 function registerCurrentContext() {
+  if (extensionContextInvalidated) {
+    return;
+  }
+
+  if (isDemoPage()) {
+    return;
+  }
+
   const snapshot = getContextSnapshot();
 
   if (!snapshot.market) {
@@ -2035,15 +3182,16 @@ function registerCurrentContext() {
     return;
   }
 
-  chrome.runtime
-    .sendMessage({ type: "REGISTER_MARKET_CONTEXT", payload: snapshot })
+  safeRuntimeSendMessage({ type: "REGISTER_MARKET_CONTEXT", payload: snapshot })
     .catch(() => {});
 }
 
 function startBehaviorTracking() {
-  if (behaviorState) {
+  if (behaviorState || extensionContextInvalidated) {
     return;
   }
+
+  loadLocalSnapshotCaches();
 
   behaviorState = {
     market: parseMarket(location.href),
@@ -2104,12 +3252,20 @@ function startBehaviorTracking() {
   document.addEventListener("visibilitychange", handleVisibilityChange);
   syncCurrentOrderType(false);
   behaviorTimerId = window.setInterval(() => {
+    if (extensionContextInvalidated) {
+      window.clearInterval(behaviorTimerId);
+      behaviorTimerId = null;
+      return;
+    }
+
     syncCurrentMarket();
     syncCurrentOrderType(true);
     renderBehaviorMetrics();
   }, 1000);
-  renderBehaviorMetrics();
-  registerCurrentContext();
+  if (!extensionContextInvalidated) {
+    renderBehaviorMetrics();
+    registerCurrentContext();
+  }
 }
 
 function stopBehaviorTracking() {
@@ -2146,14 +3302,56 @@ function syncPanel(auth) {
   removePanel();
 }
 
+function hasActiveGuardrailWarning() {
+  return Boolean(activeDetectionResult?.detected && activeGuardrailSnapshotId);
+}
+
+function shouldIgnoreDetectionResultForActiveWarning(result) {
+  const resultAttemptId = result?.orderContextSnapshot?.attemptId;
+
+  if (
+    resultAttemptId &&
+    pendingAttempt?.attemptId === resultAttemptId &&
+    pendingAttempt.feedbackShownAt
+  ) {
+    return true;
+  }
+
+  if (
+    resultAttemptId &&
+    activeTradeFeedback?.attemptId === resultAttemptId
+  ) {
+    return true;
+  }
+
+  if (!hasActiveGuardrailWarning()) {
+    return false;
+  }
+
+  if (!result?.detected) {
+    return true;
+  }
+
+  const resultSnapshotId = result.orderContextSnapshot?.snapshotId;
+
+  if (resultSnapshotId && resultSnapshotId !== activeGuardrailSnapshotId) {
+    return true;
+  }
+
+  return Boolean(resultSnapshotId === activeGuardrailSnapshotId);
+}
+
 function refreshPanelState() {
-  return chrome.runtime
-    .sendMessage({ type: "GET_AUTH_STATE" })
+  return safeRuntimeSendMessage({ type: "GET_AUTH_STATE" })
     .then((response) => syncPanel(response?.ok ? response.auth : null))
     .catch(() => syncPanel(null));
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (extensionContextInvalidated) {
+    return false;
+  }
+
   if (message?.type === "GET_CONTEXT_SNAPSHOT") {
     sendResponse(getContextSnapshot());
     return false;
@@ -2174,6 +3372,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "DETECTION_RESULT") {
     const result = message.payload;
+
+    if (shouldIgnoreDetectionResultForActiveWarning(result)) {
+      return false;
+    }
+
+    if (result?.detected && result.type !== "USER_GUARDRAIL_RULE") {
+      return false;
+    }
 
     if (result?.detected) {
       let snapshot;
@@ -2216,12 +3422,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "COLLECTION_ERROR") {
+    if (hasActiveGuardrailWarning()) {
+      return false;
+    }
     applyFlameTheme("default");
     setAnalysisStatus(message.payload?.message || "데이터 수집에 실패했습니다.", "error");
     return false;
   }
 
   if (message?.type === "BEHAVIOR_EVENT_STATUS") {
+    setLoggingStatus(message.payload?.message || "");
+  }
+
+  if (message?.type === "LOG_SAVE_STATUS") {
     setLoggingStatus(message.payload?.message || "");
   }
 
@@ -2248,6 +3461,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (extensionContextInvalidated) {
+    return;
+  }
+
   if (areaName !== "local") {
     return;
   }
@@ -2257,6 +3474,9 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
 
   if (changes.flameTheme) {
+    if (hasActiveGuardrailWarning()) {
+      return;
+    }
     applyFlameTheme(changes.flameTheme.newValue?.mode);
   }
 
@@ -2266,6 +3486,14 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
       source: "cache",
     });
   }
+
+  updateLocalSnapshotCaches(
+    Object.fromEntries(
+      [MARKET_SNAPSHOT_CACHE_KEY, PERSONAL_SNAPSHOT_CACHE_KEY]
+        .filter((key) => changes[key])
+        .map((key) => [key, changes[key].newValue]),
+    ),
+  );
 });
 
 refreshPanelState();

@@ -2,10 +2,9 @@ importScripts("config.js", "data-core.js");
 
 const {
   calculateAverageBuyAmount,
-  calculateMarketData,
   evaluateGuardrailRules,
   mapUpbitOrder,
-  resolveFlameMode,
+  parseMarket,
   resolveVisualMode,
   toNumber,
 } = globalThis.SaltbreadCore;
@@ -13,7 +12,6 @@ const {
   appUrl: APP_URL,
   appOrigins,
   apiBaseUrl: API_BASE_URL,
-  detectPath: DETECT_PATH,
   behaviorEventsPath: BEHAVIOR_EVENTS_PATH,
   upbitApiBaseUrl: UPBIT_API_BASE_URL,
 } = globalThis.SALTBREAD_CONFIG;
@@ -29,10 +27,15 @@ const APP_TAB_URL_PATTERNS = [
 const CREDENTIALS_STORAGE_KEY = "upbitCredentials";
 const SESSION_KEY_STORAGE_KEY = "upbitCredentialSessionKey";
 const GUARDRAIL_RULES_CACHE_KEY = "guardrailRulesCache";
+const MARKET_SNAPSHOT_CACHE_KEY = "marketSnapshotCache";
+const PERSONAL_SNAPSHOT_CACHE_KEY = "personalSnapshotCache";
+const SNAPSHOT_REFRESH_ALARM_NAME = "saltbread-snapshot-refresh";
 const REFRESH_TOKEN_COOKIE_NAME = "refreshToken";
 const PUBLIC_REQUEST_INTERVAL_MS = 10_100;
 const MARKET_DETAILS_CACHE_MS = 10 * 60 * 1000;
 const DETECTION_MARKET_CACHE_MS = 2 * 60 * 1000;
+const SNAPSHOT_REFRESH_PERIOD_MINUTES = 0.5;
+const LOG_SAVE_RETRY_DELAYS_MS = [500, 1_500];
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 let publicRequestQueue = Promise.resolve();
@@ -83,6 +86,21 @@ function isUpbitExchangeUrl(value) {
 
 function isCollectableTradingUrl(value) {
   return isUpbitExchangeUrl(value) || isDemoPageUrl(value);
+}
+
+async function reloadCollectableTradingTabs() {
+  const tabs = await chrome.tabs.query({});
+  await Promise.all(
+    tabs
+      .filter((tab) => tab?.id && isCollectableTradingUrl(tab.url))
+      .map(async (tab) => {
+        try {
+          await chrome.tabs.reload?.(tab.id);
+        } catch {
+          // best effort: credential save should not fail because a page reload failed
+        }
+      }),
+  );
 }
 
 function getSenderOrigin(sender) {
@@ -616,29 +634,6 @@ async function loadGuardrailRules(existingAuth = null) {
   }
 }
 
-async function postDetectionRequest(requestBody, auth) {
-  return fetchJson(`${getAuthApiBase(auth)}${DETECT_PATH}`, {
-    method: "POST",
-    headers: createBackendHeaders(auth),
-    body: JSON.stringify(requestBody),
-  });
-}
-
-async function postDemoDetectionRequest(requestBody, context, auth = null) {
-  const pageOrigin = normalizeAllowedAppOrigin(context?.pageUrl);
-  const appOrigin =
-    pageOrigin ||
-    normalizeAllowedAppOrigin(auth?.appOrigin) ||
-    normalizeAllowedAppOrigin(APP_URL) ||
-    API_BASE_URL;
-
-  return fetchJson(`${appOrigin}/api/demo/detect`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(requestBody),
-  });
-}
-
 async function postBehaviorEvent(eventPayload, existingAuth = null) {
   const auth = existingAuth || (await getValidBackendAuth());
 
@@ -650,6 +645,367 @@ async function postBehaviorEvent(eventPayload, existingAuth = null) {
     method: "POST",
     headers: createBackendHeaders(auth, true),
     body: JSON.stringify(eventPayload),
+  });
+}
+
+async function postBackendLog(path, payload, existingAuth = null) {
+  const auth = existingAuth || (await getValidBackendAuth());
+
+  if (!auth?.accessToken) {
+    throw new Error("로그인 후 로그 저장을 다시 시도해 주세요.");
+  }
+
+  return fetchJson(`${getAuthApiBase(auth)}${path}`, {
+    method: "POST",
+    headers: createBackendHeaders(auth),
+    body: JSON.stringify(payload),
+  });
+}
+
+async function patchBackendLog(path, payload, existingAuth = null) {
+  const auth = existingAuth || (await getValidBackendAuth());
+
+  if (!auth?.accessToken) {
+    throw new Error("로그인 후 로그 저장을 다시 시도해 주세요.");
+  }
+
+  return fetchJson(`${getAuthApiBase(auth)}${path}`, {
+    method: "PATCH",
+    headers: createBackendHeaders(auth),
+    body: JSON.stringify(payload),
+  });
+}
+
+function isRetriableLogSaveError(error) {
+  return !error?.status || error.status >= 500;
+}
+
+async function sendLogSaveStatus(tabId, payload) {
+  if (!tabId) {
+    return;
+  }
+
+  await sendTabMessage(tabId, {
+    type: "LOG_SAVE_STATUS",
+    payload,
+  });
+}
+
+async function runLogSaveWithRetry(tabId, kind, taskFactory) {
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= LOG_SAVE_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      await taskFactory();
+      await sendLogSaveStatus(tabId, { kind, ok: true, message: "" });
+      return;
+    } catch (error) {
+      lastError = error;
+
+      if (
+        attempt >= LOG_SAVE_RETRY_DELAYS_MS.length ||
+        !isRetriableLogSaveError(error)
+      ) {
+        break;
+      }
+
+      await wait(LOG_SAVE_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+
+  await sendLogSaveStatus(tabId, {
+    kind,
+    ok: false,
+    message: lastError?.message || "로그를 저장하지 못했습니다.",
+  });
+}
+
+function enqueueLogSave(tabId, kind, taskFactory) {
+  void runLogSaveWithRetry(tabId, kind, taskFactory);
+}
+
+function pickDefinedFields(source, fields) {
+  const result = {};
+
+  for (const field of fields) {
+    if (source?.[field] !== undefined) {
+      result[field] = source[field];
+    }
+  }
+
+  return result;
+}
+
+function normalizeArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizeOrderContextSnapshotLog(snapshot) {
+  const payload = pickDefinedFields(snapshot || {}, [
+    "snapshotId",
+    "attemptId",
+    "snapshotTrigger",
+    "capturedAt",
+    "market",
+    "side",
+    "orderMode",
+    "entryPoint",
+    "intentPrice",
+    "intentQuantity",
+    "intentAmount",
+    "requestedBalanceRatio",
+    "draftDurationMs",
+    "lastEditToSnapshotMs",
+    "draftEditCount",
+    "amountChangeRate",
+    "modeChangedToMarket",
+    "orderbookClickToSnapshotMs",
+    "orderIntentCount1m",
+    "actualOrderCreatedCount10m",
+    "sameSideIntentCount1m",
+    "marketChangeCount5m",
+    "sideChangeCount3m",
+    "priceEditCount3m",
+    "quantityEditCount3m",
+    "amountEditCount3m",
+    "inputRevertCount",
+    "priceDirectionChangeCount",
+    "priceChangeRate",
+    "orderModeChangeCount3m",
+    "allocationPresetPercent",
+    "draftResetCount3m",
+    "matchedRuleIdsAtSnapshot",
+    "primaryShownRuleId",
+    "shownRuleIds",
+    "tradePriceAtSnapshot",
+    "shortTermReturn5m",
+    "signedChangeRate",
+    "spreadRate",
+    "marketRiskFlags",
+    "pricePositionIn5mRange",
+    "volumeSpikeRatio5m",
+    "baseAssetAvgBuyPriceBeforeSnapshot",
+    "priceVsAvgBuyRateAtSnapshot",
+  ]);
+
+  payload.matchedRuleIdsAtSnapshot = normalizeArray(
+    payload.matchedRuleIdsAtSnapshot,
+  );
+  payload.shownRuleIds = normalizeArray(payload.shownRuleIds);
+  payload.marketRiskFlags = normalizeArray(payload.marketRiskFlags);
+
+  return payload;
+}
+
+function normalizeGuardrailReactionLog(reaction) {
+  return pickDefinedFields(reaction || {}, [
+    "snapshotId",
+    "action",
+    "reactedAt",
+    "reactionUiVersion",
+  ]);
+}
+
+function normalizeTradeFeedbackLog(feedback) {
+  return pickDefinedFields(feedback || {}, [
+    "attemptId",
+    "feedbackStatus",
+    "selfAssessment",
+    "feedbackShownAt",
+    "respondedAt",
+    "feedbackUiVersion",
+  ]);
+}
+
+function normalizeConfirmedTradeLog(log) {
+  return pickDefinedFields(log || {}, [
+    "attemptId",
+    "upbitOrderUuid",
+    "orderCreatedAt",
+    "market",
+    "side",
+    "ordType",
+    "limitPrice",
+    "requestedFunds",
+    "requestedVolume",
+    "timeInForce",
+    "state",
+    "executedVolume",
+    "executedFunds",
+    "paidFee",
+    "remainingVolume",
+    "outcomeObservedAt",
+  ]);
+}
+
+function normalizeOrderOutcomePatch(patch) {
+  return pickDefinedFields(patch || {}, [
+    "upbitOrderUuid",
+    "state",
+    "executedVolume",
+    "executedFunds",
+    "paidFee",
+    "remainingVolume",
+    "outcomeObservedAt",
+  ]);
+}
+
+function normalizeUpbitOrderSide(order) {
+  return String(order?.side).toLowerCase() === "ask" ? "SELL" : "BUY";
+}
+
+function normalizeUpbitOrderMode(order) {
+  if (order?.ord_type === "limit") return "LIMIT";
+  if (order?.ord_type === "price") return "MARKET";
+  if (order?.ord_type === "market") return "MARKET";
+  return String(order?.ord_type || "").toUpperCase();
+}
+
+function numbersAreSimilar(left, right, toleranceRate = 0.03) {
+  const leftNumber = toNumber(left);
+  const rightNumber = toNumber(right);
+
+  if (leftNumber === null || rightNumber === null) {
+    return false;
+  }
+
+  const tolerance = Math.max(1, Math.abs(rightNumber) * toleranceRate);
+  return Math.abs(leftNumber - rightNumber) <= tolerance;
+}
+
+function orderMatchesAttemptIntent(order, attemptContext = {}) {
+  const snapshot = attemptContext.orderContextSnapshot || {};
+  const currentOrder = attemptContext.currentOrder || {};
+  const capturedAt = Date.parse(snapshot.capturedAt || "");
+  const orderCreatedAt = Date.parse(order?.created_at || "");
+
+  if (
+    !attemptContext.attemptId ||
+    !Number.isFinite(capturedAt) ||
+    !Number.isFinite(orderCreatedAt) ||
+    orderCreatedAt < capturedAt
+  ) {
+    return false;
+  }
+
+  const market = snapshot.market || currentOrder.market;
+  if (market && order.market !== market) {
+    return false;
+  }
+
+  const side = snapshot.side || currentOrder.order_side;
+  if (side && normalizeUpbitOrderSide(order) !== side) {
+    return false;
+  }
+
+  const orderMode = snapshot.orderMode || currentOrder.order_type;
+  if (orderMode && normalizeUpbitOrderMode(order) !== orderMode) {
+    return false;
+  }
+
+  const requestedFunds =
+    snapshot.intentAmount ?? currentOrder.order_amount ?? null;
+  const requestedVolume =
+    snapshot.intentQuantity ?? currentOrder.order_volume ?? null;
+
+  if (order.ord_type === "price") {
+    return numbersAreSimilar(order.price, requestedFunds);
+  }
+
+  if (order.ord_type === "market") {
+    return numbersAreSimilar(order.volume, requestedVolume);
+  }
+
+  if (order.ord_type === "limit") {
+    const priceMatches =
+      snapshot.intentPrice === null && currentOrder.order_price === null
+        ? true
+        : numbersAreSimilar(
+            order.price,
+            snapshot.intentPrice ?? currentOrder.order_price,
+          );
+    return priceMatches && numbersAreSimilar(order.volume, requestedVolume);
+  }
+
+  return (
+    numbersAreSimilar(order.price, requestedFunds) ||
+    numbersAreSimilar(order.volume, requestedVolume)
+  );
+}
+
+function resolveAttemptMatchedOrderUuid(orderData, attemptContext = {}) {
+  const orders = [
+    ...(orderData?.rawOpenOrders || []),
+    ...(orderData?.rawClosedOrders || []),
+  ].filter((order) => order?.uuid && orderMatchesAttemptIntent(order, attemptContext));
+
+  if (orders.length !== 1) {
+    return null;
+  }
+
+  return orders[0].uuid;
+}
+
+function saveOrderContextSnapshotLog(snapshot, tabId) {
+  const payload = normalizeOrderContextSnapshotLog(snapshot);
+
+  enqueueLogSave(tabId, "order-context-snapshot", () =>
+    postBackendLog("/api/me/logs/order-context-snapshots", payload),
+  );
+}
+
+function saveGuardrailReactionLog(reaction, tabId) {
+  const payload = normalizeGuardrailReactionLog(reaction);
+
+  enqueueLogSave(tabId, "guardrail-reaction", () =>
+    postBackendLog("/api/me/logs/guardrail-reactions", payload),
+  );
+}
+
+function saveTradeFeedbackLog(feedback, tabId) {
+  const payload = normalizeTradeFeedbackLog(feedback);
+
+  enqueueLogSave(tabId, "trade-feedback", () =>
+    postBackendLog("/api/me/logs/trade-feedbacks", payload),
+  );
+}
+
+function saveConfirmedTradeLogBatch(orderData, attemptContext = {}, tabId) {
+  const matchedOrderUuid = resolveAttemptMatchedOrderUuid(
+    orderData,
+    attemptContext,
+  );
+  const tradeLogs = toConfirmedTradeLogs(orderData, null)
+    .map((log) => ({
+      ...log,
+      attemptId:
+        matchedOrderUuid && log.upbitOrderUuid === matchedOrderUuid
+          ? attemptContext.attemptId
+          : null,
+    }))
+    .map(normalizeConfirmedTradeLog);
+  const outcomePatches = toOrderOutcomePatches(orderData).map(
+    normalizeOrderOutcomePatch,
+  );
+
+  if (tradeLogs.length === 0 && outcomePatches.length === 0) {
+    return;
+  }
+
+  enqueueLogSave(tabId, "confirmed-trade-logs", async () => {
+    const auth = await getValidBackendAuth();
+
+    for (const log of tradeLogs) {
+      await postBackendLog("/api/me/logs/confirmed-trade-logs", log, auth);
+    }
+
+    for (const patch of outcomePatches) {
+      await patchBackendLog(
+        "/api/me/logs/confirmed-trade-logs/outcome",
+        patch,
+        auth,
+      );
+    }
   });
 }
 
@@ -701,34 +1057,99 @@ async function getMarketDetails() {
   return data;
 }
 
-async function collectMarketData(market) {
-  const encodedMarket = encodeURIComponent(market);
-  const [candles, tickers, marketDetails, orderbooks] = await Promise.all([
-    fetchPublicUpbit(
-      `/v1/candles/minutes/1?market=${encodedMarket}&count=20`,
-    ),
-    fetchPublicUpbit(
-      "/v1/ticker/all?quote_currencies=KRW",
-    ),
-    getMarketDetails(),
-    fetchPublicUpbit(`/v1/orderbook?markets=${encodedMarket}`),
-  ]);
-  const collected = {
-    market,
-    ...calculateMarketData({
-      market,
-      candles,
-      tickers,
-      marketDetails,
-      orderbook: Array.isArray(orderbooks) ? orderbooks[0] : null,
-    }),
-    collected_at: new Date().toISOString(),
+function normalizeBackendMarketSnapshot(rawSnapshot, market) {
+  const snapshot = rawSnapshot?.data || rawSnapshot || {};
+  const fetchedAt = snapshot.fetchedAt || new Date().toISOString();
+  const fetchedAtMs = Date.parse(fetchedAt);
+  const tradePrice =
+    snapshot.tradePrice ??
+    snapshot.tradePriceAtSnapshot ??
+    snapshot.currentPrice ??
+    snapshot.current_price ??
+    null;
+
+  return {
+    market: snapshot.market || snapshot.symbol || market,
+    tradePrice: tradePrice === null || tradePrice === undefined
+      ? null
+      : String(tradePrice),
+    signedChangeRate: snapshot.signedChangeRate ?? null,
+    shortTermReturn5m: snapshot.shortTermReturn5m ?? null,
+    spreadRate: snapshot.spreadRate ?? null,
+    marketRiskFlags: Array.isArray(snapshot.marketRiskFlags)
+      ? snapshot.marketRiskFlags
+      : [],
+    pricePositionIn5mRange: snapshot.pricePositionIn5mRange ?? null,
+    volumeSpikeRatio5m:
+      snapshot.volumeSpikeRatio5m ?? snapshot.volumeSpikeRatio ?? null,
+    fetchedAt,
+    freshnessMs: Number.isFinite(fetchedAtMs) ? Date.now() - fetchedAtMs : 0,
+    source: "backend-market-snapshot",
   };
-  const { marketDataCache = {} } =
-    await chrome.storage.local.get("marketDataCache");
-  marketDataCache[market] = collected;
-  await chrome.storage.local.set({ marketDataCache });
-  return collected;
+}
+
+function marketSnapshotToMarketData(snapshot) {
+  const currentPrice = toNumber(snapshot?.tradePrice);
+  const changeRate =
+    snapshot?.shortTermReturn5m ?? snapshot?.signedChangeRate ?? null;
+
+  return {
+    market: snapshot?.market || "UNKNOWN",
+    current_price: currentPrice,
+    tradePriceAtSnapshot: snapshot?.tradePrice ?? null,
+    shortTermReturn5m: snapshot?.shortTermReturn5m ?? null,
+    signedChangeRate: snapshot?.signedChangeRate ?? null,
+    spreadRate: snapshot?.spreadRate ?? null,
+    marketRiskFlags: snapshot?.marketRiskFlags || [],
+    pricePositionIn5mRange: snapshot?.pricePositionIn5mRange ?? null,
+    volumeSpikeRatio5m: snapshot?.volumeSpikeRatio5m ?? null,
+    market_data: {
+      price_change_rate_15m:
+        changeRate === null || changeRate === undefined
+          ? null
+          : Number(changeRate) * 100,
+      volume_change_rate_1m: snapshot?.volumeSpikeRatio5m ?? null,
+      is_top3_volatility: false,
+      has_warning_badge: (snapshot?.marketRiskFlags || []).length > 0,
+    },
+    collected_at: snapshot?.fetchedAt || new Date().toISOString(),
+    source: snapshot?.source || "backend-market-snapshot",
+  };
+}
+
+async function fetchBackendMarketSnapshot(market) {
+  const appOrigin = await resolveCurrentAppOrigin();
+  const url = new URL("/api/market-snapshot", appOrigin);
+  url.searchParams.set("market", market);
+
+  return normalizeBackendMarketSnapshot(await fetchJson(url.toString()), market);
+}
+
+const MarketDataProvider = {
+  async fetchSnapshot(market) {
+    return fetchBackendMarketSnapshot(market);
+  },
+};
+
+async function writeMarketSnapshotCache(market, snapshot) {
+  const [{ [MARKET_SNAPSHOT_CACHE_KEY]: snapshotCache = {} }, { marketDataCache = {} }] =
+    await Promise.all([
+      chrome.storage.local.get(MARKET_SNAPSHOT_CACHE_KEY),
+      chrome.storage.local.get("marketDataCache"),
+    ]);
+
+  snapshotCache[market] = snapshot;
+  marketDataCache[market] = marketSnapshotToMarketData(snapshot);
+  await chrome.storage.local.set({
+    [MARKET_SNAPSHOT_CACHE_KEY]: snapshotCache,
+    marketDataCache,
+  });
+}
+
+async function collectMarketData(market) {
+  const snapshot = await MarketDataProvider.fetchSnapshot(market);
+  await writeMarketSnapshotCache(market, snapshot);
+  return marketSnapshotToMarketData(snapshot);
 }
 
 async function createJwt(accessKey, secretKey, queryString = "") {
@@ -908,12 +1329,50 @@ async function collectOrderData(market) {
   return collected;
 }
 
+function toPersonalSnapshot(orderData, market) {
+  if (!orderData?.privateDataAvailable && orderData?.privateDataAvailable !== undefined) {
+    return null;
+  }
+
+  const fetchedAt = orderData?.collected_at || new Date().toISOString();
+  const fetchedAtMs = Date.parse(fetchedAt);
+  const baseCurrency = String(market || orderData?.market || "").split("-")[1];
+  const baseAccount = (orderData?.accounts || []).find(
+    (account) => account.currency === baseCurrency,
+  );
+
+  return {
+    market: orderData?.market || market,
+    balances: orderData?.accounts || [],
+    openOrders: orderData?.rawOpenOrders || [],
+    recentOrders: orderData?.recentOrders || [],
+    recentTrades: orderData?.rawClosedOrders || [],
+    baseAssetAvgBuyPrice: baseAccount?.avg_buy_price
+      ? String(baseAccount.avg_buy_price)
+      : null,
+    actualOrderCreatedCount10m: countActualOrders10m(orderData),
+    fetchedAt,
+    freshnessMs: Number.isFinite(fetchedAtMs) ? Date.now() - fetchedAtMs : 0,
+    source: "extension-private-cache",
+  };
+}
+
+async function writePersonalSnapshotCache(market, snapshot) {
+  const { [PERSONAL_SNAPSHOT_CACHE_KEY]: snapshotCache = {} } =
+    await chrome.storage.local.get(PERSONAL_SNAPSHOT_CACHE_KEY);
+
+  snapshotCache[market] = snapshot;
+  await chrome.storage.local.set({ [PERSONAL_SNAPSHOT_CACHE_KEY]: snapshotCache });
+}
+
 async function collectOrderDataForDetection(market) {
   try {
     const orderData = await collectOrderData(market);
-    return { ...orderData, privateDataAvailable: true };
+    const collected = { ...orderData, privateDataAvailable: true };
+    await writePersonalSnapshotCache(market, toPersonalSnapshot(collected, market));
+    return collected;
   } catch {
-    return {
+    const unavailable = {
       market,
       recentOrders: [],
       clientAverageBuyAmount: null,
@@ -923,6 +1382,8 @@ async function collectOrderDataForDetection(market) {
       collected_at: new Date().toISOString(),
       privateDataAvailable: false,
     };
+    await writePersonalSnapshotCache(market, null);
+    return unavailable;
   }
 }
 
@@ -950,6 +1411,69 @@ function createDemoOrderData(context = {}) {
   };
 }
 
+async function refreshMarketSnapshot(market) {
+  if (!market) {
+    return null;
+  }
+
+  const snapshot = await MarketDataProvider.fetchSnapshot(market);
+  await writeMarketSnapshotCache(market, snapshot);
+  return snapshot;
+}
+
+async function refreshPersonalSnapshot(market) {
+  if (!market) {
+    return null;
+  }
+
+  const orderData = await collectOrderDataForDetection(market);
+  return toPersonalSnapshot(orderData, market);
+}
+
+async function refreshSnapshotCaches(market) {
+  if (!market) {
+    return { marketSnapshot: null, personalSnapshot: null };
+  }
+
+  const [marketResult, personalResult] = await Promise.allSettled([
+    refreshMarketSnapshot(market),
+    refreshPersonalSnapshot(market),
+  ]);
+
+  return {
+    marketSnapshot:
+      marketResult.status === "fulfilled" ? marketResult.value : null,
+    personalSnapshot:
+      personalResult.status === "fulfilled" ? personalResult.value : null,
+  };
+}
+
+async function resolveActiveTradingMarket() {
+  const activeTabs = await chrome.tabs.query({
+    active: true,
+    currentWindow: true,
+  });
+  const activeTab = activeTabs.find((tab) => isCollectableTradingUrl(tab.url));
+
+  if (!activeTab?.url) {
+    return null;
+  }
+
+  return parseMarket(activeTab.url);
+}
+
+function requestSnapshotRefresh(market) {
+  const refreshTask = (market
+    ? Promise.resolve(market)
+    : resolveActiveTradingMarket())
+    .then((resolvedMarket) =>
+      resolvedMarket ? refreshSnapshotCaches(resolvedMarket) : null,
+    )
+    .catch(() => null);
+
+  return refreshTask;
+}
+
 async function sendTabMessage(tabId, message) {
   try {
     return await chrome.tabs.sendMessage(tabId, message);
@@ -964,11 +1488,21 @@ async function callDetectionApi(
   marketData,
   options = {},
 ) {
-  if (!context.currentOrder || !context.behaviorData) {
+  const initialMarketResolution = resolveMarketForContext(context);
+  const normalizedContext = normalizeDemoContextMarket(
+    context,
+    initialMarketResolution.market,
+  );
+  const normalizedMarketData =
+    isDemoPageUrl(normalizedContext.pageUrl || "") && initialMarketResolution.market
+      ? { ...marketData, market: initialMarketResolution.market }
+      : marketData;
+
+  if (!normalizedContext.currentOrder || !normalizedContext.behaviorData) {
     return null;
   }
 
-  const pageUrl = context.pageUrl || "";
+  const pageUrl = normalizedContext.pageUrl || "";
   const isDemo = isDemoPageUrl(pageUrl);
   const isUpbitExchange = isUpbitExchangeUrl(pageUrl);
 
@@ -988,8 +1522,9 @@ async function callDetectionApi(
   const orderData =
     options.orderData ||
     (isDemo
-      ? createDemoOrderData(context)
-      : orderDataCache[context.market] || createDemoOrderData(context));
+      ? createDemoOrderData(normalizedContext)
+      : orderDataCache[normalizedContext.market] ||
+        createDemoOrderData(normalizedContext));
   const recentOrders = orderData?.recentOrders || [];
   const lastLoss = recentOrders.find(
     (order) =>
@@ -998,25 +1533,25 @@ async function callDetectionApi(
       Date.now() - Date.parse(order.order_request_time) <= 60 * 60 * 1000,
   );
   const requestBody = {
-    market: context.market,
-    current_price: marketData.current_price,
-    market_data: marketData.market_data,
+    market: normalizedContext.market,
+    current_price: normalizedMarketData.current_price,
+    market_data: normalizedMarketData.market_data,
     current_order: {
-      ...context.currentOrder,
+      ...normalizedContext.currentOrder,
       realized_loss_pct_1h: lastLoss?.realized_loss_pct_1h ?? null,
     },
     behavior_data: {
-      ...context.behaviorData,
+      ...normalizedContext.behaviorData,
       client_avg_buy_amount:
         orderData
           ? orderData.clientAverageBuyAmount ?? null
-          : context.behaviorData.client_avg_buy_amount ?? null,
+          : normalizedContext.behaviorData.client_avg_buy_amount ?? null,
     },
     recent_orders: recentOrders,
   };
 
   const behaviorEvent = {
-    ...(context.sessionId ? { sessionId: context.sessionId } : {}),
+    ...(normalizedContext.sessionId ? { sessionId: normalizedContext.sessionId } : {}),
     symbol: requestBody.market,
     eventType: "ORDER_SUBMIT_ATTEMPT",
     side: requestBody.current_order.order_side,
@@ -1024,7 +1559,7 @@ async function callDetectionApi(
     price: requestBody.current_order.order_price,
     amount: requestBody.current_order.order_amount,
     quantity: requestBody.current_order.order_volume,
-    ...(context.pageUrl ? { pageUrl: context.pageUrl } : {}),
+    ...(normalizedContext.pageUrl ? { pageUrl: normalizedContext.pageUrl } : {}),
     occurredAt: requestBody.current_order.order_request_time,
     metadata: {
       behaviorData: requestBody.behavior_data,
@@ -1054,10 +1589,79 @@ async function callDetectionApi(
         : Promise.resolve();
   const rulesState = await getCachedGuardrailRulesState(auth);
   const orderContextSnapshot = enrichOrderContextSnapshot(
-    context,
-    marketData,
+    normalizedContext,
+    normalizedMarketData,
     orderData,
   );
+  const expectedMarket = initialMarketResolution.market || orderContextSnapshot.market;
+  const actualMarkets = {
+    orderContextMarket: orderContextSnapshot.market || null,
+    marketDataMarket: normalizedMarketData?.market || null,
+    currentOrderMarket: normalizedContext.currentOrder?.market || null,
+    orderDataMarket: orderData?.market || null,
+  };
+  const relevantMarkets = Object.values(actualMarkets).filter(Boolean);
+  const mismatchedMarket = relevantMarkets.find(
+    (market) => expectedMarket && market !== expectedMarket,
+  );
+  const marketMismatch = Boolean(mismatchedMarket);
+  const marketDebugFields = {
+    marketResolutionTrace: initialMarketResolution.trace,
+    marketDataSource:
+      normalizedMarketData?.source ||
+      (isDemo ? "demo-data" : "cache"),
+    marketMismatch,
+    expectedMarket: expectedMarket || null,
+    actualMarket:
+      mismatchedMarket ||
+      actualMarkets.marketDataMarket ||
+      actualMarkets.orderContextMarket ||
+      null,
+    usedForRuleEvaluation: !marketMismatch,
+  };
+
+  if (marketMismatch) {
+    await sendDtoDebugSnapshot(tabId, {
+      ...marketDebugFields,
+      behavior: normalizedContext.behaviorData || null,
+      market: normalizedMarketData,
+      personal: {
+        privateDataAvailable: orderData?.privateDataAvailable ?? null,
+        accounts: orderData?.accounts || [],
+        confirmedTradeLogs: [],
+        orderOutcomePatches: [],
+        recentOrders,
+        clientAverageBuyAmount: orderData?.clientAverageBuyAmount ?? null,
+      },
+      orderContext: orderContextSnapshot,
+      ruleEvaluation: {
+        source: rulesState.source,
+        loadError: rulesState.error,
+        ruleCount: rulesState.rules.length,
+        detected: false,
+        matchedRuleIds: [],
+        primaryRuleId: null,
+        primaryRule: null,
+        skippedReason: "MARKET_MISMATCH",
+        ...actualMarkets,
+      },
+    });
+    await behaviorSaveTask;
+    return {
+      detected: false,
+      type: "USER_GUARDRAIL_RULE",
+      message: "시장 데이터가 현재 주문 종목과 달라 가드레일 평가를 건너뛰었습니다.",
+      marketMismatch: true,
+      orderContextSnapshot,
+      ruleEvaluation: {
+        detected: false,
+        matchedRuleIds: [],
+        primaryRuleId: null,
+        primaryRule: null,
+        skippedReason: "MARKET_MISMATCH",
+      },
+    };
+  }
   const ruleEvaluation = evaluateGuardrailRules(
     rulesState.rules,
     orderContextSnapshot,
@@ -1072,8 +1676,9 @@ async function callDetectionApi(
   };
 
   await sendDtoDebugSnapshot(tabId, {
-    behavior: context.behaviorData || null,
-    market: marketData,
+    ...marketDebugFields,
+    behavior: normalizedContext.behaviorData || null,
+    market: normalizedMarketData,
     personal: {
       privateDataAvailable: orderData?.privateDataAvailable ?? null,
       accounts: orderData?.accounts || [],
@@ -1134,38 +1739,33 @@ async function callDetectionApi(
     return ruleResult;
   }
 
-  let result;
-  const detectionPromise = isDemo
-    ? postDemoDetectionRequest(requestBody, context, auth)
-    : postDetectionRequest(requestBody, auth);
-
-  try {
-    result = await detectionPromise;
-  } catch (error) {
-    await behaviorSaveTask;
-    throw error;
-  }
-
-  const flameMode = resolveFlameMode(
-    result,
-    context.currentOrder.order_side,
-  );
-  const themedResult = { ...result, flameMode };
+  const safeResult = {
+    detected: false,
+    type: "USER_GUARDRAIL_RULE",
+    message: "설정된 가드레일에 해당하는 주문 조건은 감지되지 않았어요.",
+    matchedRuleIds: [],
+    primaryRuleId: null,
+    primaryRule: null,
+    visualMode: "DEFAULT",
+    flameMode: "DEFAULT",
+    orderContextSnapshot: evaluatedSnapshot,
+    ruleEvaluation,
+  };
   await chrome.storage.local.set({
     flameTheme: {
-      mode: flameMode,
-      detected: Boolean(result?.detected),
-      type: result?.type || null,
+      mode: "DEFAULT",
+      detected: false,
+      type: safeResult.type,
       orderSide: context.currentOrder.order_side,
       updatedAt: new Date().toISOString(),
     },
   });
   await sendTabMessage(tabId, {
     type: "DETECTION_RESULT",
-    payload: themedResult,
+    payload: safeResult,
   });
   await behaviorSaveTask;
-  return themedResult;
+  return safeResult;
 }
 
 async function getMarketDataForDetection(market) {
@@ -1180,35 +1780,153 @@ async function getMarketDataForDetection(market) {
 }
 
 async function getMarketDataForContext(context) {
-  const demoData = context?.demoData;
-  const demoCurrentPrice = toNumber(demoData?.currentPrice);
+  const { market: resolvedMarket } = resolveMarketForContext(context);
+  const normalizedContext = normalizeDemoContextMarket(context, resolvedMarket);
+  const demoData = normalizedContext?.demoData;
+  const demoMarketData = demoData?.marketData || {};
+  const demoCurrentPrice = toNumber(
+    firstDefined(
+      demoData?.currentPrice,
+      demoMarketData.tradePrice,
+      demoMarketData.tradePriceAtSnapshot,
+      demoMarketData.currentPrice,
+      demoMarketData.current_price,
+    ),
+  );
 
   if (
-    isDemoPageUrl(context?.pageUrl) &&
-    demoData?.marketData &&
+    isDemoPageUrl(normalizedContext?.pageUrl) &&
+    demoMarketData &&
     demoCurrentPrice !== null
   ) {
     return {
-      market: context.market,
+      market: resolvedMarket || normalizedContext.market,
       current_price: demoCurrentPrice,
       tradePriceAtSnapshot: decimalString(demoCurrentPrice),
+      shortTermReturn5m:
+        demoMarketData.shortTermReturn5m ??
+        demoMarketData.short_term_return_5m ??
+        demoMarketData.price_change_rate_5m_decimal ??
+        percentageLikeToRatio(demoMarketData.price_change_rate_5m) ??
+        null,
+      signedChangeRate:
+        demoMarketData.signedChangeRate ??
+        demoMarketData.signed_change_rate ??
+        demoMarketData.price_change_rate_15m_decimal ??
+        percentageLikeToRatio(demoMarketData.price_change_rate_15m) ??
+        null,
+      spreadRate:
+        demoMarketData.spreadRate ?? demoMarketData.spread_rate ?? null,
+      marketRiskFlags: Array.isArray(demoMarketData.marketRiskFlags)
+        ? demoMarketData.marketRiskFlags
+        : demoMarketData.has_warning_badge
+          ? ["WARNING"]
+          : [],
+      pricePositionIn5mRange:
+        demoMarketData.pricePositionIn5mRange ??
+        demoMarketData.price_position_in_5m_range ??
+        null,
+      volumeSpikeRatio5m:
+        demoMarketData.volumeSpikeRatio5m ??
+        demoMarketData.volume_spike_ratio_5m ??
+        percentageLikeToRatio(demoMarketData.volume_change_rate_1m) ??
+        null,
+      market_data: demoMarketData,
+      source: "demo-data",
+    };
+  }
+
+  if (isDemoPageUrl(normalizedContext?.pageUrl)) {
+    return {
+      market: resolvedMarket || normalizedContext.market || "UNKNOWN",
+      current_price: null,
+      tradePriceAtSnapshot: null,
       shortTermReturn5m: null,
       signedChangeRate: null,
       spreadRate: null,
       marketRiskFlags: [],
       pricePositionIn5mRange: null,
       volumeSpikeRatio5m: null,
-      market_data: demoData.marketData,
+      market_data: demoMarketData || {},
+      source: "demo-data",
     };
   }
 
-  return getMarketDataForDetection(context.market);
+  return getMarketDataForDetection(resolvedMarket || normalizedContext.market);
+}
+
+function percentageLikeToRatio(value) {
+  const numeric = toNumber(value);
+  return numeric === null ? null : numeric / 100;
+}
+
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null);
 }
 
 function decimalString(value) {
   if (value === null || value === undefined || value === "") return null;
   const numeric = toNumber(value);
   return numeric === null ? null : String(numeric);
+}
+
+function resolveMarketForContext(context = {}) {
+  const isDemo = isDemoPageUrl(context.pageUrl || "");
+  const candidates = isDemo
+    ? [
+        context.demoData?.market,
+        context.demoData?.marketData?.market,
+        context.currentOrder?.market,
+        context.orderContextSnapshot?.market,
+        context.market,
+      ]
+    : [
+        context.market,
+        context.currentOrder?.market,
+        context.orderContextSnapshot?.market,
+      ];
+  const market = candidates.find((candidate) => typeof candidate === "string" && candidate);
+
+  return {
+    market: market || null,
+    trace: {
+      isDemo,
+      candidates: {
+        contextMarket: context.market || null,
+        currentOrderMarket: context.currentOrder?.market || null,
+        orderContextMarket: context.orderContextSnapshot?.market || null,
+        demoDataMarket: context.demoData?.market || null,
+        demoMarketDataMarket: context.demoData?.marketData?.market || null,
+      },
+      resolvedMarket: market || null,
+    },
+  };
+}
+
+function normalizeDemoContextMarket(context = {}, market) {
+  if (!isDemoPageUrl(context.pageUrl || "") || !market) {
+    return context;
+  }
+
+  return {
+    ...context,
+    market,
+    currentOrder: context.currentOrder
+      ? { ...context.currentOrder, market }
+      : context.currentOrder,
+    orderContextSnapshot: context.orderContextSnapshot
+      ? { ...context.orderContextSnapshot, market }
+      : context.orderContextSnapshot,
+    demoData: context.demoData
+      ? {
+          ...context.demoData,
+          market,
+          marketData: context.demoData.marketData
+            ? { ...context.demoData.marketData, market }
+            : context.demoData.marketData,
+        }
+      : context.demoData,
+  };
 }
 
 function getAccount(accounts, currency) {
@@ -1459,7 +2177,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "REGISTER_MARKET_CONTEXT") {
+    if (isDemoPageUrl(message.payload?.pageUrl)) {
+      sendResponse({ ok: true, skipped: "demo-page" });
+      return false;
+    }
+    void requestSnapshotRefresh(message.payload?.market);
     sendResponse({ ok: true });
+    return false;
+  }
+
+  if (message?.type === "REFRESH_SNAPSHOTS_NOW") {
+    if (isDemoPageUrl(message.payload?.pageUrl)) {
+      sendResponse({ ok: true, snapshots: null, skipped: "demo-page" });
+      return false;
+    }
+    requestSnapshotRefresh(message.payload?.market)
+      .then((snapshots) => sendResponse({ ok: true, snapshots }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
 
@@ -1468,6 +2202,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
+  }
+
+  if (message?.type === "SAVE_ORDER_CONTEXT_SNAPSHOT") {
+    saveOrderContextSnapshotLog(message.payload, sender.tab?.id);
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  if (message?.type === "SAVE_GUARDRAIL_REACTION") {
+    saveGuardrailReactionLog(message.payload, sender.tab?.id);
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  if (message?.type === "SAVE_TRADE_FEEDBACK") {
+    saveTradeFeedbackLog(message.payload, sender.tab?.id);
+    sendResponse({ ok: true });
+    return false;
   }
 
   if (message?.type === "RUN_DETECTION_NOW") {
@@ -1543,6 +2295,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
 
+    if (!message.payload?.refreshAlreadyRequested) {
+      void requestSnapshotRefresh(message.payload?.market);
+    }
+
     const collectOrder = isDemoPageUrl(pageUrl)
       ? Promise.resolve(createDemoOrderData(message.payload))
       : collectOrderDataForDetection(message.payload.market);
@@ -1552,16 +2308,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         let detection = null;
 
         if (sender.tab?.id) {
+          if (!isDemoPageUrl(pageUrl)) {
+            saveConfirmedTradeLogBatch(
+              orderData,
+              {
+                attemptId:
+                  message.payload.orderContextSnapshot?.attemptId || null,
+                orderContextSnapshot:
+                  message.payload.orderContextSnapshot || null,
+                currentOrder: message.payload.currentOrder || null,
+              },
+              sender.tab.id,
+            );
+          }
           await sendTabMessage(sender.tab.id, {
             type: "ORDER_DATA_UPDATED",
             payload: orderData,
           });
-          const marketData = await getMarketDataForContext(message.payload);
+
+          const detectionContext = {
+            ...message.payload,
+            pageUrl,
+            market: message.payload?.market || orderData?.market,
+          };
+          const marketData = await getMarketDataForContext(detectionContext);
           detection = await callDetectionApi(
             sender.tab.id,
-            message.payload,
+            detectionContext,
             marketData,
-            { orderData },
+            {
+              orderData,
+              logSubmitAttempt: false,
+            },
           );
         }
 
@@ -1595,6 +2373,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           passphrase,
         ),
       )
+      .then(() => reloadCollectableTradingTabs())
       .then(() => sendResponse({ ok: true }))
       .catch((error) =>
         sendResponse({
@@ -1639,7 +2418,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "RUN_COLLECTION_NOW") {
-    loadGuardrailRules()
+    Promise.all([
+      loadGuardrailRules(),
+      requestSnapshotRefresh(message.payload?.market),
+    ])
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -1690,4 +2472,28 @@ chrome.cookies?.onChanged?.addListener((changeInfo) => {
       void clearExtensionSession().catch(() => {});
     }
   });
+});
+
+function installSnapshotRefreshAlarm() {
+  chrome.alarms?.create(SNAPSHOT_REFRESH_ALARM_NAME, {
+    periodInMinutes: SNAPSHOT_REFRESH_PERIOD_MINUTES,
+  });
+}
+
+installSnapshotRefreshAlarm();
+
+chrome.runtime.onInstalled?.addListener(() => {
+  installSnapshotRefreshAlarm();
+});
+
+chrome.runtime.onStartup?.addListener(() => {
+  installSnapshotRefreshAlarm();
+});
+
+chrome.alarms?.onAlarm?.addListener((alarm) => {
+  if (alarm?.name !== SNAPSHOT_REFRESH_ALARM_NAME) {
+    return;
+  }
+
+  void requestSnapshotRefresh();
 });
