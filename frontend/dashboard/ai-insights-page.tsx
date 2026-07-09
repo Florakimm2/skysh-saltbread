@@ -20,7 +20,7 @@ export default function AiInsightsPage({
       <PageHeader
         eyebrow="Intelligence"
         title="AI 인사이트"
-        description="최근 7일의 주문 행동을 바탕으로 발견한 투자 습관입니다."
+        description="최근 30일의 주문 행동을 바탕으로 발견한 투자 습관입니다."
       />
 
       <section
@@ -33,7 +33,7 @@ export default function AiInsightsPage({
               <SparklesIcon />
             </span>
             <h2 className={styles.panelTitle} id="ai-detail-title">
-              최근 7일 AI 분석
+              최근 30일 AI 분석
             </h2>
           </div>
           <span className={styles.panelMeta}>
@@ -91,7 +91,7 @@ export default function AiInsightsPage({
               </span>
               <strong>
                 {insight.status === "empty"
-                  ? "최근 7일간 분석할 행동 기록이 없습니다"
+                  ? "최근 30일간 분석할 행동 기록이 없습니다"
                   : "AI 분석을 불러오지 못했습니다"}
               </strong>
               <p>

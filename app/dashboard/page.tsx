@@ -3,6 +3,9 @@ import { requestDashboardInsight } from "@/backend/modules/insight/service";
 import DashboardOverview from "@/frontend/dashboard/dashboard-overview";
 import { loadDashboardBehaviorData } from "./load-dashboard-data";
 
+// 유저가 페이지를 열 때마다 매번 새로 FastAPI를 호출하도록 설정
+export const dynamic = 'force-dynamic';
+
 export default async function DashboardPage() {
   const session = await getDashboardSession();
 
