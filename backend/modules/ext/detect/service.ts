@@ -29,6 +29,16 @@ import type {
     HIGH_RISK_HOPPING:
       "변동성이 높거나 주의 표시가 있는 종목에 빠르게 진입하려 하고 있어요.",
   };
+
+  const RULE_ID_BY_TYPE: Record<EmotionTradeType, string> = {
+    FOMO_CHASING: "CHASE_BUY_V1",
+    ALL_IN_IMPULSE: "HIGH_ALLOCATION_V1",
+    REVENGE_TRADING: "REVENGE_TRADING_V1",
+    HESITATION: "HESITATION_V1",
+    AMOUNT_SPIKE: "AMOUNT_SPIKE_V1",
+    MACHINE_GUN_TRADING: "MACHINE_GUN_TRADING_V1",
+    HIGH_RISK_HOPPING: "HIGH_RISK_HOPPING_V1",
+  };
   
   const RULE = {
     FOMO_PRICE_CHANGE_RATE_15M: 5,
@@ -347,14 +357,21 @@ import type {
         detected: false,
         type: null,
         message: "현재 감정적 매매 패턴은 감지되지 않았어요.",
+        matchedRuleIds: [],
+        primaryRuleId: null,
       };
     }
   
     const topCandidate = candidates.sort((a, b) => b.score - a.score)[0];
+    const matchedRuleIds = candidates.map(
+      (candidate) => RULE_ID_BY_TYPE[candidate.type],
+    );
   
     return {
       detected: true,
       type: topCandidate.type,
       message: topCandidate.message,
+      matchedRuleIds,
+      primaryRuleId: RULE_ID_BY_TYPE[topCandidate.type],
     };
   }

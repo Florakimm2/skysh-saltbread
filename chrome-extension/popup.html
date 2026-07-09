@@ -1,257 +1,174 @@
 <!doctype html>
-<html lang="ko">
+<html lang="ko" data-view="loading">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Fireguard</title>
+    <title>불씨</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
     <main class="popup">
-      <header class="brand">
-        <div id="popup-flame" class="brand__flame"></div>
-        <div>
-          <p class="brand__eyebrow">CHROME EXTENSION</p>
-          <h1>Fireguard</h1>
-        </div>
-      </header>
-
       <section
-        id="consent-view"
-        class="card consent-card"
-        aria-labelledby="consent-title"
+        id="loading-view"
+        class="loading-view"
+        aria-live="polite"
       >
-        <div class="consent-card__heading">
-          <h2 id="consent-title">행동 로그 수집 동의</h2>
-          <p>
-            Fireguard는 감정적인 주문 패턴을 감지하기 위해 주문 직전의 행동
-            신호를 분석합니다.
-          </p>
-        </div>
-
-        <div class="consent-details">
-          <p>
-            수집 항목은 주문 금액 수정 횟수, 주문 방식 변경, 매수·매도 버튼 클릭
-            시점, 취소 반복 여부, 종목 코드와 수집 시각입니다.
-          </p>
-          <p>
-            수집된 정보는 감정적 주문 경고, 쿨다운 제공, 개인 행동 분석, AI
-            인사이트 생성에만 사용됩니다.
-          </p>
-          <p>
-            Fireguard는 계좌 비밀번호, 출금 권한, 신원 확인 정보는 수집하지
-            않습니다. 읽기 전용 API 키는 조회 목적에만 사용됩니다.
-          </p>
-          <p>동의는 설정에서 언제든 철회할 수 있습니다.</p>
-        </div>
-
-        <label class="consent-checkbox" for="behavior-consent-checkbox">
-          <input id="behavior-consent-checkbox" type="checkbox" />
-          <span>행동 로그 수집 및 분석에 동의합니다.</span>
-        </label>
-
-        <div class="consent-actions">
-          <button
-            id="accept-consent-button"
-            class="primary-button"
-            type="button"
-            disabled
-          >
-            동의하고 시작하기
-          </button>
-          <button
-            id="decline-consent-button"
-            class="secondary-button"
-            type="button"
-          >
-            나중에 설정하기
-          </button>
-        </div>
+        <img
+          class="loading-view__icon"
+          src="icon-128.png"
+          alt=""
+          width="72"
+          height="72"
+        />
+        <div class="loading-view__spinner" aria-hidden="true"></div>
+        <h1>불씨</h1>
+        <p>로그인 상태를 확인하고 있어요.</p>
       </section>
 
-      <section id="auth-view" class="card" hidden>
-        <div class="tabs" role="tablist" aria-label="인증 방식">
-          <button
-            id="login-tab"
-            class="tab is-active"
-            type="button"
-            role="tab"
-            aria-selected="true"
-            aria-controls="login-form"
-          >
+      <section id="signed-out-view" class="signed-out-view" hidden>
+        <img
+          class="signed-out-view__icon"
+          src="icon-128.png"
+          alt="불씨 서비스 아이콘"
+          width="80"
+          height="80"
+        />
+        <h1>불씨</h1>
+        <div class="auth-actions">
+          <button id="open-login-button" class="primary-button" type="button">
             로그인
           </button>
           <button
-            id="signup-tab"
-            class="tab"
+            id="open-signup-button"
+            class="secondary-button"
             type="button"
-            role="tab"
-            aria-selected="false"
-            aria-controls="signup-form"
           >
             회원가입
           </button>
         </div>
-
-        <form id="login-form" class="auth-form" novalidate>
-          <div class="form-heading">
-            <h2>다시 오신 것을 환영해요</h2>
-            <p>계정 정보를 입력해 로그인하세요.</p>
-          </div>
-
-          <label for="login-email">이메일</label>
-          <input
-            id="login-email"
-            name="email"
-            type="email"
-            autocomplete="email"
-            placeholder="user@example.com"
-            required
-          />
-
-          <label for="login-password">비밀번호</label>
-          <input
-            id="login-password"
-            name="password"
-            type="password"
-            autocomplete="current-password"
-            placeholder="비밀번호 입력"
-            required
-          />
-
-          <p class="message" aria-live="polite"></p>
-          <button class="primary-button" type="submit">로그인</button>
-        </form>
-
-        <form id="signup-form" class="auth-form" hidden novalidate>
-          <div class="form-heading">
-            <h2>새 계정 만들기</h2>
-            <p>Fireguard를 시작할 정보를 입력하세요.</p>
-          </div>
-
-          <label for="signup-name">이름</label>
-          <input
-            id="signup-name"
-            name="name"
-            type="text"
-            autocomplete="name"
-            placeholder="홍길동"
-            required
-          />
-
-          <label for="signup-email">이메일</label>
-          <input
-            id="signup-email"
-            name="email"
-            type="email"
-            autocomplete="email"
-            placeholder="user@example.com"
-            required
-          />
-
-          <label for="signup-password">비밀번호</label>
-          <input
-            id="signup-password"
-            name="password"
-            type="password"
-            autocomplete="new-password"
-            placeholder="비밀번호 입력"
-            minlength="8"
-            required
-          />
-
-          <p class="message" aria-live="polite"></p>
-          <button class="primary-button" type="submit">회원가입</button>
-        </form>
+        <p id="login-message" class="message" aria-live="polite"></p>
       </section>
 
-      <section id="account-view" class="card account-card" hidden>
-        <span class="status-badge">계정 인증 완료</span>
-        <p class="account-card__label">연결된 계정</p>
-        <h2 id="account-name"></h2>
-        <p id="account-email" class="account-card__email"></p>
-        <p class="account-card__description">
-          Fireguard가 이 계정에 연결되었습니다. 이제 확장 프로그램을 사용할 수
-          있습니다.
-        </p>
-
-        <section class="api-key-section" aria-labelledby="api-key-title">
-          <div class="api-key-section__heading">
-            <div>
-              <p class="account-card__label">Upbit API 연동</p>
-              <h3 id="api-key-title">읽기 전용 API 키 등록</h3>
-            </div>
-            <span id="api-key-status" class="api-key-status">확인 중</span>
+      <section id="account-view" class="account-view" hidden>
+        <header class="account-header">
+          <div class="account-header__brand">
+            <img src="icon-48.png" alt="" width="38" height="38" />
+            <span>불씨</span>
           </div>
-          <p class="api-key-section__description">
-            입력한 API 키는 사용자가 설정한 로컬 비밀번호로 암호화되며, 현재
-            브라우저에만 저장됩니다.
-          </p>
+          <span class="status-badge">계정 인증 완료</span>
+        </header>
 
-          <form id="api-key-form" class="api-key-form">
-            <label for="upbit-access-key">Access Key</label>
-            <input
-              id="upbit-access-key"
-              name="accessKey"
-              type="password"
-              autocomplete="off"
-              placeholder="업비트 API Access Key를 입력하세요"
-            />
+        <h1 id="account-greeting" class="account-greeting"></h1>
+        <button
+          id="open-onboarding-button"
+          class="primary-button onboarding-button"
+          type="button"
+          hidden
+        >
+          온보딩으로 이동
+        </button>
 
-            <label for="upbit-secret-key">Secret Key</label>
-            <input
-              id="upbit-secret-key"
-              name="secretKey"
-              type="password"
-              autocomplete="off"
-              placeholder="업비트 API Secret Key를 입력하세요"
-            />
+        <section class="summary-card" aria-labelledby="summary-title">
+          <p class="card-eyebrow">나의 불씨</p>
+          <h2 id="summary-title">오늘까지 쌓인 기록</h2>
+          <p id="statistics-summary" class="summary-card__message"></p>
+        </section>
 
-            <label for="api-passphrase">로컬 암호화 비밀번호</label>
-            <input
-              id="api-passphrase"
-              name="passphrase"
-              type="password"
-              autocomplete="off"
-              minlength="8"
-              placeholder="8자 이상 입력"
-              required
-            />
+        <section class="integration-card" aria-labelledby="api-key-title">
+          <button
+            id="api-key-toggle"
+            class="integration-card__toggle"
+            type="button"
+            aria-expanded="false"
+            aria-controls="api-key-details"
+          >
+            <span class="integration-card__copy">
+              <span class="card-eyebrow">UPBIT OPEN API</span>
+              <strong id="api-key-title">API를 연결해 더 정확하게 탐지해요</strong>
+            </span>
+            <span class="integration-card__meta">
+              <span id="api-key-status" class="api-key-status">확인 중</span>
+              <span class="integration-card__chevron" aria-hidden="true"></span>
+            </span>
+          </button>
 
-            <p id="api-key-message" class="message" aria-live="polite"></p>
-            <div class="api-key-actions">
-              <button id="save-api-key-button" class="primary-button" type="submit">
-                암호화 저장
-              </button>
-              <button
-                id="unlock-api-key-button"
-                class="secondary-button"
-                type="button"
-                hidden
-              >
-                잠금 해제
-              </button>
-              <button
-                id="delete-api-key-button"
-                class="danger-button"
-                type="button"
-                hidden
-              >
-                저장 키 삭제
-              </button>
-            </div>
-          </form>
+          <div id="api-key-details" class="integration-card__details" hidden>
+            <p class="integration-card__description">
+              자산 및 주문 조회 권한을 확인한 뒤 API 키를 암호화해 저장합니다.
+              주문이나 출금 권한은 필요하지 않습니다.
+            </p>
+            <p class="local-storage-note">
+              API 키는 로컬에서 암호화되어 이 브라우저에만 저장되니 안심하세요.
+            </p>
+
+            <form id="api-key-form" class="api-key-form">
+              <label for="upbit-access-key">Access Key</label>
+              <input
+                id="upbit-access-key"
+                name="accessKey"
+                type="password"
+                autocomplete="off"
+                placeholder="업비트 API Access Key"
+              />
+
+              <label for="upbit-secret-key">Secret Key</label>
+              <input
+                id="upbit-secret-key"
+                name="secretKey"
+                type="password"
+                autocomplete="off"
+                placeholder="업비트 API Secret Key"
+              />
+
+              <label for="api-passphrase">로컬 암호화 비밀번호</label>
+              <input
+                id="api-passphrase"
+                name="passphrase"
+                type="password"
+                autocomplete="off"
+                minlength="8"
+                placeholder="8자 이상 입력"
+                required
+              />
+
+              <p id="api-key-message" class="message" aria-live="polite"></p>
+              <div class="api-key-actions">
+                <button
+                  id="save-api-key-button"
+                  class="primary-button"
+                  type="submit"
+                >
+                  검증 후 암호화 저장
+                </button>
+                <button
+                  id="unlock-api-key-button"
+                  class="secondary-button"
+                  type="button"
+                  hidden
+                >
+                  잠금 해제
+                </button>
+                <button
+                  id="delete-api-key-button"
+                  class="danger-button"
+                  type="button"
+                  hidden
+                >
+                  저장 키 삭제
+                </button>
+              </div>
+            </form>
+          </div>
         </section>
 
         <p id="account-message" class="message" aria-live="polite"></p>
-        <button id="logout-button" class="secondary-button" type="button">
+        <button id="logout-button" class="logout-button" type="button">
           로그아웃
         </button>
       </section>
     </main>
 
     <script src="config.js"></script>
-    <script src="cute-idle-flame.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

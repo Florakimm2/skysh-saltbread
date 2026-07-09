@@ -1,4 +1,4 @@
-// app/api/market/snapshot/route.ts
+// app/api/demo/market/snapshot/route.ts
 
 import { NextRequest, NextResponse } from "next/server";
 import { marketService } from "@/backend/modules/market/service";

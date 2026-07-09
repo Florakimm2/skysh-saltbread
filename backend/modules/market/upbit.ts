@@ -83,9 +83,13 @@ import type {
      */
     const oldestCandle = candles[candles.length - 1];
     const price15mAgo = oldestCandle?.trade_price ?? currentPrice;
+    const fiveMinuteAgoCandle = candles[5] ?? oldestCandle;
+    const price5mAgo = fiveMinuteAgoCandle?.trade_price ?? currentPrice;
   
     const changeRate15m =
       price15mAgo > 0 ? ((currentPrice - price15mAgo) / price15mAgo) * 100 : 0;
+    const shortTermReturn5m =
+      price5mAgo > 0 ? (currentPrice - price5mAgo) / price5mAgo : null;
   
     const latestVolume = candles[0]?.candle_acc_trade_volume ?? 0;
     const previous10Volumes = candles
@@ -101,6 +105,8 @@ import type {
       currentPrice,
       price15mAgo,
       changeRate15m,
+      signedChangeRate: ticker.signed_change_rate ?? null,
+      shortTermReturn5m,
       latestVolume,
       avgVolume10m,
       volumeSpikeRatio,

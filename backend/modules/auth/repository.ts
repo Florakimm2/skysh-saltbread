@@ -22,3 +22,25 @@ export async function findUserProfileById(userId: string) {
 
   return doc.data() as UserProfile;
 }
+
+export async function updateUserProfileName(params: {
+  userId: string;
+  name: string;
+}) {
+  const now = new Date().toISOString();
+  const userRef = adminDb.collection("users").doc(params.userId);
+
+  await userRef.set(
+    {
+      id: params.userId,
+      userId: params.userId,
+      name: params.name,
+      displayName: params.name,
+      updatedAt: now,
+    },
+    { merge: true }
+  );
+
+  const saved = await userRef.get();
+  return saved.data() as UserProfile;
+}
