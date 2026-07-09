@@ -24,6 +24,7 @@ class AnalyzeRequest(BaseModel):
         ],
     )
 
+
 # --- 1. AI 내부 처리용 스키마 ---
 class InsightCard(BaseModel):
     title: str
@@ -36,7 +37,7 @@ class LLMInsightResponse(BaseModel):
     insights: list[InsightCard] = Field(min_length=4, max_length=4)
 
 
-# --- 2. 프론트엔드 반환용 최종 스키마 (5단계 적용) ---
+# --- 2. 프론트엔드 반환용 최종 스키마 ---
 class Card(BaseModel):
     title: str = Field(description="UI에 표시할 메인 제목")
     description: str = Field(description="UI에 표시할 세부 내용")
@@ -44,7 +45,7 @@ class Card(BaseModel):
 
 class InsightResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    
+
     summary: str = Field(description="사용자의 매매 행동 패턴 핵심 요약 (상단 표시용)")
     flameStatus: Literal["default", "breathing", "sad", "fastBurn", "surprised", "scared", "curious"] = Field(
         description="UI에서 불꽃 애니메이션/표정을 결정하는 키워드"

@@ -70,15 +70,14 @@ def _verify_service_api_key(
     x_api_key: Annotated[str | None, Header()] = None,
 ) -> None:
     expected_key = _settings(request).service_api_key
-    
-    # 수정된 부분: expected_key가 없을 때 통과시키지 않고 500 에러를 발생시킵니다 (Fail Closed)
+
     if expected_key is None:
         logger.error("SERVICE_API_KEY is not configured in the server environment.")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Server configuration error: API Key is not set.",
         )
-        
+
     if x_api_key is None or not hmac.compare_digest(x_api_key, expected_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -126,7 +125,10 @@ async def analyze_insight(
     analyzer: Annotated[Analyzer, Depends(_analyzer)],
 ) -> InsightResponse:
     try:
-        return await run_in_threadpool(analyzer.analyze, payload.summaries)
+        return await run_in_threadpool(
+            analyzer.analyze,
+            payload.summaries,
+        )
     except AnalyzerTimeoutError:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,

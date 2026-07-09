@@ -1,123 +1,171 @@
-import Decimal from 'decimal.js';
+// backend/modules/insight/rules.ts
 import { getMonthlyTradeUnits, getMonthlyAggregates } from "./repository";
 
-export interface RuleInsight {
-    type: string;
-    title: string;
-    message: string;
-    score: number;
+// ── 앵커 점수 타입 (테마 순서는 프롬프트 카드 순서와 동일) ──
+export interface AnchorScore {
+    theme: "EMOTIONAL" | "GUARDRAIL" | "FEE" | "SLIPPAGE";
+    anchor: number; // 규칙 엔진이 산출한 기준 점수 (양수=칭찬, 음수=경고)
 }
 
-export async function analyzeInsights(userId: string): Promise<RuleInsight[]> {
+export interface InsightMetricsResult {
+    summaries: string[];
+    anchorScores: AnchorScore[];
+}
+
+// value를 [inMin, inMax] → [outMin, outMax]로 선형 매핑 (클램핑 포함)
+function linearMap(value: number, inMin: number, inMax: number, outMin: number, outMax: number): number {
+    const clamped = Math.max(inMin, Math.min(inMax, value));
+    const ratio = (clamped - inMin) / (inMax - inMin || 1);
+    return Math.round(outMin + ratio * (outMax - outMin));
+}
+
+export async function analyzeInsights(userId: string): Promise<InsightMetricsResult> {
     const tradeUnits = await getMonthlyTradeUnits(userId);
     const dailyAggregates = await getMonthlyAggregates(userId);
 
-    const insights: RuleInsight[] = [];
     const now = Date.now();
+    const metricSummaries: string[] = [];
+    const anchorScores: AnchorScore[] = [];
 
-  // 1. [🧐 아차! 하는 순간] 판별
-  const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000).getTime();
-  const threeDaysAgo = new Date(now - 3 * 24 * 60 * 60 * 1000).getTime();
+    // ═══════════════════════════════════════════
+    // 1. [EMOTIONAL] 지표 산출 + 앵커 점수
+    // ═══════════════════════════════════════════
+    const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000).getTime();
+    const threeDaysAgo = new Date(now - 3 * 24 * 60 * 60 * 1000).getTime();
 
-  // 최근 7일 이내 피드백이 있는 거래 추출
     const recent7DaysFeedbacks = tradeUnits.filter(u => {
-    const tradeTime = new Date(u.trade?.orderCreatedAt || 0).getTime();
-    return u.feedback !== null && tradeTime >= sevenDaysAgo;
+        const tradeTime = new Date(u.trade?.orderCreatedAt || 0).getTime();
+        return u.feedback !== null && tradeTime >= sevenDaysAgo;
     });
 
     const emotional7Days = recent7DaysFeedbacks.filter(u => u.feedback?.selfAssessment === 'EMOTIONAL');
     const emotional3Days = emotional7Days.filter(u => {
-    const tradeTime = new Date(u.trade?.orderCreatedAt || 0).getTime();
-    return tradeTime >= threeDaysAgo;
+        const tradeTime = new Date(u.trade?.orderCreatedAt || 0).getTime();
+        return tradeTime >= threeDaysAgo;
     });
 
     const emotionalRatio = recent7DaysFeedbacks.length > 0 
-    ? new Decimal(emotional7Days.length).div(recent7DaysFeedbacks.length).toNumber() 
-    : 0;
+        ? emotional7Days.length / recent7DaysFeedbacks.length 
+        : 0;
 
-    if (emotionalRatio >= 0.2 || emotional3Days.length >= 3) {
-    insights.push({
-        type: "EMOTIONAL_WARNING",
-        title: "[🧐 아차! 하는 순간] 주문 직후의 후회 감지",
-        message: "버튼을 누르고 나서야 후회하는 패턴이 반복되고 있습니다. 주문을 제출하기 전, 초안 화면에서 딱 5초만 심호흡을 해보세요.",
-        score: -70
-    });
-    }
-
-  // 2. [🙉 귀를 닫은 트레이더] 판별
-    const proceedTrades = tradeUnits.filter(u => u.reaction?.action === 'PROCEED');
-    const emotionalProceeds = proceedTrades.filter(u => u.feedback?.selfAssessment === 'EMOTIONAL');
-
-    if (proceedTrades.length > 0) {
-    const proceedRiskRatio = new Decimal(emotionalProceeds.length)
-        .div(proceedTrades.length)
-        .times(100)
-        .toNumber();
-
-    if (proceedRiskRatio > 30) {
-        insights.push({
-        type: "GUARDRAIL_IGNORE",
-        title: "[🙉 귀를 닫은 트레이더] 가드레일 경고 무시와 결과",
-        message: "경고를 무시하고 진행한 거래에서 '감정적 진입' 피드백이 지속적으로 쌓이고 있습니다. 다음번엔 시스템의 브레이크를 한 번 믿어보시는 걸 추천합니다.",
-        score: -80
-        });
-    }
-    }
-
-  // 3. [💸 수수료 누수 경보] 판별
-    for (const daily of dailyAggregates) {
-    const paidFee = new Decimal(daily.dailyPaidFee || '0');
-    const executedFunds = new Decimal(daily.dailyExecutedFunds || '0');
-    const cancelledUnfilledRatio = new Decimal(daily.cancelledUnfilledRatio || '0');
-
-    let feeRatio = new Decimal(0);
-    if (!executedFunds.isZero()) {
-        feeRatio = paidFee.div(executedFunds);
-    }
-
-    if (feeRatio.gt(0.001) || cancelledUnfilledRatio.gt(0.5)) {
-        insights.push({
-        type: "FEE_WASTE",
-        title: "[💸 수수료 누수 경보] 과매매 및 비용 낭비",
-        message: "오늘 하루 거래대금 대비 수수료 출혈이 크거나 미체결 취소 비율이 높습니다. 잦은 매매가 오히려 수익을 갉아먹고 있지 않은지 점검해 보세요.",
-        score: -50
-        });
-        break; 
-    }
-    }
-
-  // 4. [💸 체결가 착시 주의] 판별
-    const marketTrades = tradeUnits.filter(u => 
-    u.snapshot?.orderMode === 'MARKET' && 
-    new Decimal(u.snapshot?.spreadRate || '0').gte(0.002)
+    metricSummaries.push(
+        `[지표-감정매매] 최근 7일간 피드백 제출 거래 수: ${recent7DaysFeedbacks.length}건, 감정적 거래 수: ${emotional7Days.length}건, 감정적 매매 비율: ${(emotionalRatio * 100).toFixed(1)}%, 최근 3일간 감정적 거래 횟수: ${emotional3Days.length}회`
     );
 
+    let emotionalAnchor: number;
+    if (emotionalRatio === 0 && emotional3Days.length === 0) {
+        emotionalAnchor = recent7DaysFeedbacks.length >= 5 ? 100 : linearMap(recent7DaysFeedbacks.length, 0, 5, 70, 100);
+    } else {
+        emotionalAnchor = linearMap(emotionalRatio, 0.01, 0.3, -70, -100);
+    }
+    anchorScores.push({ theme: "EMOTIONAL", anchor: emotionalAnchor });
+
+    // ═══════════════════════════════════════════
+    // 2. [GUARDRAIL] 지표 산출 + 앵커 점수
+    // ═══════════════════════════════════════════
+    const proceedTrades = tradeUnits.filter(u => u.reaction?.action === 'PROCEED');
+    const emotionalProceeds = proceedTrades.filter(u => u.feedback?.selfAssessment === 'EMOTIONAL');
+    
+    const proceedRiskRatio = proceedTrades.length > 0
+        ? (emotionalProceeds.length / proceedTrades.length) * 100
+        : 0;
+
+    metricSummaries.push(
+        `[지표-가드레일] 경고 무시 진행(PROCEED) 횟수: ${proceedTrades.length}회, 무시 후 감정적 거래 유발 건수: ${emotionalProceeds.length}건, 경고 무시 위험 전환율: ${proceedRiskRatio.toFixed(1)}%`
+    );
+
+    let guardrailAnchor: number;
+    if (proceedTrades.length === 0) {
+        guardrailAnchor = 100;
+    } else if (emotionalProceeds.length === 0) {
+        guardrailAnchor = linearMap(proceedTrades.length, 1, 5, 60, 0);
+    } else {
+        guardrailAnchor = linearMap(proceedRiskRatio, 10, 80, -80, -100);
+    }
+    anchorScores.push({ theme: "GUARDRAIL", anchor: guardrailAnchor });
+
+    // ═══════════════════════════════════════════
+    // 3. [FEE] 지표 산출 + 앵커 점수
+    // ═══════════════════════════════════════════
+    let maxFeeRatio = 0;
+    let maxCancelledRatio = 0;
+
+    for (const daily of dailyAggregates) {
+        const anyDaily = daily as any;
+        const paidFee = Number(anyDaily.dailyPaidFee || anyDaily.paidFee || 0);
+        const executedFunds = Number(anyDaily.dailyExecutedFunds || anyDaily.executedVolume || 0);
+        const cancelledUnfilledRatio = Number(anyDaily.cancelledUnfilledRatio || 0);
+
+        const feeRatio = breweryFunds(paidFee, executedFunds);
+
+        if (feeRatio > maxFeeRatio) maxFeeRatio = feeRatio;
+        if (cancelledUnfilledRatio > maxCancelledRatio) maxCancelledRatio = cancelledUnfilledRatio;
+    }
+
+    metricSummaries.push(
+        `[지표-비용낭비] 월간 일일 최대 수수료 비율: ${(maxFeeRatio * 100).toFixed(3)}%, 일일 최대 미체결 취소 비율: ${(maxCancelledRatio * 100).toFixed(1)}%`
+    );
+
+    let feeAnchor: number;
+    if (maxFeeRatio <= 0.0005 && maxCancelledRatio <= 0.05) {
+        feeAnchor = 70;
+    } else if (maxFeeRatio <= 0.001 && maxCancelledRatio <= 0.2) {
+        feeAnchor = 50;
+    } else if (maxFeeRatio > 0.003 || maxCancelledRatio > 0.5) {
+        const feeSev = linearMap(maxFeeRatio, 0.003, 0.01, -50, -70);
+        const cancelSev = linearMap(maxCancelledRatio, 0.5, 0.8, -50, -70);
+        feeAnchor = Math.min(feeSev, cancelSev);
+    } else {
+        feeAnchor = linearMap(Math.max(maxFeeRatio * 1000, maxCancelledRatio * 100), 1, 30, -30, -50);
+    }
+    anchorScores.push({ theme: "FEE", anchor: feeAnchor });
+
+    // ═══════════════════════════════════════════
+    // 4. [SLIPPAGE] 지표 산출 + 앵커 점수
+    // ═══════════════════════════════════════════
+    const marketTrades = tradeUnits.filter(u => {
+        const anySnapshot = u.snapshot as any;
+        return anySnapshot?.orderMode === 'MARKET' && Number(anySnapshot?.spreadRate || 0) >= 0.002;
+    });
+
+    let maxSlippage = 0;
+
     for (const trade of marketTrades) {
-    if (!trade.outcome?.executedFunds || !trade.outcome?.executedVolume || !trade.snapshot?.tradePriceAtIntent) {
-        continue;
+        const anyTrade = trade as any;
+        if (!anyTrade.outcome?.executedFunds || !anyTrade.outcome?.executedVolume || !anyTrade.snapshot?.tradePriceAtIntent) {
+            continue;
+        }
+
+        const executedFunds = Number(anyTrade.outcome.executedFunds);
+        const executedVolume = Number(anyTrade.outcome.executedVolume);
+        const tradePriceAtIntent = Number(anyTrade.snapshot.tradePriceAtIntent);
+
+        if (executedVolume === 0 || tradePriceAtIntent === 0) continue;
+
+        const avgFillPrice = executedFunds / executedVolume;
+        const slippage = Math.abs(avgFillPrice - tradePriceAtIntent) / tradePriceAtIntent;
+
+        if (slippage > maxSlippage) maxSlippage = slippage;
     }
 
-    const executedFunds = new Decimal(trade.outcome.executedFunds);
-    const executedVolume = new Decimal(trade.outcome.executedVolume);
-    const tradePriceAtIntent = new Decimal(trade.snapshot.tradePriceAtIntent);
+    metricSummaries.push(
+        `[지표-슬리피지] 고스프레드 시장가 매매 횟수: ${marketTrades.length}회, 감지된 최대 슬리피지율: ${(maxSlippage * 100).toFixed(2)}%`
+    );
 
-    if (executedVolume.isZero() || tradePriceAtIntent.isZero()) {
-        continue;
+    let slippageAnchor: number;
+    if (marketTrades.length === 0) {
+        slippageAnchor = 80;
+    } else if (maxSlippage <= 0.001) {
+        slippageAnchor = linearMap(marketTrades.length, 1, 5, 70, 50);
+    } else {
+        slippageAnchor = linearMap(maxSlippage, 0.001, 0.005, -60, -80);
     }
+    anchorScores.push({ theme: "SLIPPAGE", anchor: slippageAnchor });
 
-    const avgFillPrice = executedFunds.div(executedVolume);
-    const slippage = avgFillPrice.minus(tradePriceAtIntent).abs().div(tradePriceAtIntent);
+    return { summaries: metricSummaries, anchorScores };
+}
 
-    if (slippage.gt(0.002)) {
-        insights.push({
-        type: "SLIPPAGE_WARNING",
-        title: "[💸 체결가 착시 주의] 시장가 맹신 경고",
-        message: "시장가 매수 시 호가창 잔량 부족으로 인해, 예상보다 비싸게 체결되었습니다. 진입하자마자 체결 손실을 안고 시작하는 셈입니다.",
-        score: -60
-        });
-        break;
-    }
-    }
-
-    return insights;
+function breweryFunds(paidFee: number, executedFunds: number): number {
+    if (executedFunds === 0) return 0;
+    return paidFee / executedFunds;
 }
