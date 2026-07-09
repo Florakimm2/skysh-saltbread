@@ -116,6 +116,9 @@ const orderContextSnapshotBaseSchema = z.object({
 });
 
 export const createOrderContextSnapshotSchema = orderContextSnapshotBaseSchema
+  .extend({
+    snapshotId: z.string().min(1).optional(),
+  })
   .superRefine((data, ctx) => {
     const shownRuleIds = data.shownRuleIds ?? [];
 

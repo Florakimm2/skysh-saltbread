@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { handleRouteError } from "@/backend/common/errors";
-import { refresh } from "@/backend/modules/auth/service";
+import {
+  getProfile,
+  refresh,
+} from "@/backend/modules/auth/service";
 
 export const runtime = "nodejs";
 
@@ -38,6 +41,7 @@ export async function POST(request: Request) {
 
     const result = await refresh(body.refreshToken);
     const claims = readFirebaseTokenClaims(result.accessToken);
+    const profile = await getProfile(result.userId);
 
     return NextResponse.json(
       {
@@ -47,8 +51,17 @@ export async function POST(request: Request) {
         expiresIn: result.expiresIn,
         user: {
           id: result.userId,
-          email: typeof claims.email === "string" ? claims.email : "",
-          name: typeof claims.name === "string" ? claims.name : "",
+          email:
+            profile.email ||
+            (typeof claims.email === "string" ? claims.email : ""),
+          name:
+            profile.displayName ||
+            (typeof claims.name === "string" ? claims.name : ""),
+          personalDataConsentAgreed: profile.personalDataConsentAgreed,
+          personalDataConsentAgreedAt: profile.personalDataConsentAgreedAt,
+          personalDataConsentVersion: profile.personalDataConsentVersion,
+          onboardingCompleted: profile.onboardingCompleted,
+          onboardingCompletedAt: profile.onboardingCompletedAt,
         },
       },
       { status: 200 },

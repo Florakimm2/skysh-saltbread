@@ -14,6 +14,7 @@ import RawDebugPanel, {
 import {
   cancelOrder,
   createInitialPortfolio,
+  INITIAL_KRW_BALANCE,
   settleOpenOrders,
   submitOrder,
   toUpbitAccounts,
@@ -95,10 +96,16 @@ type DemoScenario = {
   type: string;
   title: string;
   description: string;
+  market: string;
+  koreanName: string;
   orderSide: OrderSide;
   orderType: OrderType;
   amountMultiplier: number;
   priceMultiplier: number;
+  requestedBalanceRatio?: number;
+  orderbookClickToSnapshotMs?: number;
+  startingAvgBuyPrice?: number;
+  recentActualOrderCount10m?: number;
   behaviorData: {
     is_max_button_clicked: boolean;
     client_avg_buy_amount: number | null;
@@ -109,11 +116,16 @@ type DemoScenario = {
   recentOrders: Array<Record<string, string | number | null>>;
   marketData: {
     price_change_rate_15m: number;
+    price_change_rate_5m?: number;
+    signedChangeRate?: number;
+    shortTermReturn5m?: number;
+    pricePositionIn5mRange?: number;
+    spreadRate?: number;
+    volumeSpikeRatio5m?: number;
     volume_change_rate_1m: number;
     is_top3_volatility: boolean;
     has_warning_badge: boolean;
   };
-  useVolatileMarket?: boolean;
 };
 
 const FALLBACK_PAYLOAD: MarketPayload = {
@@ -181,196 +193,104 @@ const FALLBACK_PAYLOAD: MarketPayload = {
 const SCENARIOS: DemoScenario[] = [
   {
     key: 1,
-    type: "FOMO_CHASING",
-    title: "급등 추격 매수",
-    description: "현재가보다 높은 지정가로 빠르게 진입합니다.",
+    type: "CHASE_BUY_SNAPSHOT",
+    title: "급등 추격 매수 위험",
+    description: "5분 고점 근처에서 시장가로 가용 KRW 절반 이상을 따라 삽니다.",
+    market: "KRW-SOL",
+    koreanName: "솔라나 급등",
     orderSide: "BUY",
-    orderType: "LIMIT",
-    amountMultiplier: 1.2,
-    priceMultiplier: 1.065,
+    orderType: "MARKET",
+    amountMultiplier: 5.2,
+    priceMultiplier: 1,
+    requestedBalanceRatio: 0.52,
+    orderbookClickToSnapshotMs: 2400,
     behaviorData: {
       is_max_button_clicked: false,
       client_avg_buy_amount: 500_000,
       buy_click_count_1m: 2,
-      input_edit_count: 2,
-      page_stay_duration: 32,
+      input_edit_count: 1,
+      page_stay_duration: 18,
     },
     recentOrders: [],
     marketData: {
-      price_change_rate_15m: 6.2,
-      volume_change_rate_1m: 340,
-      is_top3_volatility: false,
-      has_warning_badge: false,
+      price_change_rate_15m: 16,
+      price_change_rate_5m: 4.6,
+      signedChangeRate: 0.16,
+      shortTermReturn5m: 0.046,
+      pricePositionIn5mRange: 0.94,
+      spreadRate: 0.0009,
+      volumeSpikeRatio5m: 5.8,
+      volume_change_rate_1m: 580,
+      is_top3_volatility: true,
+      has_warning_badge: true,
     },
   },
   {
     key: 2,
-    type: "REVENGE_TRADING",
-    title: "손실 직후 복구 매매",
-    description: "최근 1시간 내 손절 뒤 더 큰 금액으로 재진입합니다.",
-    orderSide: "BUY",
+    type: "PANIC_SELL_SNAPSHOT",
+    title: "급락 공포 매도 위험",
+    description: "평균 매수가 아래로 급락한 코인을 시장가로 대부분 던집니다.",
+    market: "KRW-DOGE",
+    koreanName: "도지코인 급락",
+    orderSide: "SELL",
     orderType: "MARKET",
-    amountMultiplier: 2.4,
+    amountMultiplier: 0.075,
     priceMultiplier: 1,
+    requestedBalanceRatio: 0.9,
+    startingAvgBuyPrice: 144,
     behaviorData: {
-      is_max_button_clicked: false,
+      is_max_button_clicked: true,
       client_avg_buy_amount: 500_000,
-      buy_click_count_1m: 2,
-      input_edit_count: 2,
-      page_stay_duration: 48,
+      buy_click_count_1m: 0,
+      input_edit_count: 1,
+      page_stay_duration: 21,
     },
-    recentOrders: [
-      {
-        market: "__CURRENT__",
-        order_side: "SELL",
-        order_status: "DONE",
-        order_type: "MARKET",
-        order_price: null,
-        order_volume: 0.4,
-        order_amount: 1_750_000,
-        realized_loss_pct_1h: 7.4,
-        order_request_time: "__NOW_MINUS_10M__",
-        order_cancel_time: null,
-      },
-    ],
+    recentOrders: [],
     marketData: {
-      price_change_rate_15m: 0.8,
-      volume_change_rate_1m: 30,
-      is_top3_volatility: false,
-      has_warning_badge: false,
+      price_change_rate_15m: -12,
+      price_change_rate_5m: -4.2,
+      signedChangeRate: -0.12,
+      shortTermReturn5m: -0.042,
+      pricePositionIn5mRange: 0.08,
+      spreadRate: 0.0018,
+      volumeSpikeRatio5m: 4.4,
+      volume_change_rate_1m: 440,
+      is_top3_volatility: true,
+      has_warning_badge: true,
     },
   },
   {
     key: 3,
-    type: "HESITATION",
-    title: "반복 수정·취소",
-    description: "가격과 수량을 여러 번 고치고 주문을 반복 취소합니다.",
-    orderSide: "BUY",
-    orderType: "LIMIT",
-    amountMultiplier: 0.9,
-    priceMultiplier: 0.998,
-    behaviorData: {
-      is_max_button_clicked: false,
-      client_avg_buy_amount: 500_000,
-      buy_click_count_1m: 1,
-      input_edit_count: 9,
-      page_stay_duration: 165,
-    },
-    recentOrders: Array.from({ length: 3 }, (_, index) => ({
-      market: "__CURRENT__",
-      order_side: "BUY",
-      order_status: "CANCEL",
-      order_type: "LIMIT",
-      order_price: 149_000_000 + index * 250_000,
-      order_volume: 0.004,
-      order_amount: 596_000 + index * 1000,
-      realized_loss_pct_1h: null,
-      order_request_time: `__NOW_MINUS_${index + 1}M__`,
-      order_cancel_time: `__NOW_MINUS_${index + 1}M__`,
-    })),
-    marketData: {
-      price_change_rate_15m: 1.1,
-      volume_change_rate_1m: 25,
-      is_top3_volatility: false,
-      has_warning_badge: false,
-    },
-  },
-  {
-    key: 4,
-    type: "ALL_IN_IMPULSE",
-    title: "최대 금액 충동 매수",
-    description: "최대 버튼을 누르고 보유 원화 대부분을 주문합니다.",
+    type: "REPEAT_ORDER_SNAPSHOT",
+    title: "짧은 시간 반복 주문 위험",
+    description: "10분 안에 실제 주문 4건이 이미 쌓인 상태에서 다시 주문합니다.",
+    market: "KRW-XRP",
+    koreanName: "리플 과열",
     orderSide: "BUY",
     orderType: "MARKET",
-    amountMultiplier: 9.8,
+    amountMultiplier: 0.65,
     priceMultiplier: 1,
-    behaviorData: {
-      is_max_button_clicked: true,
-      client_avg_buy_amount: 500_000,
-      buy_click_count_1m: 1,
-      input_edit_count: 1,
-      page_stay_duration: 24,
-    },
-    recentOrders: [],
-    marketData: {
-      price_change_rate_15m: 6.1,
-      volume_change_rate_1m: 180,
-      is_top3_volatility: false,
-      has_warning_badge: false,
-    },
-  },
-  {
-    key: 5,
-    type: "AMOUNT_SPIKE",
-    title: "평소보다 큰 주문",
-    description: "최근 평균 매수 금액의 6배를 한 번에 주문합니다.",
-    orderSide: "BUY",
-    orderType: "LIMIT",
-    amountMultiplier: 3,
-    priceMultiplier: 1,
+    recentActualOrderCount10m: 4,
     behaviorData: {
       is_max_button_clicked: false,
       client_avg_buy_amount: 500_000,
       buy_click_count_1m: 1,
       input_edit_count: 2,
-      page_stay_duration: 92,
+      page_stay_duration: 44,
     },
     recentOrders: [],
     marketData: {
-      price_change_rate_15m: 0.6,
-      volume_change_rate_1m: 20,
+      price_change_rate_15m: 2.1,
+      price_change_rate_5m: 0.8,
+      signedChangeRate: 0.021,
+      shortTermReturn5m: 0.008,
+      pricePositionIn5mRange: 0.62,
+      spreadRate: 0.0007,
+      volumeSpikeRatio5m: 2.3,
+      volume_change_rate_1m: 230,
       is_top3_volatility: false,
       has_warning_badge: false,
     },
-  },
-  {
-    key: 6,
-    type: "MACHINE_GUN_TRADING",
-    title: "시장가 연속 매수",
-    description: "1분 안에 시장가 매수 버튼을 6회 누른 상태입니다.",
-    orderSide: "BUY",
-    orderType: "MARKET",
-    amountMultiplier: 0.45,
-    priceMultiplier: 1,
-    behaviorData: {
-      is_max_button_clicked: false,
-      client_avg_buy_amount: 500_000,
-      buy_click_count_1m: 6,
-      input_edit_count: 1,
-      page_stay_duration: 58,
-    },
-    recentOrders: [],
-    marketData: {
-      price_change_rate_15m: 2,
-      volume_change_rate_1m: 90,
-      is_top3_volatility: false,
-      has_warning_badge: false,
-    },
-  },
-  {
-    key: 7,
-    type: "HIGH_RISK_HOPPING",
-    title: "고변동 종목 급진입",
-    description: "실시간 변동률 상위 종목으로 이동해 곧바로 진입합니다.",
-    orderSide: "BUY",
-    orderType: "MARKET",
-    amountMultiplier: 1.4,
-    priceMultiplier: 1,
-    behaviorData: {
-      is_max_button_clicked: false,
-      client_avg_buy_amount: 500_000,
-      buy_click_count_1m: 2,
-      input_edit_count: 1,
-      page_stay_duration: 14,
-    },
-    recentOrders: [],
-    marketData: {
-      price_change_rate_15m: 3.4,
-      volume_change_rate_1m: 140,
-      is_top3_volatility: true,
-      has_warning_badge: true,
-    },
-    useVolatileMarket: true,
   },
 ];
 
@@ -402,6 +322,184 @@ function quoteFromPayload(payload: MarketPayload): Quote {
     askSize: firstUnit?.ask_size || Number.POSITIVE_INFINITY,
     bidSize: firstUnit?.bid_size || Number.POSITIVE_INFINITY,
   };
+}
+
+function scenarioBasePrice(scenario: DemoScenario) {
+  if (scenario.market === "KRW-DOGE") return 92;
+  if (scenario.market === "KRW-XRP") return 3780;
+  return 318_500;
+}
+
+function createScenarioCandles(scenario: DemoScenario, currentPrice: number) {
+  const shortReturn = scenario.marketData.shortTermReturn5m ?? 0;
+  const firstPrice = currentPrice / Math.max(0.1, 1 + shortReturn);
+  const direction = currentPrice >= firstPrice ? 1 : -1;
+
+  return Array.from({ length: 54 }, (_, index) => {
+    const progress = index / 53;
+    const wave = Math.sin(index / 3) * currentPrice * 0.004;
+    const acceleration = direction * currentPrice * 0.018 * progress * progress;
+    const tradePrice =
+      firstPrice + (currentPrice - firstPrice) * progress + wave + acceleration;
+    const normalizedTradePrice =
+      index === 53 ? currentPrice : Math.max(1, tradePrice);
+    const openingPrice =
+      normalizedTradePrice * (1 - direction * (0.002 + progress * 0.002));
+
+    return {
+      opening_price: Math.max(1, openingPrice),
+      high_price: Math.max(openingPrice, normalizedTradePrice) * 1.006,
+      low_price: Math.min(openingPrice, normalizedTradePrice) * 0.994,
+      trade_price: normalizedTradePrice,
+      candle_acc_trade_volume:
+        8 + index * (scenario.marketData.volumeSpikeRatio5m || 1),
+    };
+  });
+}
+
+function createScenarioOrderbook(currentPrice: number, direction: 1 | -1) {
+  const tick = currentPrice > 100_000 ? 100 : currentPrice > 1000 ? 1 : 0.01;
+
+  return {
+    total_ask_size: direction > 0 ? 8.2 : 21.4,
+    total_bid_size: direction > 0 ? 23.6 : 7.8,
+    orderbook_units: Array.from({ length: 10 }, (_, index) => ({
+      ask_price: currentPrice + tick * (index + 1),
+      bid_price: Math.max(tick, currentPrice - tick * (index + 1)),
+      ask_size: direction > 0 ? 0.18 + index * 0.07 : 1.4 + index * 0.19,
+      bid_size: direction > 0 ? 1.5 + index * 0.16 : 0.16 + index * 0.05,
+    })),
+  };
+}
+
+function applyScenarioMarketPayload(
+  payload: MarketPayload,
+  scenario: DemoScenario,
+): MarketPayload {
+  const currentPrice = scenarioBasePrice(scenario);
+  const direction = scenario.marketData.signedChangeRate &&
+    scenario.marketData.signedChangeRate < 0
+    ? -1
+    : 1;
+  const openingPrice = currentPrice /
+    Math.max(0.1, 1 + (scenario.marketData.signedChangeRate || 0));
+  const signedChangePrice = currentPrice - openingPrice;
+  const scenarioTicker = {
+    market: scenario.market,
+    korean_name: scenario.koreanName,
+    trade_price: currentPrice,
+    signed_change_price: signedChangePrice,
+    signed_change_rate: scenario.marketData.signedChangeRate || 0,
+    acc_trade_price_24h:
+      scenario.market === "KRW-DOGE" ? 840_000_000_000 : 1_240_000_000_000,
+    acc_trade_volume_24h:
+      scenario.market === "KRW-DOGE" ? 9_200_000_000 : 4_800_000,
+    high_price: currentPrice * (direction > 0 ? 1.02 : 1.18),
+    low_price: currentPrice * (direction > 0 ? 0.84 : 0.96),
+    opening_price: openingPrice,
+    has_warning_badge: scenario.marketData.has_warning_badge,
+  };
+  const otherMarkets = SCENARIOS.filter((item) => item.market !== scenario.market)
+    .map((item) => {
+      const tradePrice = scenarioBasePrice(item);
+      const rate = item.marketData.signedChangeRate || 0;
+      return {
+        market: item.market,
+        korean_name: item.koreanName,
+        trade_price: tradePrice,
+        signed_change_price: tradePrice * rate,
+        signed_change_rate: rate,
+        acc_trade_price_24h: 420_000_000_000,
+        acc_trade_volume_24h: 1_200_000,
+        high_price: tradePrice * 1.08,
+        low_price: tradePrice * 0.92,
+        opening_price: tradePrice / Math.max(0.1, 1 + rate),
+        has_warning_badge: item.marketData.has_warning_badge,
+      };
+    });
+
+  return {
+    ...payload,
+    market: scenario.market,
+    korean_name: scenario.koreanName,
+    ticker: scenarioTicker,
+    candles: createScenarioCandles(scenario, currentPrice),
+    orderbook: createScenarioOrderbook(currentPrice, direction),
+    top_markets: [scenarioTicker, ...otherMarkets],
+    volatile_market: scenario.market,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function createDemoRawOrders(
+  scenario: DemoScenario,
+  draft: OrderDraft,
+  currentPrice: number,
+): DemoOrder[] {
+  const now = Date.now();
+  const count = scenario.recentActualOrderCount10m || 0;
+
+  return Array.from({ length: count }, (_, index) => {
+    const createdAt = new Date(now - (index + 1) * 90_000).toISOString();
+    const side = index % 2 === 0 ? "bid" : "ask";
+    const volume = draft.volume || Math.max(1, draft.amount / currentPrice);
+    const funds = volume * currentPrice;
+
+    return {
+      uuid: `demo-repeat-${scenario.key}-${index + 1}`,
+      market: scenario.market,
+      side,
+      ord_type: side === "bid" ? "price" : "market",
+      state: "done",
+      price: side === "bid" ? String(Math.round(funds)) : null,
+      volume: side === "bid" ? null : String(volume),
+      remaining_volume: "0",
+      executed_volume: String(volume),
+      executed_funds: String(Math.round(funds)),
+      paid_fee: String(Math.round(funds * 0.0005)),
+      created_at: createdAt,
+      locked_funds: "0",
+    };
+  });
+}
+
+function createScenarioAccounts(
+  scenario: DemoScenario,
+  draft: OrderDraft,
+  currentPrice: number,
+) {
+  const symbol = scenario.market.split("-")[1] || scenario.market;
+  const krwBalance =
+    scenario.orderSide === "BUY" && scenario.requestedBalanceRatio
+      ? Math.round(draft.amount / scenario.requestedBalanceRatio)
+      : INITIAL_KRW_BALANCE;
+  const requestedSellRatio =
+    scenario.orderSide === "SELL" ? scenario.requestedBalanceRatio || 0.9 : 0;
+  const baseBalance =
+    scenario.orderSide === "SELL"
+      ? draft.volume / Math.max(0.01, requestedSellRatio)
+      : Math.max(0.01, draft.amount / currentPrice / 2);
+
+  return [
+    {
+      currency: "KRW",
+      balance: String(krwBalance),
+      locked: "0",
+      avg_buy_price: "0",
+      avg_buy_price_modified: false,
+      unit_currency: "KRW",
+    },
+    {
+      currency: symbol,
+      balance: String(Number(baseBalance.toFixed(8))),
+      locked: "0",
+      avg_buy_price: String(
+        scenario.startingAvgBuyPrice || Math.round(currentPrice * 0.92),
+      ),
+      avg_buy_price_modified: false,
+      unit_currency: "KRW",
+    },
+  ];
 }
 
 function selectMarketFromPayload(
@@ -936,11 +1034,12 @@ export default function TradingTerminal() {
 
   const runScenario = useCallback(
     (nextScenario: DemoScenario) => {
-      const targetMarket = nextScenario.useVolatileMarket
-        ? marketData.volatile_market
-        : market;
-      const nextData = selectMarketFromPayload(marketData, targetMarket);
-      const currentPrice = marketData.ticker.trade_price || 1;
+      const targetMarket = nextScenario.market;
+      const nextData = applyScenarioMarketPayload(
+        selectMarketFromPayload(marketData, targetMarket),
+        nextScenario,
+      );
+      const currentPrice = nextData.ticker.trade_price || 1;
       const nextPrice = Math.round(
         currentPrice * nextScenario.priceMultiplier,
       );
@@ -950,6 +1049,61 @@ export default function TradingTerminal() {
       const nextVolume = Number(
         (nextAmount / Math.max(nextPrice, 1)).toFixed(8),
       );
+      const recentOrders = normalizeRecentOrders(
+        nextScenario.recentOrders,
+        targetMarket,
+      );
+      const currentOrder = {
+        market: targetMarket,
+        order_side: nextScenario.orderSide,
+        order_status: "WAIT",
+        order_type: nextScenario.orderType,
+        order_price: nextScenario.orderType === "LIMIT" ? nextPrice : null,
+        order_volume: nextScenario.orderSide === "SELL" ||
+          nextScenario.orderType === "LIMIT"
+          ? nextVolume
+          : null,
+        order_amount: nextAmount,
+        realized_loss_pct_1h: null,
+        order_request_time: new Date().toISOString(),
+        order_cancel_time: null,
+      };
+      const draft: OrderDraft = {
+        market: targetMarket,
+        side: nextScenario.orderSide,
+        orderType: nextScenario.orderType,
+        price: nextPrice,
+        volume: nextVolume,
+        amount: nextAmount,
+      };
+      const accounts = createScenarioAccounts(
+        nextScenario,
+        draft,
+        currentPrice,
+      );
+      const rawClosedOrders = createDemoRawOrders(
+        nextScenario,
+        draft,
+        currentPrice,
+      );
+      const extensionHandled = dispatchExtensionEvent("saltbread:demo-scenario", {
+        id: nextScenario.key,
+        type: nextScenario.type,
+        title: nextScenario.title,
+        market: targetMarket,
+        behaviorData: nextScenario.behaviorData,
+        currentOrder,
+        recentOrders,
+        accounts,
+        rawClosedOrders,
+        rawOpenOrders: [],
+        clientAverageBuyAmount:
+          nextScenario.behaviorData.client_avg_buy_amount,
+        currentPrice: nextData.ticker.trade_price,
+        marketData: nextScenario.marketData,
+        orderbookClickToSnapshotMs: nextScenario.orderbookClickToSnapshotMs,
+        expiresAt: Date.now() + 180_000,
+      });
 
       setMarketData(nextData);
       setMarket(targetMarket);
@@ -959,6 +1113,20 @@ export default function TradingTerminal() {
       setPrice(String(nextPrice));
       setVolume(String(nextVolume));
       setAmount(String(nextAmount));
+      setPortfolio(() => ({
+        krw: {
+          balance: Number(accounts[0].balance),
+          locked: 0,
+        },
+        assets: {
+          [targetMarket.split("-")[1] || targetMarket]: {
+            balance: Number(accounts[1].balance),
+            locked: 0,
+            avgBuyPrice: Number(accounts[1].avg_buy_price),
+          },
+        },
+        orders: rawClosedOrders,
+      }));
       setActiveScenario(nextScenario.key);
       addDebugRecord("page", "behavior", "DEMO_SCENARIO_SELECTED", {
         id: nextScenario.key,
@@ -966,27 +1134,41 @@ export default function TradingTerminal() {
         title: nextScenario.title,
         market: targetMarket,
         behaviorData: nextScenario.behaviorData,
-        recentOrders: normalizeRecentOrders(
-          nextScenario.recentOrders,
-          targetMarket,
-        ),
+        currentOrder,
+        recentOrders,
+        accounts,
+        rawClosedOrders,
+        rawOpenOrders: [],
         clientAverageBuyAmount:
           nextScenario.behaviorData.client_avg_buy_amount,
-        currentPrice,
+        currentPrice: nextData.ticker.trade_price,
         marketData: nextScenario.marketData,
+        orderbookClickToSnapshotMs: nextScenario.orderbookClickToSnapshotMs,
+        extensionHandled,
       });
+      if (extensionHandled) {
+        setExtensionConnected(true);
+      }
       setToast({
-        message: `${nextScenario.key}번 · ${nextScenario.title} 입력값을 세팅했습니다.`,
+        message: extensionHandled
+          ? `${nextScenario.key}번 · ${nextScenario.title} 데이터를 확장과 연결했습니다.`
+          : `${nextScenario.key}번 · ${nextScenario.title} 입력값을 세팅했습니다.`,
         variant: "success",
       });
     },
-    [addDebugRecord, market, marketData],
+    [addDebugRecord, marketData],
   );
 
   const runDetectNow = useCallback(() => {
+    const handled = dispatchExtensionEvent("saltbread:detect-now");
+    if (handled) {
+      setExtensionConnected(true);
+    }
     setToast({
-      message: "데모 페이지에서는 확장 프로그램 감지를 실행하지 않습니다.",
-      variant: "error",
+      message: handled
+        ? "8번 · 확장 프로그램 즉시 감지를 실행했습니다."
+        : "확장 프로그램이 연결되지 않았습니다.",
+      variant: handled ? "success" : "error",
     });
   }, []);
 
@@ -1300,8 +1482,10 @@ export default function TradingTerminal() {
               <Chart candles={marketData.candles} />
               <div className="chart-axis">
                 {[ticker.high_price, ticker.trade_price, ticker.low_price].map(
-                  (value) => (
-                    <span key={value}>{formatNumber(value)}</span>
+                  (value, index) => (
+                    <span key={`axis-price-${index}`}>
+                      {formatNumber(value)}
+                    </span>
                   ),
                 )}
               </div>
@@ -1701,10 +1885,10 @@ export default function TradingTerminal() {
               <b>+</b>
               <kbd>Shift</kbd>
               <b>+</b>
-              <kbd>1–9</kbd>
+              <kbd>1–3</kbd>
             </div>
             <p>
-              1–7은 입력 세팅, 8은 확장 감지 차단 확인, 9는 초기화입니다.
+              1–3은 표 기준 데모 패턴, 8은 확장 감지 실행, 9는 초기화입니다.
             </p>
             <div className="scenario-list">
               {SCENARIOS.map((item) => (
@@ -1726,8 +1910,8 @@ export default function TradingTerminal() {
               <button type="button" onClick={runDetectNow}>
                 <kbd>8</kbd>
                 <span>
-                  <strong>감지 차단 확인</strong>
-                  <em>NO_DEMO_EXTENSION_DATA</em>
+                  <strong>확장 감지 실행</strong>
+                  <em>RUN_EXTENSION_DETECTION</em>
                 </span>
               </button>
               <button type="button" onClick={resetDemo}>
@@ -1739,9 +1923,9 @@ export default function TradingTerminal() {
               </button>
             </div>
             <div className="demo-current">
-              <span>API 전용 데모</span>
-              <strong>화면 입력값은 변경되지 않습니다</strong>
-              <p>1–7 선택 시 화면 입력값만 바꾸고 확장에는 데이터를 보내지 않습니다.</p>
+              <span>EXTENSION READY</span>
+              <strong>데모 입력값과 확장 수집값을 비교합니다</strong>
+              <p>1–3 선택 후 주문 버튼을 누르면 확장 수집 DTO가 아래 로그에 표시됩니다.</p>
             </div>
           </section>
         </aside>

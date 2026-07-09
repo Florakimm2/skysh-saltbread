@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ko">
+<html lang="ko" data-view="loading">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8,7 +8,24 @@
   </head>
   <body>
     <main class="popup">
-      <section id="signed-out-view" class="signed-out-view">
+      <section
+        id="loading-view"
+        class="loading-view"
+        aria-live="polite"
+      >
+        <img
+          class="loading-view__icon"
+          src="icon-128.png"
+          alt=""
+          width="72"
+          height="72"
+        />
+        <div class="loading-view__spinner" aria-hidden="true"></div>
+        <h1>불씨</h1>
+        <p>로그인 상태를 확인하고 있어요.</p>
+      </section>
+
+      <section id="signed-out-view" class="signed-out-view" hidden>
         <img
           class="signed-out-view__icon"
           src="icon-128.png"
@@ -42,6 +59,14 @@
         </header>
 
         <h1 id="account-greeting" class="account-greeting"></h1>
+        <button
+          id="open-onboarding-button"
+          class="primary-button onboarding-button"
+          type="button"
+          hidden
+        >
+          온보딩으로 이동
+        </button>
 
         <section class="summary-card" aria-labelledby="summary-title">
           <p class="card-eyebrow">나의 불씨</p>

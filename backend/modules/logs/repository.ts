@@ -2,6 +2,7 @@
 
 import { randomUUID } from "crypto";
 import { Timestamp } from "firebase-admin/firestore";
+import { ApiError } from "@/backend/common/api";
 import { adminDb } from "@/backend/infrastructure/firebase/firebase-admin";
 import type {
   ConfirmedTradeLogDTO,
@@ -369,8 +370,27 @@ export async function createOrderContextSnapshot(params: {
   userId: string;
   input: Record<string, unknown>;
 }) {
-  const snapshotId = randomUUID();
+  const requestedSnapshotId =
+    typeof params.input.snapshotId === "string"
+      ? params.input.snapshotId
+      : null;
+  const snapshotId = requestedSnapshotId || randomUUID();
   const now = new Date().toISOString();
+  const existing = await snapshotsRef.doc(snapshotId).get();
+
+  if (existing.exists) {
+    const data = existing.data() ?? {};
+
+    if (data.userId === params.userId) {
+      return snapshotDocToDTO(snapshotId, data);
+    }
+
+    throw new ApiError(
+      409,
+      "SNAPSHOT_ID_CONFLICT",
+      "이미 다른 사용자에게 저장된 snapshotId입니다."
+    );
+  }
 
   const data = prepareFirestoreData({
     snapshotId,

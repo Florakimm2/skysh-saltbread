@@ -92,16 +92,12 @@ function createHarness() {
       mapUpbitOrder(order) {
         return order;
       },
-      resolveFlameMode() {
-        return "default";
-      },
     },
     SALTBREAD_CONFIG: {
       appUrl: "https://example.com",
       appOrigins: ["https://example.com"],
       apiBaseUrl: "https://example.com",
       dashboardUrl: "https://example.com/dashboard",
-      detectPath: "/api/ext/detect",
       behaviorEventsPath: "/api/behavior/events",
       upbitApiBaseUrl: "https://api.upbit.com",
     },

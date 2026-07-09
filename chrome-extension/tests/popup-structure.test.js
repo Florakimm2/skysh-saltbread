@@ -18,6 +18,18 @@ const contentScript = fs.readFileSync(
   "utf8",
 );
 
+test("팝업은 profile 확인 전 로딩 화면으로 시작한다", () => {
+  assert.match(popupHtml, /<html lang="ko" data-view="loading">/);
+  assert.match(popupHtml, /id="loading-view"/);
+  assert.match(popupHtml, /로그인 상태를 확인하고 있어요/);
+  assert.match(popupHtml, /id="signed-out-view" class="signed-out-view" hidden/);
+  assert.match(popupScript, /function showLoading\(\)/);
+  assert.match(
+    popupScript,
+    /showLoading\(\);[\s\S]*sendBackgroundMessage\("GET_AUTH_STATE"\)/,
+  );
+});
+
 test("비로그인 팝업은 불씨 브랜드와 분리된 로그인·회원가입 버튼을 제공한다", () => {
   const signedOutView = popupHtml.match(
     /<section id="signed-out-view"[\s\S]*?<\/section>/,
@@ -50,10 +62,20 @@ test("Upbit 연동 카드는 접근 가능한 접힘 상태로 시작한다", ()
   );
 });
 
-test("사이드바 표시 조건에 행동 데이터 동의를 요구하지 않는다", () => {
-  assert.doesNotMatch(contentScript, /behaviorDataConsent|CONSENT_STORAGE_KEY/);
+test("사이드바 표시 조건은 거래 화면과 온보딩 완료를 요구한다", () => {
   assert.match(
     contentScript,
-    /if \(!isDashboardPage\(\) && isLoggedIn\(auth\)\)/,
+    /return isDemoPage\(\) \|\| isUpbitExchangePage\(\);/,
   );
+  assert.match(contentScript, /personalDataConsentAgreed/);
+  assert.match(contentScript, /onboardingCompleted/);
+  assert.match(contentScript, /canShowPanel\(auth\)/);
+  assert.doesNotMatch(contentScript, /saltbread-metric-card/);
+  assert.match(contentScript, /설정된 가드레일/);
+});
+
+test("온보딩 미완료 계정에는 온보딩 CTA를 제공한다", () => {
+  assert.match(popupHtml, /id="open-onboarding-button"/);
+  assert.match(popupScript, /개인정보 동의와 온보딩을 완료해 주세요/);
+  assert.match(popupScript, /OPEN_ONBOARDING/);
 });
