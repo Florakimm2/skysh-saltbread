@@ -36,11 +36,90 @@ const MARKET_DETAILS_CACHE_MS = 10 * 60 * 1000;
 const DETECTION_MARKET_CACHE_MS = 2 * 60 * 1000;
 const SNAPSHOT_REFRESH_PERIOD_MINUTES = 0.5;
 const LOG_SAVE_RETRY_DELAYS_MS = [500, 1_500];
+const BACKGROUND_ORDER_DEBUG_KEY = "saltbread:upbit-order-debug";
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 let publicRequestQueue = Promise.resolve();
 let lastPublicRequestAt = 0;
 const loggedGuardrailRuleUsers = new Set();
+let backgroundOrderDebugEnabled = true;
+
+function isSensitiveDebugKey(key) {
+  return /(?:access[_-]?token|refresh[_-]?token|authorization|access[_-]?key|secret[_-]?key|api[_-]?key|firebase[_-]?token|bearer)/i.test(
+    String(key || ""),
+  );
+}
+
+function sanitizeDebugPayload(value, seen = new WeakSet()) {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  if (typeof value !== "object") {
+    return value;
+  }
+
+  if (seen.has(value)) {
+    return "[Circular]";
+  }
+
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    const sanitizedArray = value.map((item) => sanitizeDebugPayload(item, seen));
+    seen.delete(value);
+    return sanitizedArray;
+  }
+
+  const sanitizedObject = Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      isSensitiveDebugKey(key)
+        ? "[REDACTED]"
+        : sanitizeDebugPayload(item, seen),
+    ]),
+  );
+  seen.delete(value);
+  return sanitizedObject;
+}
+
+function debugBackgroundOrder(eventName, payload = {}) {
+  if (!backgroundOrderDebugEnabled) {
+    return;
+  }
+
+  const safePayload = sanitizeDebugPayload(payload);
+
+  try {
+    console.groupCollapsed(`🔥 [불씨][BACKGROUND_ORDER] ${eventName}`);
+    console.log(safePayload);
+    console.trace();
+    console.groupEnd();
+  } catch {
+    console.log(`[불씨][BACKGROUND_ORDER] ${eventName}`, safePayload);
+  }
+}
+
+function loadBackgroundOrderDebugFlag() {
+  try {
+    chrome.storage?.local?.get(BACKGROUND_ORDER_DEBUG_KEY).then((store) => {
+      const value = store?.[BACKGROUND_ORDER_DEBUG_KEY];
+      backgroundOrderDebugEnabled = value !== false && value !== "false";
+    });
+  } catch {
+    backgroundOrderDebugEnabled = true;
+  }
+}
+
+loadBackgroundOrderDebugFlag();
+chrome.storage?.onChanged?.addListener?.((changes, areaName) => {
+  if (areaName !== "local" || !changes[BACKGROUND_ORDER_DEBUG_KEY]) {
+    return;
+  }
+
+  const value = changes[BACKGROUND_ORDER_DEBUG_KEY].newValue;
+  backgroundOrderDebugEnabled = value !== false && value !== "false";
+});
 
 function normalizeAllowedAppOrigin(value) {
   if (!value || typeof value !== "string") {
@@ -129,6 +208,24 @@ async function resolveCurrentAppOrigin() {
     .find(Boolean);
 
   return mostRecentOrigin || normalizeAllowedAppOrigin(APP_URL) || APP_URL;
+}
+
+function createDashboardUrl(appOrigin, path = "/dashboard") {
+  try {
+    const appUrl = new URL(appOrigin);
+    const url = new URL(
+      typeof path === "string" && path ? path : "/dashboard",
+      appUrl.origin,
+    );
+
+    if (url.origin !== appUrl.origin || !url.pathname.startsWith("/dashboard")) {
+      return new URL("/dashboard", appUrl.origin).toString();
+    }
+
+    return url.toString();
+  } catch {
+    return `${appOrigin}/dashboard`;
+  }
 }
 
 async function readRefreshCookie(appOrigin) {
@@ -662,6 +759,21 @@ async function postBackendLog(path, payload, existingAuth = null) {
   });
 }
 
+async function fetchUserStats() {
+  const auth = await getValidBackendAuth();
+
+  if (!auth?.accessToken) {
+    const error = new Error("로그인이 필요합니다.");
+    error.status = 401;
+    throw error;
+  }
+
+  return fetchJson(`${getAuthApiBase(auth)}/api/me/stats`, {
+    method: "GET",
+    headers: createBackendHeaders(auth),
+  });
+}
+
 async function patchBackendLog(path, payload, existingAuth = null) {
   const auth = existingAuth || (await getValidBackendAuth());
 
@@ -934,10 +1046,19 @@ function orderMatchesAttemptIntent(order, attemptContext = {}) {
 }
 
 function resolveAttemptMatchedOrderUuid(orderData, attemptContext = {}) {
+  const scopedOrderData = scopeOrderDataToMarket(
+    orderData,
+    attemptContext.market ||
+      attemptContext.currentOrder?.market ||
+      attemptContext.orderContextSnapshot?.market ||
+      orderData?.market,
+  );
   const orders = [
-    ...(orderData?.rawOpenOrders || []),
-    ...(orderData?.rawClosedOrders || []),
-  ].filter((order) => order?.uuid && orderMatchesAttemptIntent(order, attemptContext));
+    ...(scopedOrderData?.rawOpenOrders || []),
+    ...(scopedOrderData?.rawClosedOrders || []),
+  ].filter(
+    (order) => order?.uuid && orderMatchesAttemptIntent(order, attemptContext),
+  );
 
   if (orders.length !== 1) {
     return null;
@@ -1287,8 +1408,16 @@ async function validateUpbitCredentials(credentials) {
 
 async function collectOrderData(market) {
   const credentials = await decryptCredentials();
-  const [closedOrders, openOrders, accounts] = await Promise.all([
-    fetchPrivateUpbit("/v1/orders/closed", [], credentials),
+  const [rawClosedOrders, rawOpenOrders, accounts] = await Promise.all([
+    fetchPrivateUpbit(
+      "/v1/orders/closed",
+      [
+        ["market", market],
+        ["limit", "100"],
+        ["order_by", "desc"],
+      ],
+      credentials,
+    ),
     fetchPrivateUpbit(
       "/v1/orders/open",
       [
@@ -1302,6 +1431,8 @@ async function collectOrderData(market) {
     ),
     fetchPrivateUpbit("/v1/accounts", [], credentials),
   ]);
+  const closedOrders = filterOrdersByMarket(rawClosedOrders, market);
+  const openOrders = filterOrdersByMarket(rawOpenOrders, market);
   const averageBuyPrices = Object.fromEntries(
     accounts.map((account) => [account.currency, account.avg_buy_price]),
   );
@@ -1329,28 +1460,64 @@ async function collectOrderData(market) {
   return collected;
 }
 
+function filterOrdersByMarket(orders, market) {
+  if (!Array.isArray(orders)) {
+    return [];
+  }
+
+  if (!market) {
+    return orders;
+  }
+
+  return orders.filter((order) => order?.market === market);
+}
+
+function scopeOrderDataToMarket(orderData, market = orderData?.market) {
+  if (!orderData || !market) {
+    return orderData || {};
+  }
+
+  return {
+    ...orderData,
+    market,
+    rawClosedOrders: filterOrdersByMarket(orderData.rawClosedOrders, market),
+    rawOpenOrders: filterOrdersByMarket(orderData.rawOpenOrders, market),
+    recentOrders: filterOrdersByMarket(orderData.recentOrders, market),
+  };
+}
+
 function toPersonalSnapshot(orderData, market) {
-  if (!orderData?.privateDataAvailable && orderData?.privateDataAvailable !== undefined) {
+  const scopedOrderData = scopeOrderDataToMarket(
+    orderData,
+    market || orderData?.market,
+  );
+
+  if (
+    !scopedOrderData?.privateDataAvailable &&
+    scopedOrderData?.privateDataAvailable !== undefined
+  ) {
     return null;
   }
 
-  const fetchedAt = orderData?.collected_at || new Date().toISOString();
+  const fetchedAt = scopedOrderData?.collected_at || new Date().toISOString();
   const fetchedAtMs = Date.parse(fetchedAt);
-  const baseCurrency = String(market || orderData?.market || "").split("-")[1];
-  const baseAccount = (orderData?.accounts || []).find(
+  const baseCurrency = String(market || scopedOrderData?.market || "").split(
+    "-",
+  )[1];
+  const baseAccount = (scopedOrderData?.accounts || []).find(
     (account) => account.currency === baseCurrency,
   );
 
   return {
-    market: orderData?.market || market,
-    balances: orderData?.accounts || [],
-    openOrders: orderData?.rawOpenOrders || [],
-    recentOrders: orderData?.recentOrders || [],
-    recentTrades: orderData?.rawClosedOrders || [],
+    market: scopedOrderData?.market || market,
+    balances: scopedOrderData?.accounts || [],
+    openOrders: scopedOrderData?.rawOpenOrders || [],
+    recentOrders: scopedOrderData?.recentOrders || [],
+    recentTrades: scopedOrderData?.rawClosedOrders || [],
     baseAssetAvgBuyPrice: baseAccount?.avg_buy_price
       ? String(baseAccount.avg_buy_price)
       : null,
-    actualOrderCreatedCount10m: countActualOrders10m(orderData),
+    actualOrderCreatedCount10m: countActualOrders10m(scopedOrderData),
     fetchedAt,
     freshnessMs: Number.isFinite(fetchedAtMs) ? Date.now() - fetchedAtMs : 0,
     source: "extension-private-cache",
@@ -1389,25 +1556,30 @@ async function collectOrderDataForDetection(market) {
 
 function createDemoOrderData(context = {}) {
   const demoData = context.demoData || {};
+  const market = context.market || demoData.market || null;
+  const withMarket = (orders) =>
+    Array.isArray(orders)
+      ? orders.map((order) =>
+          order && market && !order.market ? { ...order, market } : order,
+        )
+      : [];
 
   return {
     market: context.market,
-    recentOrders: Array.isArray(demoData.recentOrders)
-      ? demoData.recentOrders
-      : [],
+    recentOrders: withMarket(demoData.recentOrders),
     clientAverageBuyAmount:
       demoData.clientAverageBuyAmount ??
       context.behaviorData?.client_avg_buy_amount ??
       null,
     accounts: Array.isArray(demoData.accounts) ? demoData.accounts : [],
-    rawClosedOrders: Array.isArray(demoData.rawClosedOrders)
-      ? demoData.rawClosedOrders
-      : [],
-    rawOpenOrders: Array.isArray(demoData.rawOpenOrders)
-      ? demoData.rawOpenOrders
-      : [],
+    rawClosedOrders: withMarket(demoData.rawClosedOrders),
+    rawOpenOrders: withMarket(demoData.rawOpenOrders),
     collected_at: new Date().toISOString(),
+    updatedAt: demoData.updatedAt || null,
     privateDataAvailable: false,
+    personalDataSource: "demo-data",
+    demoPersonalAvailable: true,
+    isDemoPersonalData: true,
   };
 }
 
@@ -1453,7 +1625,7 @@ async function resolveActiveTradingMarket() {
     active: true,
     currentWindow: true,
   });
-  const activeTab = activeTabs.find((tab) => isCollectableTradingUrl(tab.url));
+  const activeTab = activeTabs.find((tab) => isUpbitExchangeUrl(tab.url));
 
   if (!activeTab?.url) {
     return null;
@@ -1472,6 +1644,39 @@ function requestSnapshotRefresh(market) {
     .catch(() => null);
 
   return refreshTask;
+}
+
+function createDemoCacheDebug(context, resolvedMarket, marketData, orderData) {
+  const demoData = context?.demoData || null;
+  const demoMarket = demoData?.market || demoData?.marketData?.market || null;
+  const demoMarketCacheKeys = demoMarket ? [demoMarket] : [];
+  const hasMarketFields = Boolean(
+    marketData?.current_price !== null &&
+      marketData?.current_price !== undefined &&
+      marketData?.tradePriceAtSnapshot,
+  );
+  const hasPersonalFields = Boolean(
+    orderData?.personalDataSource === "demo-data" &&
+      ((orderData.accounts || []).length ||
+        (orderData.recentOrders || []).length ||
+        (orderData.rawClosedOrders || []).length ||
+        (orderData.rawOpenOrders || []).length),
+  );
+
+  return {
+    hasDemoMarketCache: Boolean(demoData?.marketData),
+    demoMarketCacheKeys,
+    hasDemoMarketForResolvedMarket:
+      Boolean(resolvedMarket) && demoMarketCacheKeys.includes(resolvedMarket),
+    hasDemoMarketFields: hasMarketFields,
+    hasDemoPersonalCache: Boolean(demoData),
+    demoPersonalCacheKeys: demoMarketCacheKeys,
+    hasDemoPersonalForResolvedMarket:
+      Boolean(resolvedMarket) && demoMarketCacheKeys.includes(resolvedMarket),
+    hasDemoPersonalFields: hasPersonalFields,
+    latestDemoStateMarket: demoMarket,
+    latestDemoStateUpdatedAt: demoData?.updatedAt || null,
+  };
 }
 
 async function sendTabMessage(tabId, message) {
@@ -1499,6 +1704,11 @@ async function callDetectionApi(
       : marketData;
 
   if (!normalizedContext.currentOrder || !normalizedContext.behaviorData) {
+    debugBackgroundOrder("BACKGROUND_DETECTION_API_RESPONSE", {
+      skipped: true,
+      reason: "missing_current_order_or_behavior_data",
+      context: normalizedContext,
+    });
     return null;
   }
 
@@ -1507,6 +1717,12 @@ async function callDetectionApi(
   const isUpbitExchange = isUpbitExchangeUrl(pageUrl);
 
   if (!isDemo && !isUpbitExchange) {
+    debugBackgroundOrder("BACKGROUND_DETECTION_API_RESPONSE", {
+      skipped: true,
+      reason: "unsupported_page",
+      pageUrl,
+      context: normalizedContext,
+    });
     return null;
   }
 
@@ -1516,6 +1732,12 @@ async function callDetectionApi(
   ]);
 
   if (!isDemo && !auth?.accessToken) {
+    debugBackgroundOrder("BACKGROUND_DETECTION_API_RESPONSE", {
+      skipped: true,
+      reason: "missing_backend_auth",
+      pageUrl,
+      market: normalizedContext.market,
+    });
     return null;
   }
 
@@ -1525,7 +1747,11 @@ async function callDetectionApi(
       ? createDemoOrderData(normalizedContext)
       : orderDataCache[normalizedContext.market] ||
         createDemoOrderData(normalizedContext));
-  const recentOrders = orderData?.recentOrders || [];
+  const scopedOrderData = scopeOrderDataToMarket(
+    orderData,
+    normalizedContext.market,
+  );
+  const recentOrders = scopedOrderData?.recentOrders || [];
   const lastLoss = recentOrders.find(
     (order) =>
       order.order_side === "SELL" &&
@@ -1543,12 +1769,20 @@ async function callDetectionApi(
     behavior_data: {
       ...normalizedContext.behaviorData,
       client_avg_buy_amount:
-        orderData
-          ? orderData.clientAverageBuyAmount ?? null
+        scopedOrderData
+          ? scopedOrderData.clientAverageBuyAmount ?? null
           : normalizedContext.behaviorData.client_avg_buy_amount ?? null,
     },
     recent_orders: recentOrders,
   };
+  debugBackgroundOrder("BACKGROUND_DETECTION_API_REQUEST", {
+    tabId,
+    pageUrl,
+    market: normalizedContext.market,
+    requestBody,
+    orderContextSnapshot: normalizedContext.orderContextSnapshot || null,
+    options,
+  });
 
   const behaviorEvent = {
     ...(normalizedContext.sessionId ? { sessionId: normalizedContext.sessionId } : {}),
@@ -1591,25 +1825,52 @@ async function callDetectionApi(
   const orderContextSnapshot = enrichOrderContextSnapshot(
     normalizedContext,
     normalizedMarketData,
-    orderData,
+    scopedOrderData,
   );
   const expectedMarket = initialMarketResolution.market || orderContextSnapshot.market;
   const actualMarkets = {
     orderContextMarket: orderContextSnapshot.market || null,
     marketDataMarket: normalizedMarketData?.market || null,
     currentOrderMarket: normalizedContext.currentOrder?.market || null,
-    orderDataMarket: orderData?.market || null,
+    orderDataMarket: scopedOrderData?.market || null,
   };
   const relevantMarkets = Object.values(actualMarkets).filter(Boolean);
   const mismatchedMarket = relevantMarkets.find(
     (market) => expectedMarket && market !== expectedMarket,
   );
   const marketMismatch = Boolean(mismatchedMarket);
+  const demoCacheDebug = isDemo
+    ? createDemoCacheDebug(
+        normalizedContext,
+        expectedMarket,
+        normalizedMarketData,
+        scopedOrderData,
+      )
+    : null;
+  if (isDemo && !demoCacheDebug?.hasDemoMarketFields) {
+    debugBackgroundOrder("DEMO_MARKET_SNAPSHOT_CACHE_MISS", {
+      resolvedMarket: expectedMarket || null,
+      demoMarketCacheKeys: demoCacheDebug?.demoMarketCacheKeys || [],
+      demoPersonalCacheKeys: demoCacheDebug?.demoPersonalCacheKeys || [],
+      latestDemoStateMarket: demoCacheDebug?.latestDemoStateMarket || null,
+      latestDemoStateUpdatedAt: demoCacheDebug?.latestDemoStateUpdatedAt || null,
+    });
+  }
+  if (isDemo && !demoCacheDebug?.hasDemoPersonalFields) {
+    debugBackgroundOrder("DEMO_PERSONAL_SNAPSHOT_CACHE_MISS", {
+      resolvedMarket: expectedMarket || null,
+      demoMarketCacheKeys: demoCacheDebug?.demoMarketCacheKeys || [],
+      demoPersonalCacheKeys: demoCacheDebug?.demoPersonalCacheKeys || [],
+      latestDemoStateMarket: demoCacheDebug?.latestDemoStateMarket || null,
+      latestDemoStateUpdatedAt: demoCacheDebug?.latestDemoStateUpdatedAt || null,
+    });
+  }
   const marketDebugFields = {
     marketResolutionTrace: initialMarketResolution.trace,
     marketDataSource:
       normalizedMarketData?.source ||
       (isDemo ? "demo-data" : "cache"),
+    ...(demoCacheDebug ? { demoCacheDebug } : {}),
     marketMismatch,
     expectedMarket: expectedMarket || null,
     actualMarket:
@@ -1625,14 +1886,11 @@ async function callDetectionApi(
       ...marketDebugFields,
       behavior: normalizedContext.behaviorData || null,
       market: normalizedMarketData,
-      personal: {
-        privateDataAvailable: orderData?.privateDataAvailable ?? null,
-        accounts: orderData?.accounts || [],
-        confirmedTradeLogs: [],
-        orderOutcomePatches: [],
+      personal: createPersonalDebugSnapshot(
+        scopedOrderData,
+        orderContextSnapshot,
         recentOrders,
-        clientAverageBuyAmount: orderData?.clientAverageBuyAmount ?? null,
-      },
+      ),
       orderContext: orderContextSnapshot,
       ruleEvaluation: {
         source: rulesState.source,
@@ -1647,7 +1905,7 @@ async function callDetectionApi(
       },
     });
     await behaviorSaveTask;
-    return {
+    const mismatchResult = {
       detected: false,
       type: "USER_GUARDRAIL_RULE",
       message: "시장 데이터가 현재 주문 종목과 달라 가드레일 평가를 건너뛰었습니다.",
@@ -1661,6 +1919,13 @@ async function callDetectionApi(
         skippedReason: "MARKET_MISMATCH",
       },
     };
+    debugBackgroundOrder("BACKGROUND_DETECTION_API_RESPONSE", {
+      tabId,
+      pageUrl,
+      market: normalizedContext.market,
+      response: mismatchResult,
+    });
+    return mismatchResult;
   }
   const ruleEvaluation = evaluateGuardrailRules(
     rulesState.rules,
@@ -1679,17 +1944,11 @@ async function callDetectionApi(
     ...marketDebugFields,
     behavior: normalizedContext.behaviorData || null,
     market: normalizedMarketData,
-    personal: {
-      privateDataAvailable: orderData?.privateDataAvailable ?? null,
-      accounts: orderData?.accounts || [],
-      confirmedTradeLogs: toConfirmedTradeLogs(
-        orderData,
-        orderContextSnapshot.attemptId,
-      ),
-      orderOutcomePatches: toOrderOutcomePatches(orderData),
-      recentOrders: recentOrders,
-      clientAverageBuyAmount: orderData?.clientAverageBuyAmount ?? null,
-    },
+    personal: createPersonalDebugSnapshot(
+      scopedOrderData,
+      orderContextSnapshot,
+      recentOrders,
+    ),
     orderContext: evaluatedSnapshot,
     ruleEvaluation: {
       source: rulesState.source,
@@ -1728,6 +1987,7 @@ async function callDetectionApi(
         type: ruleResult.type,
         orderSide: context.currentOrder.order_side,
         primaryRuleId: ruleEvaluation.primaryRuleId,
+        attemptId: evaluatedSnapshot.attemptId || null,
         updatedAt: new Date().toISOString(),
       },
     });
@@ -1736,6 +1996,12 @@ async function callDetectionApi(
       payload: ruleResult,
     });
     await behaviorSaveTask;
+    debugBackgroundOrder("BACKGROUND_DETECTION_API_RESPONSE", {
+      tabId,
+      pageUrl,
+      market: normalizedContext.market,
+      response: ruleResult,
+    });
     return ruleResult;
   }
 
@@ -1757,6 +2023,7 @@ async function callDetectionApi(
       detected: false,
       type: safeResult.type,
       orderSide: context.currentOrder.order_side,
+      attemptId: evaluatedSnapshot.attemptId || null,
       updatedAt: new Date().toISOString(),
     },
   });
@@ -1765,6 +2032,12 @@ async function callDetectionApi(
     payload: safeResult,
   });
   await behaviorSaveTask;
+  debugBackgroundOrder("BACKGROUND_DETECTION_API_RESPONSE", {
+    tabId,
+    pageUrl,
+    market: normalizedContext.market,
+    response: safeResult,
+  });
   return safeResult;
 }
 
@@ -1791,6 +2064,8 @@ async function getMarketDataForContext(context) {
       demoMarketData.tradePriceAtSnapshot,
       demoMarketData.currentPrice,
       demoMarketData.current_price,
+      demoMarketData.ticker?.trade_price,
+      demoMarketData.ticker?.tradePrice,
     ),
   );
 
@@ -1812,6 +2087,8 @@ async function getMarketDataForContext(context) {
       signedChangeRate:
         demoMarketData.signedChangeRate ??
         demoMarketData.signed_change_rate ??
+        demoMarketData.ticker?.signed_change_rate ??
+        demoMarketData.ticker?.signedChangeRate ??
         demoMarketData.price_change_rate_15m_decimal ??
         percentageLikeToRatio(demoMarketData.price_change_rate_15m) ??
         null,
@@ -1934,9 +2211,11 @@ function getAccount(accounts, currency) {
 }
 
 function countActualOrders10m(orderData, now = Date.now()) {
+  const scopedOrderData = scopeOrderDataToMarket(orderData);
+
   return [
-    ...(orderData?.rawClosedOrders || []),
-    ...(orderData?.rawOpenOrders || []),
+    ...(scopedOrderData?.rawClosedOrders || []),
+    ...(scopedOrderData?.rawOpenOrders || []),
   ].filter((order) => {
     const createdAt = Date.parse(order.created_at || "");
     return Number.isFinite(createdAt) && now - createdAt <= 10 * 60_000;
@@ -1968,6 +2247,9 @@ function enrichOrderContextSnapshot(context, marketData, orderData = {}) {
     (available && requested !== null
       ? Math.max(0, Math.min(1, requested / available))
       : null);
+  const isDemoPersonalData =
+    orderData?.personalDataSource === "demo-data" ||
+    orderData?.isDemoPersonalData;
 
   return {
     snapshotId: base.snapshotId || crypto.randomUUID(),
@@ -1995,7 +2277,7 @@ function enrichOrderContextSnapshot(context, marketData, orderData = {}) {
       base.orderIntentCount1m ?? context.behaviorData?.buy_click_count_1m ?? 0,
     actualOrderCreatedCount10m:
       base.actualOrderCreatedCount10m ??
-      (orderData?.privateDataAvailable === false
+      (orderData?.privateDataAvailable === false && !isDemoPersonalData
         ? null
         : countActualOrders10m(orderData, now)),
     sameSideIntentCount1m:
@@ -2040,9 +2322,10 @@ function enrichOrderContextSnapshot(context, marketData, orderData = {}) {
 }
 
 function toConfirmedTradeLogs(orderData, attemptId = null) {
+  const scopedOrderData = scopeOrderDataToMarket(orderData);
   const orders = [
-    ...(orderData?.rawOpenOrders || []),
-    ...(orderData?.rawClosedOrders || []),
+    ...(scopedOrderData?.rawOpenOrders || []),
+    ...(scopedOrderData?.rawClosedOrders || []),
   ];
 
   return orders
@@ -2072,9 +2355,10 @@ function toConfirmedTradeLogs(orderData, attemptId = null) {
 }
 
 function toOrderOutcomePatches(orderData) {
+  const scopedOrderData = scopeOrderDataToMarket(orderData);
   const orders = [
-    ...(orderData?.rawOpenOrders || []),
-    ...(orderData?.rawClosedOrders || []),
+    ...(scopedOrderData?.rawOpenOrders || []),
+    ...(scopedOrderData?.rawClosedOrders || []),
   ];
 
   return orders
@@ -2091,6 +2375,16 @@ function toOrderOutcomePatches(orderData) {
 }
 
 async function sendDtoDebugSnapshot(tabId, payload) {
+  debugBackgroundOrder("DTO_DEBUG_SNAPSHOT", {
+    tabId,
+    attemptId: payload?.orderContext?.attemptId || null,
+    orderContextSnapshot: payload?.orderContext || null,
+    marketSnapshot: payload?.market || null,
+    personalSnapshot: payload?.personal || null,
+    ruleEvaluation: payload?.ruleEvaluation || null,
+    matchedRules: payload?.ruleEvaluation?.matchedRules || [],
+    primaryRule: payload?.ruleEvaluation?.primaryRule || null,
+  });
   await sendTabMessage(tabId, {
     type: "DTO_DEBUG_SNAPSHOT",
     payload: {
@@ -2100,7 +2394,65 @@ async function sendDtoDebugSnapshot(tabId, payload) {
   });
 }
 
+function createPersonalDebugSnapshot(orderData, orderContextSnapshot, recentOrders = []) {
+  const isDemoPersonalData =
+    orderData?.personalDataSource === "demo-data" ||
+    orderData?.isDemoPersonalData;
+
+  return {
+    privateDataAvailable: orderData?.privateDataAvailable ?? null,
+    personalDataSource: isDemoPersonalData
+      ? "demo-data"
+      : orderData?.privateDataAvailable
+        ? "upbit-private-api"
+        : orderData?.personalDataSource || null,
+    demoPersonalAvailable: Boolean(isDemoPersonalData),
+    isDemoPersonalData: Boolean(isDemoPersonalData),
+    accounts: orderData?.accounts || [],
+    confirmedTradeLogs: isDemoPersonalData
+      ? []
+      : toConfirmedTradeLogs(orderData, orderContextSnapshot?.attemptId),
+    orderOutcomePatches: isDemoPersonalData
+      ? []
+      : toOrderOutcomePatches(orderData),
+    recentOrders,
+    clientAverageBuyAmount: orderData?.clientAverageBuyAmount ?? null,
+  };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (
+    ["ORDER_ACTION_DETECTED", "ORDER_DATA_UPDATED", "DETECTION_RESULT"].includes(
+      message?.type,
+    )
+  ) {
+    const payload = message.payload || {};
+    const snapshot = payload.orderContextSnapshot || {};
+    const currentOrder = payload.currentOrder || {};
+    debugBackgroundOrder(message.type, {
+      messageType: message.type,
+      payload,
+      market: payload.market || snapshot.market || currentOrder.market || null,
+      side:
+        snapshot.side ||
+        currentOrder.order_side ||
+        payload.side ||
+        null,
+      orderMode:
+        snapshot.orderMode ||
+        currentOrder.order_type ||
+        payload.orderMode ||
+        null,
+      intentPrice: snapshot.intentPrice || currentOrder.order_price || null,
+      intentQuantity:
+        snapshot.intentQuantity || currentOrder.order_volume || null,
+      intentAmount: snapshot.intentAmount || currentOrder.order_amount || null,
+      attemptId: snapshot.attemptId || payload.attemptId || null,
+      senderTabUrl: sender.tab?.url || null,
+      senderTabId: sender.tab?.id || null,
+    });
+  }
+
   if (message?.type === "OPEN_AUTH") {
     const mode = message.payload?.mode === "signup" ? "signup" : "login";
 
@@ -2122,7 +2474,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "OPEN_DASHBOARD") {
     resolveCurrentAppOrigin()
       .then((appOrigin) =>
-        chrome.tabs.create({ url: `${appOrigin}/dashboard` }),
+        chrome.tabs.create({
+          url: createDashboardUrl(appOrigin, message.payload?.path),
+        }),
       )
       .then(() => sendResponse({ ok: true }))
       .catch(() =>
@@ -2154,6 +2508,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       )
       .catch((error) =>
         sendResponse({ ok: false, error: error.message }),
+      );
+    return true;
+  }
+
+  if (message?.type === "GET_USER_STATS") {
+    fetchUserStats()
+      .then((stats) =>
+        sendResponse({
+          ok: true,
+          data: typeof stats?.data === "string" ? stats.data : "",
+        }),
+      )
+      .catch((error) =>
+        sendResponse({
+          ok: false,
+          authRequired: error.status === 401 || error.status === 403,
+          error: error.message,
+        }),
       );
     return true;
   }
@@ -2261,7 +2633,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               },
         ),
       )
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
+      .catch((error) => {
+        debugBackgroundOrder("BACKGROUND_DETECTION_API_ERROR", {
+          messageType: message.type,
+          error: error?.message || String(error),
+          payload: context,
+          senderTabUrl: sender.tab?.url || null,
+          senderTabId: sender.tab?.id || null,
+        });
+        sendResponse({ ok: false, error: error.message });
+      });
     return true;
   }
 
@@ -2295,7 +2676,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
 
-    if (!message.payload?.refreshAlreadyRequested) {
+    if (
+      !isDemoPageUrl(pageUrl) &&
+      !message.payload?.refreshAlreadyRequested
+    ) {
       void requestSnapshotRefresh(message.payload?.market);
     }
 
@@ -2345,7 +2729,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         sendResponse({ ok: true, data: orderData, detection });
       })
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
+      .catch((error) => {
+        debugBackgroundOrder("BACKGROUND_DETECTION_API_ERROR", {
+          messageType: message.type,
+          error: error?.message || String(error),
+          payload: message.payload,
+          senderTabUrl: sender.tab?.url || null,
+          senderTabId: sender.tab?.id || null,
+        });
+        sendResponse({ ok: false, error: error.message });
+      });
     return true;
   }
 

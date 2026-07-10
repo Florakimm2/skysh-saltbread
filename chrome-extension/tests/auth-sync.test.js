@@ -376,6 +376,50 @@ test("행동 로그는 인증에 저장된 appOrigin으로 전송한다", async 
   ]);
 });
 
+test("통계 API는 저장된 accessToken과 appOrigin으로 호출한다", async () => {
+  const harness = createHarness();
+  harness.localStore.auth = {
+    accessToken: "stats-token",
+    expiresAt: Date.now() + 120000,
+    user: { id: "user-1" },
+    appOrigin: "http://localhost:3000",
+  };
+  const requested = [];
+  harness.context.fetch = async (url, options) => {
+    requested.push({ url, options });
+    return jsonResponse({
+      ok: true,
+      data: "불씨와 함께 7개의 기록을 쌓고 2개의 감정 매도를 막았어요!",
+    });
+  };
+
+  const response = await sendMessage(harness.runtimeListener, {
+    type: "GET_USER_STATS",
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(
+    response.data,
+    "불씨와 함께 7개의 기록을 쌓고 2개의 감정 매도를 막았어요!",
+  );
+  assert.equal(requested[0].url, "http://localhost:3000/api/me/stats");
+  assert.equal(
+    requested[0].options.headers.Authorization,
+    "Bearer stats-token",
+  );
+});
+
+test("통계 API는 accessToken이 없으면 로그인 필요로 응답한다", async () => {
+  const harness = createHarness();
+
+  const response = await sendMessage(harness.runtimeListener, {
+    type: "GET_USER_STATS",
+  });
+
+  assert.equal(response.ok, false);
+  assert.equal(response.authRequired, true);
+});
+
 test("확장 로그아웃은 인증·Upbit 키·복호화 키를 지우고 웹 탭을 이동한다", async () => {
   const harness = createHarness({
     queryTabs(options) {

@@ -11,7 +11,13 @@ export type VisualMode =
 
 export type SchemaVersion = "v1";
 
-export type RuleValueType = "STRING" | "NUMBER" | "DECIMAL_STRING" | "BOOLEAN";
+export type RuleValueType =
+  | "STRING"
+  | "NUMBER"
+  | "DECIMAL_STRING"
+  | "BOOLEAN"
+  | "STRING_ARRAY"
+  | "MIXED_ENUM";
 
 export type RuleOperator =
   | "IS_NULL"
@@ -28,7 +34,7 @@ export type RuleOperator =
 export type RuleOperand =
   | {
       operandType: "LITERAL";
-      value: string | number | boolean | string[];
+      value: string | number | boolean | string[] | null;
     }
   | {
       operandType: "FIELD";
@@ -57,8 +63,64 @@ export type RuleConditionGroup = {
 export type RuleExpression = RuleCondition | RuleConditionGroup;
 
 export type RuleFieldDefinition = {
+  key: string;
+  label: string;
+  shortDescription: string;
+  detailedDescription?: string;
+  category:
+    | "ORDER_CONTEXT"
+    | "ORDER_INPUT"
+    | "DRAFT_BEHAVIOR"
+    | "RECENT_BEHAVIOR"
+    | "MARKET"
+    | "PRIVATE_ACCOUNT"
+    | "SYSTEM";
   valueType: RuleValueType;
+  semanticType:
+    | "ENUM"
+    | "MARKET"
+    | "PRICE"
+    | "QUANTITY"
+    | "AMOUNT"
+    | "SIGNED_PERCENT"
+    | "NON_NEGATIVE_PERCENT"
+    | "RATIO_0_TO_1"
+    | "DURATION_MS"
+    | "COUNT"
+    | "MULTIPLIER"
+    | "BOOLEAN"
+    | "FLAG_SET"
+    | "ALLOCATION_PRESET"
+    | "IDENTIFIER"
+    | "DATETIME";
+  nullable: boolean;
+  ruleEligible: boolean;
   requiresPrivateApi: boolean;
+  supportedOperators: RuleOperator[];
+  input: {
+    control:
+      | "SELECT"
+      | "MARKET_SELECT"
+      | "DECIMAL"
+      | "PERCENT"
+      | "DURATION"
+      | "COUNT_STEPPER"
+      | "BOOLEAN_SELECT"
+      | "FLAG_MULTI_SELECT"
+      | "PRESET_SELECT";
+    min?: number;
+    max?: number;
+    step?: number;
+    options?: Array<{
+      label: string;
+      value: string | number | boolean;
+      hiddenInPicker?: boolean;
+    }>;
+    displayUnit?: string;
+    storageUnit?: string;
+  };
+  comparisonGroup?: string;
+  keywords: string[];
 };
 
 export type UserDTO = {

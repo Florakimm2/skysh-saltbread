@@ -38,6 +38,15 @@
     {
       "matches": [
         "https://upbit.com/exchange*",
+        "https://www.upbit.com/exchange*"
+      ],
+      "js": ["upbit-debug-bridge-main.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://upbit.com/exchange*",
         "https://www.upbit.com/exchange*",
         "http://localhost/*",
         "http://127.0.0.1/*",

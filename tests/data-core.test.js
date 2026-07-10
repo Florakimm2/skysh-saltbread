@@ -11,6 +11,7 @@ const {
   mapUpbitOrder,
   parseMarket,
   resolveVisualMode,
+  RULE_FIELD_CATALOG,
 } = require("../chrome-extension/data-core.js");
 
 test("매수하기와 매도하기를 주문 액션으로 구분한다", () => {
@@ -462,9 +463,184 @@ test("content snapshot 숫자·불리언 필드는 문자열이 아니라 타입
   );
 });
 
+test("사용자 규칙은 배열 경보와 allocation preset을 판정한다", () => {
+  assert.equal(
+    evaluateRuleExpression(
+      {
+        nodeType: "CONDITION",
+        leftField: "marketRiskFlags",
+        operator: "IN",
+        rightOperand: {
+          operandType: "LITERAL",
+          value: ["WARNING", "CAUTION_TRADING_VOLUME_SOARING"],
+        },
+      },
+      { marketRiskFlags: ["CAUTION_TRADING_VOLUME_SOARING"] },
+    ),
+    true,
+  );
+  assert.equal(
+    evaluateRuleExpression(
+      {
+        nodeType: "CONDITION",
+        leftField: "marketRiskFlags",
+        operator: "NOT_IN",
+        rightOperand: {
+          operandType: "LITERAL",
+          value: ["WARNING"],
+        },
+      },
+      { marketRiskFlags: [] },
+    ),
+    true,
+  );
+  assert.equal(
+    evaluateRuleExpression(
+      {
+        nodeType: "CONDITION",
+        leftField: "allocationPresetPercent",
+        operator: "EQ",
+        rightOperand: {
+          operandType: "LITERAL",
+          value: "CUSTOM",
+        },
+      },
+      { allocationPresetPercent: "CUSTOM" },
+    ),
+    true,
+  );
+});
+
+test("사용자 규칙은 의미가 맞는 FIELD 비교만 판정한다", () => {
+  assert.equal(
+    evaluateRuleExpression(
+      {
+        nodeType: "CONDITION",
+        leftField: "tradePriceAtSnapshot",
+        operator: "LT",
+        rightOperand: {
+          operandType: "FIELD",
+          field: "baseAssetAvgBuyPriceBeforeSnapshot",
+        },
+      },
+      {
+        tradePriceAtSnapshot: "20",
+        baseAssetAvgBuyPriceBeforeSnapshot: "100",
+      },
+    ),
+    true,
+  );
+  assert.equal(
+    evaluateRuleExpression(
+      {
+        nodeType: "CONDITION",
+        leftField: "draftDurationMs",
+        operator: "GT",
+        rightOperand: {
+          operandType: "FIELD",
+          field: "priceChangeRate",
+        },
+      },
+      {
+        draftDurationMs: 5000,
+        priceChangeRate: 0.1,
+      },
+    ),
+    false,
+  );
+});
+
+test("개인 API 값이 null이면 해당 조건만 false이고 OR 공개 조건은 계속 판정한다", () => {
+  const expression = {
+    nodeType: "GROUP",
+    operator: "OR",
+    children: [
+      {
+        nodeType: "CONDITION",
+        leftField: "baseAssetAvgBuyPriceBeforeSnapshot",
+        operator: "GT",
+        rightOperand: { operandType: "LITERAL", value: "100" },
+      },
+      {
+        nodeType: "CONDITION",
+        leftField: "sameSideIntentCount1m",
+        operator: "GTE",
+        rightOperand: { operandType: "LITERAL", value: 3 },
+      },
+    ],
+  };
+
+  assert.equal(
+    evaluateRuleExpression(expression, {
+      baseAssetAvgBuyPriceBeforeSnapshot: null,
+      sameSideIntentCount1m: 3,
+    }),
+    true,
+  );
+});
+
+test("규칙 엔진 카탈로그는 OrderContextSnapshotDTO 규칙 대상 필드를 포함한다", () => {
+  const expectedFields = [
+    "snapshotTrigger",
+    "market",
+    "side",
+    "orderMode",
+    "entryPoint",
+    "intentPrice",
+    "intentQuantity",
+    "intentAmount",
+    "requestedBalanceRatio",
+    "allocationPresetPercent",
+    "draftDurationMs",
+    "lastEditToSnapshotMs",
+    "draftEditCount",
+    "amountChangeRate",
+    "modeChangedToMarket",
+    "orderbookClickToSnapshotMs",
+    "orderIntentCount1m",
+    "actualOrderCreatedCount10m",
+    "sameSideIntentCount1m",
+    "marketChangeCount5m",
+    "sideChangeCount3m",
+    "priceEditCount3m",
+    "quantityEditCount3m",
+    "amountEditCount3m",
+    "inputRevertCount",
+    "priceDirectionChangeCount",
+    "priceChangeRate",
+    "orderModeChangeCount3m",
+    "draftResetCount3m",
+    "tradePriceAtSnapshot",
+    "shortTermReturn5m",
+    "signedChangeRate",
+    "spreadRate",
+    "marketRiskFlags",
+    "pricePositionIn5mRange",
+    "volumeSpikeRatio5m",
+    "baseAssetAvgBuyPriceBeforeSnapshot",
+    "priceVsAvgBuyRateAtSnapshot",
+  ];
+
+  for (const field of expectedFields) {
+    assert.equal(Boolean(RULE_FIELD_CATALOG[field]?.ruleEligible), true, field);
+  }
+
+  for (const field of [
+    "snapshotId",
+    "attemptId",
+    "capturedAt",
+    "matchedRuleIdsAtSnapshot",
+    "primaryShownRuleId",
+    "shownRuleIds",
+  ]) {
+    assert.equal(RULE_FIELD_CATALOG[field]?.ruleEligible, false, field);
+  }
+});
+
 test("visualMode는 DTO 값과 기존 alias를 모두 지원한다", () => {
   assert.equal(resolveVisualMode("SCARED"), "SCARED");
-  assert.equal(resolveVisualMode("pink"), "SCARED");
+  assert.equal(resolveVisualMode("pink"), "FAST_BURN");
+  assert.equal(resolveVisualMode("FAST_BURN"), "FAST_BURN");
   assert.equal(resolveVisualMode("blue"), "SAD");
   assert.equal(resolveVisualMode(null), "DEFAULT");
 });
