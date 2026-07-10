@@ -976,13 +976,16 @@
 
 .ruleGroupHeader {
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
 
 .segmentedControl {
-  display: inline-flex;
+  display: grid;
+  width: min(430px, 100%);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   padding: 3px;
   border: 1px solid #eadfd9;
   border-radius: 10px;
@@ -990,14 +993,16 @@
 }
 
 .segmentedControl button {
-  min-width: 52px;
+  min-width: 0;
   min-height: 30px;
+  padding: 0 12px;
   border: 0;
   border-radius: 8px;
   background: transparent;
   color: #8c7e78;
   font-size: 11px;
   font-weight: 820;
+  white-space: nowrap;
 }
 
 .segmentedControl .isSelected {
@@ -1013,32 +1018,161 @@
 
 .ruleCondition {
   display: grid;
-  grid-template-columns: minmax(160px, 1.1fr) 104px 118px minmax(150px, 1fr) auto;
+  grid-template-columns:
+    minmax(260px, 1.55fr)
+    minmax(116px, 0.55fr)
+    minmax(146px, 0.7fr);
   gap: 10px;
-  align-items: end;
+  align-items: start;
   padding: 12px;
   border: 1px solid #eee4df;
   border-radius: 11px;
   background: #fff;
 }
 
+.ruleCondition > .ruleMiniField:nth-of-type(4) {
+  grid-column: 1 / span 2;
+}
+
+.ruleCondition > .ruleNodeActions {
+  align-self: end;
+}
+
+.ruleConditionError {
+  border-color: #ef8f75;
+  background: #fff5f0;
+}
+
 .ruleInlineControls {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 54px;
+  grid-template-columns: minmax(0, 1fr) 58px;
   gap: 6px;
 }
 
 .ruleNodeActions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
   justify-content: flex-end;
 }
 
 .ruleNodeActions button {
   min-height: 34px;
-  padding: 0 10px;
+  min-width: 58px;
+  padding: 0 12px;
   background: #fff;
+  white-space: nowrap;
+}
+
+.conditionPreview,
+.privateApiNote {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #7b6a64;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.conditionPreview {
+  padding-top: 2px;
+}
+
+.privateApiNote {
+  padding: 9px 10px;
+  border: 1px solid #f1dfd3;
+  border-radius: 10px;
+  background: #fff8f1;
+  color: #a25a2d;
+  font-weight: 700;
+}
+
+.ruleInputError {
+  color: #c13f2f;
+  font-size: 10px;
+  font-weight: 760;
+  line-height: 1.45;
+}
+
+.countStepper,
+.durationInput,
+.percentInput,
+.valueWithUnit {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.durationInput {
+  grid-template-columns: minmax(0, 1fr) 86px;
+}
+
+.percentInput {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.percentInput input[type="range"] {
+  grid-column: 1 / -1;
+  width: 100%;
+  accent-color: #ff6b22;
+}
+
+.countStepper button {
+  width: 32px;
+  min-height: 34px;
+  border: 1px solid #eadbd4;
+  border-radius: 9px;
+  background: #fff8f3;
+  color: #bd4f2d;
+  cursor: pointer;
+}
+
+.countStepper input {
+  text-align: center;
+}
+
+.flagOptionList {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid #eadfd9;
+  border-radius: 10px;
+  background: #fffdfb;
+}
+
+.flagOptionList label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #6e5f5a;
+  font-size: 11px;
+}
+
+.naturalPreview {
+  display: grid;
+  gap: 7px;
+  margin: 18px 24px 0;
+  padding: 14px;
+  border: 1px solid #f0dfd5;
+  border-radius: 12px;
+  background: #fff8f2;
+}
+
+.naturalPreview strong {
+  color: #4d3834;
+  font-size: 12px;
+}
+
+.naturalPreview p,
+.naturalPreview small {
+  margin: 0;
+  color: #6c5a55;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.naturalPreview p {
+  white-space: pre-line;
 }
 
 .ruleJsonTools {
@@ -1067,6 +1201,11 @@
 .ruleJsonTools button,
 .ruleEditorActions button {
   padding: 0 13px;
+}
+
+.ruleEditorActions button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .ruleEditorActions {
@@ -1132,19 +1271,129 @@
   font-size: 18px;
 }
 
+.fieldPicker header p {
+  margin: 6px 0 0;
+  color: #7b6d68;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.fieldPickerToolbar {
+  position: sticky;
+  top: 82px;
+  z-index: 1;
+  display: grid;
+  gap: 10px;
+  padding: 14px 24px;
+  border-bottom: 1px solid #f1e8e5;
+  background: #fffdfb;
+}
+
+.fieldPickerToolbar input {
+  min-height: 40px;
+  border: 1px solid #e6ded9;
+  border-radius: 10px;
+  padding: 0 12px;
+  color: #3c3330;
+  font: inherit;
+  font-size: 12px;
+}
+
+.fieldCategoryTabs,
+.recommendedSituations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.fieldCategoryTabs button,
+.recommendedSituations button {
+  min-height: 32px;
+  border: 1px solid #eadbd4;
+  border-radius: 999px;
+  background: #fff;
+  color: #8c7068;
+  padding: 0 11px;
+  font-size: 11px;
+  font-weight: 760;
+  cursor: pointer;
+}
+
+.fieldCategoryTabs button[data-category="ORDER_CONTEXT"],
+.fieldPickerGrid button[data-category="ORDER_CONTEXT"] {
+  --field-category-color: #d96835;
+  --field-category-bg: #fff0e8;
+}
+
+.fieldCategoryTabs button[data-category="ORDER_INPUT"],
+.fieldPickerGrid button[data-category="ORDER_INPUT"] {
+  --field-category-color: #b35f13;
+  --field-category-bg: #fff4dc;
+}
+
+.fieldCategoryTabs button[data-category="DRAFT_BEHAVIOR"],
+.fieldPickerGrid button[data-category="DRAFT_BEHAVIOR"] {
+  --field-category-color: #8f6b22;
+  --field-category-bg: #fff7df;
+}
+
+.fieldCategoryTabs button[data-category="RECENT_BEHAVIOR"],
+.fieldPickerGrid button[data-category="RECENT_BEHAVIOR"] {
+  --field-category-color: #3c7d67;
+  --field-category-bg: #eaf8f2;
+}
+
+.fieldCategoryTabs button[data-category="MARKET"],
+.fieldPickerGrid button[data-category="MARKET"] {
+  --field-category-color: #366c9f;
+  --field-category-bg: #edf5ff;
+}
+
+.fieldCategoryTabs button[data-category="PRIVATE_ACCOUNT"],
+.fieldPickerGrid button[data-category="PRIVATE_ACCOUNT"] {
+  --field-category-color: #8d5aa8;
+  --field-category-bg: #f7effc;
+}
+
+.fieldCategoryTabs button[data-category] {
+  border-color: var(--field-category-color);
+  background: var(--field-category-bg);
+  color: var(--field-category-color);
+}
+
+.fieldCategoryTabs .isSelected,
+.fieldCategoryTabs button:hover,
+.recommendedSituations button:hover {
+  border-color: #ffb18f;
+  background: #fff0e8;
+  color: #e8490f;
+}
+
+.fieldCategoryTabs button[data-category].isSelected,
+.fieldCategoryTabs button[data-category]:hover {
+  border-color: var(--field-category-color);
+  background: var(--field-category-color);
+  color: #fff;
+}
+
+.recommendedSituations {
+  padding: 14px 24px 0;
+}
+
 .fieldPickerGrid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 10px;
   padding: 18px 24px;
 }
 
 .fieldPickerGrid button {
   display: grid;
-  gap: 5px;
-  min-height: 126px;
+  gap: 9px;
+  min-height: 138px;
   padding: 14px;
   border: 1px solid #eee2dc;
+  border-left-width: 5px;
   border-radius: 12px;
   background: #fffaf7;
   color: #4f403c;
@@ -1152,8 +1401,13 @@
   cursor: pointer;
 }
 
+.fieldPickerGrid button {
+  border-left-color: var(--field-category-color, #ff9f6d);
+}
+
 .fieldPickerGrid button:hover {
   border-color: #ffb18f;
+  border-left-color: var(--field-category-color, #ff9f6d);
   background: #fff1eb;
 }
 
@@ -1162,51 +1416,59 @@
   cursor: not-allowed;
 }
 
-.fieldPickerGrid strong {
-  font-size: 13px;
+.fieldItemHeader {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
 }
 
-.fieldPickerGrid span,
+.fieldItemIcon {
+  display: grid;
+  grid-template-rows: 18px auto;
+  gap: 2px;
+  min-width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--field-category-bg, #fff0e8);
+  color: var(--field-category-color, #d96835);
+  font-size: 9px;
+  font-weight: 850;
+  line-height: 1;
+}
+
+.fieldItemIcon svg {
+  width: 17px;
+  height: 17px;
+}
+
+.fieldItemTitle {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.fieldPickerGrid strong {
+  display: block;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.fieldItemTitle small,
 .fieldPickerGrid small {
   color: #a1938e;
   font-size: 10px;
   font-weight: 760;
+  line-height: 1.35;
 }
 
 .fieldPickerGrid p {
-  margin: 4px 0 0;
+  margin: 0;
   color: #736965;
   font-size: 11px;
-  line-height: 1.5;
-}
-
-.unsupportedFields {
-  padding: 0 24px 24px;
-}
-
-.unsupportedFields strong {
-  display: block;
-  margin-bottom: 9px;
-  color: #8f827d;
-  font-size: 12px;
-}
-
-.unsupportedFields div {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.unsupportedFields span {
-  display: inline-flex;
-  min-height: 26px;
-  align-items: center;
-  padding: 0 9px;
-  border-radius: 999px;
-  background: #f2efed;
-  color: #9a918c;
-  font-size: 10px;
-  font-weight: 720;
+  line-height: 1.55;
 }
 
 @media (max-width: 900px) {
@@ -1446,6 +1708,14 @@
   .ruleCondition,
   .fieldPickerGrid {
     grid-template-columns: 1fr;
+  }
+
+  .ruleCondition > .ruleMiniField:nth-of-type(4) {
+    grid-column: auto;
+  }
+
+  .ruleNodeActions {
+    justify-content: flex-start;
   }
 
   .ruleList {

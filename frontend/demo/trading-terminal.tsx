@@ -128,6 +128,89 @@ type DemoScenario = {
   };
 };
 
+type DemoBridgeType =
+  | "MARKET_SNAPSHOT"
+  | "ACCOUNT_SNAPSHOT"
+  | "ORDER_CREATED"
+  | "ORDER_UPDATED"
+  | "ORDER_INTENT_CLICK";
+
+type DemoBridgeState = {
+  market?: string;
+  marketSnapshot?: unknown;
+  accountSnapshot?: unknown;
+  orders?: unknown[];
+  currentOrder?: unknown;
+  behaviorData?: unknown;
+  updatedAt?: string;
+};
+
+function getBridgeWindow() {
+  return window as typeof window & {
+    __SALTBREAD_DEMO_STATE__?: DemoBridgeState;
+  };
+}
+
+function readPayloadMarket(payload: unknown) {
+  return typeof payload === "object" && payload !== null && "market" in payload
+    ? String((payload as { market?: unknown }).market || "")
+    : "";
+}
+
+function emitSaltbreadDemoBridge(type: DemoBridgeType, payload: unknown) {
+  const bridgeWindow = getBridgeWindow();
+  const previousState = bridgeWindow.__SALTBREAD_DEMO_STATE__ || {};
+  const updatedAt = new Date().toISOString();
+  const nextState: DemoBridgeState = {
+    ...previousState,
+    updatedAt,
+  };
+
+  if (type === "MARKET_SNAPSHOT") {
+    nextState.market = readPayloadMarket(payload) || previousState.market;
+    nextState.marketSnapshot = payload;
+  }
+
+  if (type === "ACCOUNT_SNAPSHOT") {
+    nextState.market = readPayloadMarket(payload) || previousState.market;
+    nextState.accountSnapshot = payload;
+  }
+
+  if (type === "ORDER_CREATED" || type === "ORDER_UPDATED") {
+    const previousOrders = Array.isArray(previousState.orders)
+      ? previousState.orders
+      : [];
+    nextState.market = readPayloadMarket(payload) || previousState.market;
+    nextState.orders = [payload, ...previousOrders];
+  }
+
+  if (type === "ORDER_INTENT_CLICK") {
+    nextState.market = readPayloadMarket(payload) || previousState.market;
+    nextState.currentOrder = payload;
+  }
+
+  bridgeWindow.__SALTBREAD_DEMO_STATE__ = nextState;
+
+  window.postMessage(
+    {
+      source: "SALTBREAD_DEMO_PAGE",
+      type,
+      payload,
+    },
+    "*",
+  );
+
+  window.dispatchEvent(
+    new CustomEvent("saltbread:demo-bridge", {
+      detail: {
+        source: "SALTBREAD_DEMO_PAGE",
+        type,
+        payload,
+      },
+    }),
+  );
+}
+
 const FALLBACK_PAYLOAD: MarketPayload = {
   market: "KRW-BTC",
   korean_name: "비트코인",
@@ -968,9 +1051,38 @@ export default function TradingTerminal() {
   }, [addDebugRecord]);
 
   useEffect(() => {
+    const handleDemoStateRequest = (event: MessageEvent) => {
+      const data = event.data;
+
+      if (
+        !data ||
+        data.source !== "SALTBREAD_EXTENSION" ||
+        data.type !== "REQUEST_DEMO_STATE"
+      ) {
+        return;
+      }
+
+      window.postMessage(
+        {
+          source: "SALTBREAD_DEMO_PAGE",
+          type: "DEMO_STATE_SYNC",
+          payload: getBridgeWindow().__SALTBREAD_DEMO_STATE__ || null,
+        },
+        "*",
+      );
+    };
+
+    window.addEventListener("message", handleDemoStateRequest);
+    return () => window.removeEventListener("message", handleDemoStateRequest);
+  }, []);
+
+  useEffect(() => {
     const context = marketContextFromPayload(marketData);
     const timeout = window.setTimeout(
-      () => addDebugRecord("page", "market", "MARKET_SNAPSHOT", context),
+      () => {
+        addDebugRecord("page", "market", "MARKET_SNAPSHOT", context);
+        emitSaltbreadDemoBridge("MARKET_SNAPSHOT", context);
+      },
       0,
     );
     return () => window.clearTimeout(timeout);
@@ -984,7 +1096,7 @@ export default function TradingTerminal() {
       orders: portfolio.orders,
       collectedAt: new Date().toISOString(),
     };
-    const newRecords: Array<{ kind: string; order: DemoOrder }> = [];
+    const newRecords: Array<{ kind: "ORDER_CREATED" | "ORDER_UPDATED"; order: DemoOrder }> = [];
     for (const order of portfolio.orders) {
       const previousState = previousOrdersRef.current[order.uuid];
       const signature = [
@@ -1002,6 +1114,7 @@ export default function TradingTerminal() {
     }
     const timeout = window.setTimeout(() => {
       addDebugRecord("page", "personal", "ACCOUNT_SNAPSHOT", payload);
+      emitSaltbreadDemoBridge("ACCOUNT_SNAPSHOT", payload);
       for (const record of newRecords) {
         addDebugRecord(
           "page",
@@ -1010,6 +1123,7 @@ export default function TradingTerminal() {
           record.order,
           record.order.created_at,
         );
+        emitSaltbreadDemoBridge(record.kind, record.order);
       }
     }, 0);
     return () => window.clearTimeout(timeout);
@@ -1301,7 +1415,7 @@ export default function TradingTerminal() {
   const requestOrder = () => {
     const draft = createDraft();
     const validation = validateOrder(portfolio, draft, quote);
-    addDebugRecord("page", "behavior", "ORDER_INTENT_CLICK", {
+    const orderIntentPayload = {
       market,
       side,
       orderType,
@@ -1310,7 +1424,9 @@ export default function TradingTerminal() {
       amount: Number(amount) || null,
       valid: validation.ok,
       occurredAt: new Date().toISOString(),
-    });
+    };
+    addDebugRecord("page", "behavior", "ORDER_INTENT_CLICK", orderIntentPayload);
+    emitSaltbreadDemoBridge("ORDER_INTENT_CLICK", orderIntentPayload);
 
     if (!validation.ok) {
       setModal({

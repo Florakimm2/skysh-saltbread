@@ -18,7 +18,11 @@ const apiKeyMessage = document.querySelector("#api-key-message");
 const saveApiKeyButton = document.querySelector("#save-api-key-button");
 const unlockApiKeyButton = document.querySelector("#unlock-api-key-button");
 const deleteApiKeyButton = document.querySelector("#delete-api-key-button");
+const STATS_LOADING_TEXT = "불씨 기록을 불러오는 중...";
+const STATS_FALLBACK_TEXT = "불씨 기록을 불러오지 못했어요.";
+const STATS_AUTH_REQUIRED_TEXT = "로그인하면 불씨 기록을 확인할 수 있어요.";
 let authLoadRequestId = 0;
+let statsLoadRequestId = 0;
 
 function setPopupView(view) {
   const normalizedView =
@@ -29,15 +33,39 @@ function setPopupView(view) {
   accountView.hidden = normalizedView !== "account";
 }
 
-function renderStatistics() {
-  // TODO : (통계 API)
-  const tradeLogCount = 0;
-  // TODO : (통계 API)
-  const emotionalFeedbackCount = 0;
+function setStatisticsSummary(message) {
+  statisticsSummary.textContent = message;
+}
 
-  statisticsSummary.textContent =
-    `불씨와 함께 (${tradeLogCount})개의 기록을 쌓고 ` +
-    `(${emotionalFeedbackCount})개의 감정 매도를 막았어요!`;
+async function requestUserStats() {
+  return chrome.runtime.sendMessage({ type: "GET_USER_STATS" });
+}
+
+async function renderStatistics() {
+  const requestId = statsLoadRequestId + 1;
+  statsLoadRequestId = requestId;
+  setStatisticsSummary(STATS_LOADING_TEXT);
+
+  try {
+    const response = await requestUserStats();
+
+    if (requestId !== statsLoadRequestId) {
+      return;
+    }
+
+    if (response?.ok && typeof response.data === "string" && response.data) {
+      setStatisticsSummary(response.data);
+      return;
+    }
+
+    setStatisticsSummary(
+      response?.authRequired ? STATS_AUTH_REQUIRED_TEXT : STATS_FALLBACK_TEXT,
+    );
+  } catch {
+    if (requestId === statsLoadRequestId) {
+      setStatisticsSummary(STATS_FALLBACK_TEXT);
+    }
+  }
 }
 
 function showAccount(user) {
@@ -51,7 +79,7 @@ function showAccount(user) {
   openOnboardingButton.hidden = onboardingReady;
   accountMessage.textContent = "";
   setPopupView("account");
-  renderStatistics();
+  void renderStatistics();
   refreshCredentialStatus();
 }
 
@@ -60,6 +88,7 @@ function showLoading() {
 }
 
 function showSignedOut() {
+  statsLoadRequestId += 1;
   loginMessage.textContent = "";
   setPopupView("signed-out");
 }

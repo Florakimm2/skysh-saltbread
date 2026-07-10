@@ -6,9 +6,18 @@ const APP_ORIGINS = new Set([
 ]);
 const BEHAVIOR_INPUT_DEBOUNCE_MS = 650;
 const GUARDRAIL_RULES_CACHE_KEY = "guardrailRulesCache";
+const DASHBOARD_RULE_SETTINGS_PATH = "/dashboard/my-page";
 const MARKET_SNAPSHOT_CACHE_KEY = "marketSnapshotCache";
 const PERSONAL_SNAPSHOT_CACHE_KEY = "personalSnapshotCache";
 const SNAPSHOT_CACHE_MAX_AGE_MS = 2 * 60 * 1000;
+const UPBIT_ORDER_DEBUG_KEY = "saltbread:upbit-order-debug";
+const SALTBREAD_DEBUG_BRIDGE_SOURCE = "SALTBREAD_UPBIT_DEBUG_BRIDGE";
+const SALTBREAD_DEBUG_STATE_EVENT = "SALTBREAD_UPBIT_DEBUG_STATE";
+const SALTBREAD_DEMO_PAGE_SOURCE = "SALTBREAD_DEMO_PAGE";
+const SALTBREAD_EXTENSION_SOURCE = "SALTBREAD_EXTENSION";
+const SALTBREAD_DEMO_STATE_REQUEST = "REQUEST_DEMO_STATE";
+const UPBIT_CONFIRM_MODAL_WAIT_TIMEOUT_MS = 3000;
+const UPBIT_CONFIRM_MODAL_POLL_INTERVAL_MS = 50;
 const {
   buildBehaviorSnapshot,
   detectOrderActionSide,
@@ -61,6 +70,13 @@ const RULE_FIELD_LABELS = {
   draftEditCount: "주문 수정 횟수",
   amountChangeRate: "주문 금액 변화율",
   modeChangedToMarket: "시장가 전환 여부",
+  spreadRate: "호가 차이",
+  marketRiskFlags: "시장 경보",
+  pricePositionIn5mRange: "5분 가격 위치",
+  volumeSpikeRatio5m: "거래량 증가 배수",
+  draftResetCount3m: "3분 주문 초기화 횟수",
+  market: "거래 종목",
+  entryPoint: "주문 시작 방식",
 };
 
 let behaviorState = null;
@@ -75,6 +91,11 @@ let activeTradeFeedback = null;
 let guardrailRulesLogged = false;
 let shownGuardrailSnapshotIds = new Set();
 let closedGuardrailSnapshotIds = new Set();
+let settledAttemptIds = new Set();
+let feedbackCompletedAttemptIds = new Set();
+let feedbackCompletedVisualLock = false;
+let upbitOrderFlow = createIdleUpbitOrderFlow();
+let handledUpbitConfirmKeys = new Set();
 let pageGuardrailRules = [];
 let pageGuardrailRulesState = {
   rules: [],
@@ -85,8 +106,292 @@ let pageGuardrailRulesState = {
 let guardrailRulesLoadPromise = null;
 let cachedMarketSnapshotCache = {};
 let cachedPersonalSnapshotCache = {};
+let latestDemoBridgeState = null;
 let privateApiReady = false;
 let extensionContextInvalidated = false;
+let upbitModalObserver = null;
+let upbitConfirmModalWaitTimerId = null;
+let upbitConfirmModalWaitContext = null;
+let lastOrderIntent = null;
+let lastOrderContextSnapshot = null;
+let lastDtoSnapshot = null;
+let lastRuleEvaluation = null;
+let lastModalClassification = null;
+let lastExtractionResult = null;
+const upbitOrderDebugState = {
+  flowState: null,
+  pendingAttempt: null,
+  lastFormSubmit: null,
+  lastModalClassification: null,
+  lastExtractionResult: null,
+  lastOrderIntentDto: null,
+  lastAttemptLogDto: null,
+  lastOrderContextSnapshot: null,
+  lastDtoSnapshot: null,
+  lastRuleEvaluation: null,
+  lastDetectionResult: null,
+  lastWarningUiApplied: null,
+  lastTradeFeedbackDto: null,
+  lastGuardrailReactionDto: null,
+  lastSkipReason: null,
+  lastSkipPayload: null,
+  lastBackgroundMessagePayload: null,
+  events: [],
+};
+
+function isRealUpbitExchangePage() {
+  if (!isUpbitExchangePage()) {
+    return false;
+  }
+
+  try {
+    return location.protocol === "https:";
+  } catch {
+    return /^https:\/\//i.test(String(location.href || ""));
+  }
+}
+
+function isUpbitOrderDebugEnabled() {
+  try {
+    return localStorage.getItem(UPBIT_ORDER_DEBUG_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+function isSensitiveDebugKey(key) {
+  return /(?:access[_-]?token|refresh[_-]?token|authorization|access[_-]?key|secret[_-]?key|api[_-]?key|firebase[_-]?token|bearer)/i.test(
+    String(key || ""),
+  );
+}
+
+function sanitizeDebugPayload(value, seen = new WeakSet()) {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  if (typeof value !== "object") {
+    return value;
+  }
+
+  if (seen.has(value)) {
+    return "[Circular]";
+  }
+
+  if (value instanceof Element) {
+    return {
+      tagName: value.tagName || null,
+      textPreview: getModalTextPreview(value),
+      id: value.id || null,
+      className: String(value.className || ""),
+      role: value.getAttribute?.("role") || null,
+      dataset: { ...(value.dataset || {}) },
+    };
+  }
+
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    const sanitizedArray = value.map((item) => sanitizeDebugPayload(item, seen));
+    seen.delete(value);
+    return sanitizedArray;
+  }
+
+  const sanitizedObject = Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      isSensitiveDebugKey(key)
+        ? "[REDACTED]"
+        : sanitizeDebugPayload(item, seen),
+    ]),
+  );
+  seen.delete(value);
+  return sanitizedObject;
+}
+
+function structuredCloneSafe(value) {
+  try {
+    return structuredClone(value);
+  } catch {
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch {
+      return value;
+    }
+  }
+}
+
+function publishUpbitDebugStateToPage() {
+  if (!isRealUpbitExchangePage()) return;
+  if (typeof window.postMessage !== "function") return;
+
+  const state = sanitizeDebugPayload(
+    structuredCloneSafe(upbitOrderDebugState),
+  );
+
+  window.postMessage(
+    {
+      source: SALTBREAD_DEBUG_BRIDGE_SOURCE,
+      type: SALTBREAD_DEBUG_STATE_EVENT,
+      state,
+    },
+    window.location.origin,
+  );
+}
+
+function rememberUpbitDebugEvent(eventName, payload = {}) {
+  const occurredAt = new Date().toISOString();
+  const safePayload = sanitizeDebugPayload(payload);
+  const event = {
+    eventName,
+    occurredAt,
+    payload: safePayload,
+  };
+
+  upbitOrderDebugState.events.push(event);
+  if (upbitOrderDebugState.events.length > 100) {
+    upbitOrderDebugState.events.shift();
+  }
+
+  upbitOrderDebugState.flowState =
+    safePayload.flowState || upbitOrderFlow?.state || null;
+  upbitOrderDebugState.pendingAttempt = sanitizeDebugPayload(pendingAttempt);
+
+  if (safePayload.pendingAttempt) {
+    upbitOrderDebugState.pendingAttempt = safePayload.pendingAttempt;
+  }
+
+  switch (eventName) {
+    case "UPBIT_FORM_SUBMIT_CLICKED":
+      upbitOrderDebugState.lastFormSubmit = safePayload;
+      break;
+    case "UPBIT_MODAL_CLASSIFIED":
+      upbitOrderDebugState.lastModalClassification = safePayload;
+      break;
+    case "UPBIT_ORDER_EXTRACTION_RESULT":
+      upbitOrderDebugState.lastExtractionResult = safePayload;
+      break;
+    case "ORDER_INTENT_CLICK":
+      upbitOrderDebugState.lastOrderIntentDto =
+        safePayload.orderIntentDto || safePayload.dto || safePayload;
+      upbitOrderDebugState.lastAttemptLogDto =
+        safePayload.attemptLogDto ||
+        safePayload.pendingAttempt ||
+        sanitizeDebugPayload(pendingAttempt);
+      break;
+    case "UPBIT_ORDER_CONTEXT_SNAPSHOT_BUILT":
+      upbitOrderDebugState.lastOrderContextSnapshot =
+        safePayload.orderContextSnapshot || safePayload.snapshot || safePayload;
+      break;
+    case "UPBIT_DTO_SNAPSHOT_BUILT":
+    case "DTO_SNAPSHOT":
+      upbitOrderDebugState.lastDtoSnapshot = safePayload;
+      break;
+    case "UPBIT_RULE_EVALUATION_RESULT":
+      upbitOrderDebugState.lastRuleEvaluation =
+        safePayload.ruleEvaluation || safePayload.evaluation || safePayload;
+      break;
+    case "UPBIT_DETECTION_RESULT_RECEIVED":
+      upbitOrderDebugState.lastDetectionResult = safePayload;
+      break;
+    case "UPBIT_WARNING_UI_APPLIED":
+      upbitOrderDebugState.lastWarningUiApplied = safePayload;
+      break;
+    case "UPBIT_ORDER_CAPTURE_SKIPPED":
+    case "UPBIT_WARNING_UI_SKIPPED":
+      upbitOrderDebugState.lastSkipReason =
+        safePayload.reason || safePayload.skipReason || null;
+      upbitOrderDebugState.lastSkipPayload = safePayload;
+      break;
+    case "UPBIT_ORDER_ACTION_DETECTED_SENT":
+    case "ORDER_ACTION_DETECTED":
+      upbitOrderDebugState.lastBackgroundMessagePayload =
+        safePayload.backgroundMessagePayload ||
+        safePayload.message ||
+        safePayload;
+      break;
+    case "UPBIT_TRADE_FEEDBACK_SUBMITTED":
+      upbitOrderDebugState.lastTradeFeedbackDto =
+        safePayload.tradeFeedbackDto || safePayload.feedback || safePayload;
+      break;
+    case "GuardrailReactionDTO":
+      upbitOrderDebugState.lastGuardrailReactionDto =
+        safePayload.guardrailReactionDto || safePayload.reaction || safePayload;
+      break;
+    default:
+      break;
+  }
+
+  publishUpbitDebugStateToPage();
+}
+
+function debugUpbitOrder(eventName, payload = {}) {
+  rememberUpbitDebugEvent(eventName, payload);
+
+  if (!isRealUpbitExchangePage()) return;
+  if (!isUpbitOrderDebugEnabled()) return;
+
+  const time = new Date().toISOString();
+  const safePayload = sanitizeDebugPayload(payload);
+
+  try {
+    console.groupCollapsed(`🔥 [불씨][UPBIT_ORDER] ${eventName} @ ${time}`);
+    console.log("payload", safePayload);
+    console.trace("trace");
+    console.groupEnd();
+  } catch {
+    console.log(`[불씨][UPBIT_ORDER] ${eventName}`, safePayload);
+  }
+}
+
+function installUpbitDebugHelper() {
+  if (!isUpbitExchangePage()) {
+    return;
+  }
+
+  window.__SALTBREAD_UPBIT_DEBUG__ = {
+    getState() {
+      upbitOrderDebugState.flowState = upbitOrderFlow?.state || null;
+      upbitOrderDebugState.pendingAttempt = sanitizeDebugPayload(pendingAttempt);
+      return structuredCloneSafe(upbitOrderDebugState);
+    },
+    print() {
+      console.log(this.getState());
+    },
+    printLastRuleEvaluation() {
+      const state = this.getState();
+      console.log("lastRuleEvaluation", state.lastRuleEvaluation);
+      if (state.lastRuleEvaluation?.conditionResults) {
+        console.table(state.lastRuleEvaluation.conditionResults);
+      }
+    },
+    printLastExtraction() {
+      const state = this.getState();
+      console.log("lastExtractionResult", state.lastExtractionResult);
+    },
+    printLastOrderIntent() {
+      const state = this.getState();
+      console.log("lastOrderIntentDto", state.lastOrderIntentDto);
+    },
+    enable() {
+      localStorage.setItem(UPBIT_ORDER_DEBUG_KEY, "true");
+    },
+    disable() {
+      localStorage.setItem(UPBIT_ORDER_DEBUG_KEY, "false");
+    },
+    clear() {
+      upbitOrderDebugState.events = [];
+      upbitOrderDebugState.lastRuleEvaluation = null;
+      upbitOrderDebugState.lastExtractionResult = null;
+      upbitOrderDebugState.lastOrderIntentDto = null;
+      upbitOrderDebugState.lastOrderContextSnapshot = null;
+      upbitOrderDebugState.lastWarningUiApplied = null;
+      upbitOrderDebugState.lastSkipReason = null;
+      upbitOrderDebugState.lastSkipPayload = null;
+    },
+  };
+  publishUpbitDebugStateToPage();
+}
 
 function isAppPage() {
   return APP_ORIGINS.has(location.origin);
@@ -105,8 +410,18 @@ function isDemoPage() {
 }
 
 function isUpbitExchangePage() {
+  let hostname = location.hostname;
+
+  if (!hostname) {
+    try {
+      hostname = new URL(location.href).hostname;
+    } catch {
+      hostname = String(location.href || "").match(/^https?:\/\/([^/]+)/i)?.[1] || "";
+    }
+  }
+
   return (
-    ["upbit.com", "www.upbit.com"].includes(location.hostname) &&
+    ["upbit.com", "www.upbit.com"].includes(hostname) &&
     location.pathname.startsWith("/exchange")
   );
 }
@@ -116,6 +431,10 @@ function isPanelAllowedPage() {
 }
 
 function emitExtensionDebug(category, kind, payload, occurredAt = null) {
+  if (shouldIgnoreDebugPayload(kind, payload)) {
+    return;
+  }
+
   document.dispatchEvent(
     new CustomEvent("saltbread:extension-debug", {
       detail: {
@@ -166,7 +485,7 @@ function normalizeFlameMode(mode) {
     DEFAULT: "DEFAULT",
     AUTO: "DEFAULT",
     BLUE: "SAD",
-    PINK: "SCARED",
+    PINK: "FAST_BURN",
     FASTBURN: "FAST_BURN",
     FAST_BURN: "FAST_BURN",
     FAST_BURNING: "FAST_BURN",
@@ -214,8 +533,17 @@ function setFlameAnimationMode(animation, mode) {
   animation.setMode(toAnimationFlameMode(mode));
 }
 
-function applyFlameTheme(mode) {
+function applyFlameTheme(mode, options = {}) {
   const normalizedMode = normalizeFlameMode(mode);
+
+  if (
+    !options.force &&
+    normalizedMode !== "DEFAULT" &&
+    shouldBlockWarningOrVisualUpdate(options.attemptId || null)
+  ) {
+    return false;
+  }
+
   const panel = document.getElementById(PANEL_ID);
 
   if (panel) {
@@ -224,6 +552,7 @@ function applyFlameTheme(mode) {
 
   setFlameAnimationMode(panelFlame, normalizedMode);
   setFlameAnimationMode(collapsedPanelFlame, normalizedMode);
+  return true;
 }
 
 function resetPanelFlameState() {
@@ -247,6 +576,97 @@ function rememberGuardrailSnapshot(set, snapshotId) {
   }
 
   set.add(snapshotId);
+}
+
+function rememberSettledAttempt(attemptId) {
+  if (!attemptId) {
+    return;
+  }
+
+  if (settledAttemptIds.size >= 100) {
+    settledAttemptIds.delete(settledAttemptIds.values().next().value);
+  }
+
+  settledAttemptIds.add(attemptId);
+}
+
+function rememberFeedbackCompletedAttempt(attemptId) {
+  if (!attemptId) {
+    return;
+  }
+
+  rememberSettledAttempt(attemptId);
+
+  if (feedbackCompletedAttemptIds.size >= 100) {
+    feedbackCompletedAttemptIds.delete(
+      feedbackCompletedAttemptIds.values().next().value,
+    );
+  }
+
+  feedbackCompletedAttemptIds.add(attemptId);
+  feedbackCompletedVisualLock = true;
+}
+
+function unlockFeedbackCompletedVisualStateForNewAttempt() {
+  feedbackCompletedVisualLock = false;
+}
+
+function getAttemptIdFromPayload(payload) {
+  return (
+    payload?.orderContextSnapshot?.attemptId ||
+    payload?.orderContext?.attemptId ||
+    payload?.snapshot?.attemptId ||
+    payload?.attemptId ||
+    null
+  );
+}
+
+function shouldIgnoreIncomingAttempt(incomingAttemptId) {
+  if (!incomingAttemptId) {
+    return false;
+  }
+
+  if (settledAttemptIds.has(incomingAttemptId)) {
+    return true;
+  }
+
+  if (feedbackCompletedAttemptIds.has(incomingAttemptId)) {
+    return true;
+  }
+
+  return Boolean(
+    pendingAttempt?.attemptId &&
+      pendingAttempt.attemptId !== incomingAttemptId,
+  );
+}
+
+function shouldBlockWarningOrVisualUpdate(incomingAttemptId = null) {
+  if (shouldIgnoreIncomingAttempt(incomingAttemptId)) {
+    return true;
+  }
+
+  if (!feedbackCompletedVisualLock) {
+    return false;
+  }
+
+  if (!incomingAttemptId) {
+    return true;
+  }
+
+  return feedbackCompletedAttemptIds.has(incomingAttemptId);
+}
+
+function shouldIgnoreDebugPayload(kind, payload) {
+  const debugKind = payload?.kind || kind;
+
+  if (
+    debugKind !== "ORDER_CONTEXT_WITH_SNAPSHOTS" &&
+    debugKind !== "DTO_DEBUG_SNAPSHOT"
+  ) {
+    return false;
+  }
+
+  return shouldBlockWarningOrVisualUpdate(getAttemptIdFromPayload(payload));
 }
 
 function isGuardrailSnapshotHandled(snapshotId) {
@@ -531,6 +951,16 @@ function summarizeRuleForLog(rule) {
   };
 }
 
+function getRuleDisplayTitle(rule) {
+  return (
+    rule?.name ||
+    rule?.title ||
+    rule?.ruleTitle ||
+    rule?.label ||
+    "이름 없는 규칙"
+  );
+}
+
 function renderRuleRows(rules = []) {
   const userRules = Array.isArray(rules) ? rules : [];
 
@@ -545,7 +975,7 @@ function renderRuleRows(rules = []) {
 
   return userRules.map((rule) => {
     const visualMode = normalizeFlameMode(rule.visualMode);
-    const title = rule.warningTitle || rule.name || "이름 없는 규칙";
+    const title = getRuleDisplayTitle(rule);
     const modeLabel = VISUAL_MODE_LABELS[visualMode] || visualMode;
     const requiresPrivateApi = Boolean(rule.requiresPrivateApi);
     const isPrivateApiReady = !requiresPrivateApi || privateApiReady;
@@ -568,6 +998,7 @@ function renderRuleRows(rules = []) {
         data-private-api-ready="${String(isPrivateApiReady)}"
         title="${escapeHtml(titleText)}"
       >
+        <span class="saltbread-rule-row__flame-icon" aria-hidden="true">🔥</span>
         <span class="saltbread-rule-row__title">${escapeHtml(title)}</span>
         <strong class="saltbread-rule-row__mode">${escapeHtml(modeLabel)}</strong>
         ${requiresPrivateApi ? `<span class="saltbread-rule-row__api-badge">API</span>` : ""}
@@ -828,7 +1259,7 @@ function createPanel(auth) {
         <div class="saltbread-panel__flame"></div>
         <div class="saltbread-panel__title">
           <strong>불씨</strong>
-          <span>행동 데이터</span>
+          <span class="saltbread-panel__subtitle">${escapeHtml(auth?.user?.email || "행동 데이터")}</span>
         </div>
         <button
           class="saltbread-panel__collapse"
@@ -839,8 +1270,6 @@ function createPanel(auth) {
           <span aria-hidden="true"></span>
         </button>
       </div>
-
-      <p class="saltbread-panel__account"></p>
 
       <div
         class="saltbread-analysis-status"
@@ -917,10 +1346,10 @@ function createPanel(auth) {
           주문 내용 다시 보기
         </button>
         <button
-          class="saltbread-action-button saltbread-action-button--history"
+          class="saltbread-action-button saltbread-action-button--rule-check"
           type="button"
         >
-          내 과거 기록 보기
+          규칙 점검하기
         </button>
         <button
           class="saltbread-action-button saltbread-action-button--proceed"
@@ -932,8 +1361,6 @@ function createPanel(auth) {
     </div>
   `;
 
-  panel.querySelector(".saltbread-panel__account").textContent =
-    auth?.user?.email || "DEMO SESSION · 서버 저장 안 함";
   panel
     .querySelector(".saltbread-panel__collapse")
     .addEventListener("click", () => setPanelCollapsed(panel, true));
@@ -944,11 +1371,8 @@ function createPanel(auth) {
     .querySelector(".saltbread-action-button--review")
     .addEventListener("click", () => closeGuardrail("REVIEW"));
   panel
-    .querySelector(".saltbread-action-button--history")
-    .addEventListener("click", () => {
-      closeGuardrail("REVIEW", { dispatchReview: false });
-      openDashboard();
-    });
+    .querySelector(".saltbread-action-button--rule-check")
+    .addEventListener("click", openRuleSettings);
   panel
     .querySelector(".saltbread-action-button--proceed")
     .addEventListener("click", () => {
@@ -983,23 +1407,144 @@ function createPanel(auth) {
   startBehaviorTracking();
 }
 
-function openDashboard() {
-  safeRuntimeSendMessage({ type: "OPEN_DASHBOARD" });
+function openDashboardPage(path = "/dashboard") {
+  safeRuntimeSendMessage({ type: "OPEN_DASHBOARD", payload: { path } });
+}
+
+function openRuleSettings() {
+  closeGuardrail("REVIEW", { dispatchReview: false });
+  openDashboardPage(DASHBOARD_RULE_SETTINGS_PATH);
 }
 
 function setPanelCollapsed(panel, isCollapsed) {
+  if (!panel) {
+    return;
+  }
+
+  panel.dataset.collapsed = String(isCollapsed);
   panel.classList.toggle("is-collapsed", isCollapsed);
-  panel.querySelector(".saltbread-panel__body").inert = isCollapsed;
-  panel
-    .querySelector(".saltbread-panel__body")
-    .setAttribute("aria-hidden", String(isCollapsed));
-  panel.querySelector(".saltbread-panel__reopen").setAttribute(
-    "aria-hidden",
-    String(!isCollapsed),
+  const body = panel.querySelector(".saltbread-panel__body");
+  const reopen = panel.querySelector(".saltbread-panel__reopen");
+  const collapsedControls = panel.querySelector(
+    ".saltbread-panel__collapsed-controls",
   );
-  panel
-    .querySelector(".saltbread-panel__collapsed-controls")
-    .setAttribute("aria-hidden", String(!isCollapsed));
+
+  if (body) {
+    body.inert = isCollapsed;
+    body.setAttribute("aria-hidden", String(isCollapsed));
+  }
+  reopen?.setAttribute("aria-hidden", String(!isCollapsed));
+  collapsedControls?.setAttribute("aria-hidden", String(!isCollapsed));
+}
+
+function isSaltbreadPanelCollapsed(panel) {
+  if (!panel) {
+    return null;
+  }
+
+  if (panel.dataset?.collapsed !== undefined) {
+    return panel.dataset.collapsed === "true";
+  }
+
+  return Boolean(panel.classList?.contains?.("is-collapsed"));
+}
+
+function openSaltbreadPanel(options = {}) {
+  const panel = document.getElementById(PANEL_ID);
+
+  if (!panel) {
+    return false;
+  }
+
+  setPanelCollapsed(panel, false);
+  debugUpbitOrder("UPBIT_PANEL_OPENED_FOR_WARNING", {
+    source: options.source || null,
+    reason: options.reason || "detected_guardrail",
+    panelOpen: true,
+    panelCollapsed: false,
+    flowState: upbitOrderFlow.state,
+  });
+  return true;
+}
+
+function getWarningStatusElement() {
+  return document.querySelector(".saltbread-analysis-status");
+}
+
+function scrollWarningIntoView() {
+  getWarningStatusElement()?.scrollIntoView?.({
+    block: "nearest",
+    inline: "nearest",
+  });
+}
+
+function focusGuardrailWarning() {
+  const status = getWarningStatusElement();
+
+  if (!status) {
+    return;
+  }
+
+  status.setAttribute?.("tabindex", "-1");
+  status.focus?.({ preventScroll: true });
+}
+
+function getActivePanelView(panel = document.getElementById(PANEL_ID)) {
+  const status = getWarningStatusElement();
+
+  if (panel?.dataset?.feedbackActive === "true") {
+    return "FEEDBACK";
+  }
+
+  if (
+    panel?.dataset?.warningActive === "true" ||
+    status?.dataset?.state === "detected"
+  ) {
+    return "WARNING";
+  }
+
+  return status?.dataset?.state ? String(status.dataset.state).toUpperCase() : null;
+}
+
+function getWarningUiDebugState(attemptId = null) {
+  const panel = document.getElementById(PANEL_ID);
+  const status = getWarningStatusElement();
+  const renderedTitle =
+    status?.querySelector("[data-status-title]")?.textContent || null;
+  const renderedMessage =
+    status?.querySelector("[data-status-message]")?.textContent || null;
+  const panelCollapsed = isSaltbreadPanelCollapsed(panel);
+  const activeView = getActivePanelView(panel);
+  const warningCardExists = Boolean(
+    status &&
+      status.dataset?.state === "detected" &&
+      activeView === "WARNING" &&
+      renderedTitle,
+  );
+
+  return {
+    panelExists: Boolean(panel),
+    panelOpen: Boolean(panel && panelCollapsed === false),
+    panelCollapsed,
+    warningCardExists,
+    renderedTitle,
+    renderedMessage,
+    renderedVisualMode: panel?.dataset?.flameMode || null,
+    activeView,
+    activeWarningAttemptId:
+      getAttemptIdFromPayload(activeDetectionResult) ||
+      pendingAttempt?.attemptId ||
+      null,
+    feedbackShownAt: pendingAttempt?.feedbackShownAt || null,
+    confirmClickedAt: pendingAttempt?.confirmClickedAt || null,
+    feedbackRespondedAt: pendingAttempt?.feedbackRespondedAt || null,
+    settledAttemptIdsIncludes: attemptId
+      ? settledAttemptIds.has(attemptId)
+      : false,
+    feedbackCompletedAttemptIdsIncludes: attemptId
+      ? feedbackCompletedAttemptIds.has(attemptId)
+      : false,
+  };
 }
 
 function normalizedText(element) {
@@ -1016,6 +1561,123 @@ function normalizedText(element) {
     .filter(Boolean)
     .join(" ")
     .replace(/\s/g, "");
+}
+
+function normalizeButtonText(element) {
+  return (element?.innerText || element?.textContent || "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isOrderConfirmButton(button) {
+  const text = normalizeButtonText(button);
+  return text === "매수 확인" || text === "매도 확인";
+}
+
+function getConfirmButtonSide(button) {
+  const text = normalizeButtonText(button);
+  if (text === "매수 확인") return "BUY";
+  if (text === "매도 확인") return "SELL";
+  return null;
+}
+
+function isGenericOkButton(button) {
+  return normalizeButtonText(button) === "확인";
+}
+
+function isInitialOrderFormButton(button) {
+  const text = normalizeButtonText(button);
+  return text === "매수" || text === "매도";
+}
+
+function createIdleUpbitOrderFlow() {
+  return {
+    state: "IDLE",
+    attemptId: null,
+    formRoot: null,
+    modalRoot: null,
+    market: null,
+    side: null,
+    orderMode: null,
+    intentPrice: null,
+    intentQuantity: null,
+    intentAmount: null,
+    modalOpenedAtRounded: null,
+    confirmKey: null,
+    intentCaptured: false,
+  };
+}
+
+function resetUpbitOrderFlow() {
+  upbitOrderFlow = createIdleUpbitOrderFlow();
+}
+
+function rememberUpbitConfirmKey(confirmKey) {
+  if (!confirmKey) {
+    return;
+  }
+
+  if (handledUpbitConfirmKeys.size >= 100) {
+    handledUpbitConfirmKeys.delete(handledUpbitConfirmKeys.values().next().value);
+  }
+
+  handledUpbitConfirmKeys.add(confirmKey);
+}
+
+function getModalTextPreview(modalRoot) {
+  const text = (modalRoot?.innerText || modalRoot?.textContent || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.slice(0, 240);
+}
+
+function getModalButtonTexts(modalRoot) {
+  return getButtonsInRoot(modalRoot)
+    .map((button) => normalizeButtonText(button))
+    .filter(Boolean);
+}
+
+function emitUpbitFlowDebug(eventType, fields = {}) {
+  const occurredAt = fields.occurredAt || new Date().toISOString();
+  const modalRoot = fields.modalRoot || upbitOrderFlow.modalRoot || null;
+  const payload = {
+    eventType,
+    attemptId: fields.attemptId ?? upbitOrderFlow.attemptId ?? null,
+    market:
+      fields.market ?? upbitOrderFlow.market ?? behaviorState?.market ??
+      parseMarket(location.href),
+    side: fields.side ?? upbitOrderFlow.side ?? null,
+    orderMode: fields.orderMode ?? upbitOrderFlow.orderMode ?? null,
+    intentPrice: fields.intentPrice ?? upbitOrderFlow.intentPrice ?? null,
+    intentQuantity:
+      fields.intentQuantity ?? upbitOrderFlow.intentQuantity ?? null,
+    intentAmount: fields.intentAmount ?? upbitOrderFlow.intentAmount ?? null,
+    valid: fields.valid ?? null,
+    buttonText: fields.buttonText ?? null,
+    clickedElementText: fields.clickedElementText ?? fields.buttonText ?? null,
+    modalTextPreview:
+      fields.modalTextPreview ?? getModalTextPreview(modalRoot),
+    modalButtonTexts: fields.modalButtonTexts ?? getModalButtonTexts(modalRoot),
+    previousFlowState: fields.previousFlowState ?? null,
+    nextFlowState:
+      fields.nextFlowState ?? fields.flowState ?? upbitOrderFlow.state,
+    reason: fields.reason ?? null,
+    flowState: fields.flowState ?? upbitOrderFlow.state,
+    occurredAt,
+    ...fields,
+  };
+  delete payload.modalRoot;
+
+  emitExtensionDebug("behavior", eventType, payload, occurredAt);
+  debugUpbitOrder(eventType, payload);
+}
+
+function emitUpbitOrderCaptureSkipped(reason, fields = {}) {
+  emitUpbitFlowDebug("UPBIT_ORDER_CAPTURE_SKIPPED", {
+    ...fields,
+    reason,
+    valid: false,
+  });
 }
 
 function findOrderPanel(element) {
@@ -1110,13 +1772,546 @@ function findUpbitOrderDialog(element) {
     : null;
 }
 
+function findUpbitModalRoot(element) {
+  if (!(element instanceof Element)) {
+    return null;
+  }
+
+  return element.closest(UPBIT_ORDER_DIALOG_SELECTOR);
+}
+
+function isVisibleUpbitModalRoot(modalRoot) {
+  if (!modalRoot) {
+    return false;
+  }
+
+  if (modalRoot.hidden || modalRoot.getAttribute?.("hidden") !== null) {
+    return false;
+  }
+
+  if (modalRoot.getAttribute?.("aria-hidden") === "true") {
+    return false;
+  }
+
+  const text = normalizedText(modalRoot);
+  return Boolean(text);
+}
+
+function findActiveUpbitOrderModal() {
+  const candidates = [
+    ...(document.querySelectorAll?.(UPBIT_ORDER_DIALOG_SELECTOR) || []),
+  ];
+
+  return (
+    candidates.find((candidate) => {
+      if (!(candidate instanceof Element)) {
+        return false;
+      }
+
+      if (!isVisibleUpbitModalRoot(candidate)) {
+        return false;
+      }
+
+      const classification = classifyUpbitModal(candidate);
+      return classification.classification !== "UNKNOWN";
+    }) || null
+  );
+}
+
 function isUpbitOrderNoticeDialogText(text) {
   const normalized = String(text || "").replace(/\s/g, "");
   return /부족|실패|오류|거절|취소되었습니다|제한/.test(normalized);
 }
 
+function getButtonsInRoot(root) {
+  return root
+    ? [...root.querySelectorAll(ORDER_ACTION_BUTTON_SELECTOR)]
+    : [];
+}
+
+function modalHasOnlyGenericOkButton(modalRoot, clickedButton = null) {
+  const buttons = [
+    ...getButtonsInRoot(modalRoot),
+    ...(clickedButton ? [clickedButton] : []),
+  ];
+  return (
+    buttons.some(isGenericOkButton) &&
+    !buttons.some(isOrderConfirmButton)
+  );
+}
+
+function readNumberAfterLabels(root, labelAlternatives) {
+  if (!root) {
+    return null;
+  }
+
+  const text = (root.innerText || root.textContent || "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  for (const label of labelAlternatives) {
+    const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = text.match(
+      new RegExp(`${escapedLabel}[^\\d.-]*(-?[\\d,]+(?:\\.\\d+)?)`),
+    );
+    const value = match ? toNumber(match[1]) : null;
+
+    if (value !== null) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function findPriceValue(root) {
+  return (
+    findInputValue(root, /매수가격|매도가격|주문가격|가격/) ??
+    readNumberAfterLabels(root, ["매수가격", "매도가격", "주문가격", "가격"])
+  );
+}
+
+function findQuantityValue(root) {
+  return (
+    findInputValue(root, /주문수량|매수수량|매도수량|수량/) ??
+    readNumberAfterLabels(root, ["주문수량", "매수수량", "매도수량", "수량"])
+  );
+}
+
+function findAmountValue(root) {
+  return (
+    findInputValue(
+      root,
+      /주문총액|매수금액|매도금액|총주문금액|주문금액|총액|금액/,
+    ) ??
+    readNumberAfterLabels(root, [
+      "주문총액",
+      "매수금액",
+      "매도금액",
+      "총주문금액",
+      "주문금액",
+      "총액",
+      "금액",
+    ])
+  );
+}
+
+function firstNumberFromRoots(roots, reader) {
+  for (const root of roots) {
+    const value = reader(root);
+
+    if (value !== null && value !== undefined) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function getTextPreview(root) {
+  return (root?.innerText || root?.textContent || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 500);
+}
+
+function getElementDataset(element) {
+  return element?.dataset ? { ...element.dataset } : {};
+}
+
+function getNearbyLabelText(input, panel) {
+  const labels = [
+    input.getAttribute?.("aria-label"),
+    input.getAttribute?.("placeholder"),
+    input.getAttribute?.("title"),
+    ...[...(input.labels || [])].map((label) => label.textContent),
+  ].filter(Boolean);
+  let candidate = input.parentElement;
+
+  for (let depth = 0; candidate && candidate !== panel && depth < 4; depth += 1) {
+    labels.push(candidate.textContent || "");
+    candidate = candidate.parentElement;
+  }
+
+  return labels.join(" ").replace(/\s+/g, " ").trim().slice(0, 240);
+}
+
+function describeInputCandidate(input, panel, labelPattern, chosenValue) {
+  const value = readInputNumber(input);
+  const nearbyLabelText = getNearbyLabelText(input, panel);
+  const labelMatched =
+    labelPattern.test(
+      [
+        input.getAttribute?.("aria-label"),
+        input.getAttribute?.("placeholder"),
+        input.getAttribute?.("title"),
+        nearbyLabelText,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .replace(/\s/g, ""),
+    );
+  const chosen =
+    labelMatched &&
+    value !== null &&
+    chosenValue !== null &&
+    chosenValue !== undefined &&
+    value === chosenValue;
+
+  return {
+    value: input.value ?? null,
+    placeholder: input.getAttribute?.("placeholder") || null,
+    ariaLabel: input.getAttribute?.("aria-label") || null,
+    name: input.getAttribute?.("name") || input.name || null,
+    id: input.id || input.getAttribute?.("id") || null,
+    className: String(input.className || ""),
+    nearbyLabelText,
+    chosen,
+    reason: chosen
+      ? "label_and_value_match"
+      : labelMatched
+        ? value === null
+          ? "label_matched_but_empty_or_invalid"
+          : "label_matched_not_selected"
+        : "label_not_matched",
+  };
+}
+
+function collectInputCandidates(roots, labelPattern, chosenValue) {
+  return roots.flatMap((root) => {
+    if (!root?.querySelectorAll) {
+      return [];
+    }
+
+    return [...root.querySelectorAll("input")].map((input) =>
+      describeInputCandidate(input, root, labelPattern, chosenValue),
+    );
+  });
+}
+
+function describeOrderModeCandidates(formRoot, modalRoot) {
+  const controls = [
+    ...new Set([
+      ...[
+        ...(formRoot?.querySelectorAll?.("button, [role='tab'], [role='radio']") || []),
+        ...(modalRoot?.querySelectorAll?.("button, [role='tab'], [role='radio']") || []),
+      ],
+    ]),
+  ];
+
+  return controls
+    .map((control) => {
+      const text = normalizeButtonText(control) || normalizedText(control);
+      const ariaSelected = control.getAttribute?.("aria-selected") || null;
+      const ariaChecked = control.getAttribute?.("aria-checked") || null;
+      const className = String(control.className || "");
+      const role = control.getAttribute?.("role") || null;
+      const selectedBy =
+        ariaSelected === "true"
+          ? "aria-selected"
+          : ariaChecked === "true"
+            ? "aria-checked"
+            : control.dataset?.state === "active"
+              ? "data-state"
+              : /(^|\s)(active|selected|on)(\s|$)/i.test(className)
+                ? "class"
+                : null;
+      const isSelected = Boolean(selectedBy);
+
+      return {
+        text,
+        ariaSelected,
+        ariaChecked,
+        className,
+        role,
+        dataset: getElementDataset(control),
+        isSelected,
+        reason: isSelected ? `selected_by_${selectedBy}` : "not_selected",
+      };
+    })
+    .filter((candidate) => /시장가|지정가|최유리/.test(candidate.text));
+}
+
+function buildUpbitOrderExtraction({ button, formRoot, modalRoot }) {
+  const side = getConfirmButtonSide(button);
+  const roots = [modalRoot, formRoot].filter(Boolean);
+  const modalText = normalizedText(modalRoot);
+  const formText = normalizedText(formRoot);
+  const orderMode =
+    firstDefined(
+      detectOrderTypeFromText(modalText),
+      detectOrderType(formRoot, button),
+      detectOrderTypeFromText(formText),
+    ) || "UNKNOWN";
+  const rawPrice = firstNumberFromRoots(roots, findPriceValue);
+  const rawQuantity = firstNumberFromRoots(roots, findQuantityValue);
+  const rawAmount = firstNumberFromRoots(roots, findAmountValue);
+  const computedAmount =
+    rawAmount ?? (rawPrice !== null && rawQuantity !== null
+      ? rawPrice * rawQuantity
+      : null);
+  const final =
+    side === "BUY" && orderMode === "MARKET"
+      ? {
+          side,
+          orderMode,
+          intentPrice: null,
+          intentQuantity: rawQuantity ?? null,
+          intentAmount: rawAmount ?? computedAmount,
+        }
+      : side === "SELL" && orderMode === "MARKET"
+        ? {
+            side,
+            orderMode,
+            intentPrice: null,
+            intentQuantity: rawQuantity ?? null,
+            intentAmount: rawAmount ?? null,
+          }
+        : {
+            side,
+            orderMode,
+            intentPrice: rawPrice ?? null,
+            intentQuantity: rawQuantity ?? null,
+            intentAmount: computedAmount,
+          };
+  const selectedTabCandidates = describeOrderModeCandidates(formRoot, modalRoot);
+  const extraction = {
+    formRootTextPreview: getTextPreview(formRoot),
+    modalRootTextPreview: getTextPreview(modalRoot),
+    selectedTabCandidates,
+    orderModeTextCandidates: ["지정가", "시장가", "최유리"].filter((text) =>
+      `${modalText}${formText}`.includes(text),
+    ),
+    amountInputCandidates: collectInputCandidates(
+      roots,
+      /주문총액|매수금액|매도금액|총주문금액|주문금액|총액|금액/,
+      rawAmount,
+    ),
+    priceInputCandidates: collectInputCandidates(
+      roots,
+      /매수가격|매도가격|주문가격|가격/,
+      rawPrice,
+    ),
+    quantityInputCandidates: collectInputCandidates(
+      roots,
+      /주문수량|매수수량|매도수량|수량/,
+      rawQuantity,
+    ),
+    final,
+  };
+
+  lastExtractionResult = extraction;
+  debugUpbitOrder("UPBIT_ORDER_MODE_CANDIDATES", extraction);
+  debugUpbitOrder("UPBIT_SELECTED_ORDER_MODE_DETECTED", {
+    ...extraction,
+    selectedOrderMode: orderMode,
+  });
+  debugUpbitOrder("UPBIT_MARKET_BUY_AMOUNT_CANDIDATES", extraction);
+  debugUpbitOrder("UPBIT_ORDER_INPUT_CANDIDATES", extraction);
+  debugUpbitOrder("UPBIT_ORDER_EXTRACTION_RESULT", extraction);
+
+  return {
+    market: behaviorState?.market || parseMarket(location.href),
+    ...final,
+    valid: true,
+    extraction,
+  };
+}
+
+function collectUpbitOrderIntent({ button, formRoot, modalRoot }) {
+  const { extraction, ...intent } = buildUpbitOrderExtraction({
+    button,
+    formRoot,
+    modalRoot,
+  });
+  return intent;
+}
+
+function buildUpbitConfirmKey(intent, modalOpenedAtRounded) {
+  return [
+    intent.market,
+    intent.side,
+    intent.orderMode,
+    intent.intentPrice ?? "",
+    intent.intentQuantity ?? "",
+    intent.intentAmount ?? "",
+    modalOpenedAtRounded,
+  ].join("|");
+}
+
+function findOrderConfirmButtonInModal(modalRoot) {
+  return getButtonsInRoot(modalRoot).find(isOrderConfirmButton) || null;
+}
+
+function classifyUpbitModal(modalRoot, clickedButton = null) {
+  const modalText = normalizedText(modalRoot);
+  const buttonTexts = getModalButtonTexts(modalRoot);
+  const clickedText = clickedButton ? normalizeButtonText(clickedButton) : null;
+  const hasConfirmButton =
+    buttonTexts.some((text) => text === "매수 확인" || text === "매도 확인") ||
+    (clickedButton && isOrderConfirmButton(clickedButton));
+  const hasGenericOk =
+    buttonTexts.includes("확인") ||
+    (clickedButton && isGenericOkButton(clickedButton));
+  const isNotice = isUpbitOrderNoticeDialogText(modalText);
+  const side = detectOrderSideFromConfirmText(modalText);
+  const orderMode = detectOrderTypeFromText(modalText);
+  const classification = isNotice || (hasGenericOk && !hasConfirmButton && !upbitOrderFlow.intentCaptured)
+    ? "VALIDATION"
+    : /완료|접수|주문되었습니다|체결|주문이완료/.test(modalText) ||
+        (hasGenericOk && !hasConfirmButton && upbitOrderFlow.intentCaptured)
+      ? "COMPLETION"
+      : hasConfirmButton || side
+        ? "CONFIRM"
+        : "UNKNOWN";
+  const result = {
+    classification,
+    side,
+    orderMode,
+    buttonText: clickedText,
+    modalTextPreview: getModalTextPreview(modalRoot),
+    modalButtonTexts: buttonTexts,
+    reason: isNotice
+      ? "notice_text"
+      : hasConfirmButton
+        ? "confirm_button"
+        : hasGenericOk
+          ? "generic_ok_button"
+          : side
+            ? "side_text"
+            : "unknown_modal",
+  };
+
+  lastModalClassification = result;
+  return result;
+}
+
+function handleUpbitValidationModalOpen(options = {}) {
+  const modalRoot = options.modalRoot || null;
+  const classification =
+    options.classification ||
+    (modalRoot ? classifyUpbitModal(modalRoot) : null) ||
+    {};
+  const previousFlowState = upbitOrderFlow.state;
+  const attemptId =
+    options.attemptId ||
+    upbitOrderFlow.attemptId ||
+    pendingAttempt?.attemptId ||
+    createUuid();
+  const market =
+    upbitOrderFlow.market ||
+    pendingAttempt?.snapshot?.market ||
+    behaviorState?.market ||
+    parseMarket(location.href);
+  const side =
+    classification.side ||
+    upbitOrderFlow.side ||
+    pendingAttempt?.snapshot?.side ||
+    null;
+  const orderMode =
+    classification.orderMode ||
+    upbitOrderFlow.orderMode ||
+    pendingAttempt?.snapshot?.orderMode ||
+    null;
+
+  upbitOrderFlow = {
+    ...upbitOrderFlow,
+    state: "VALIDATION_MODAL_OPEN",
+    attemptId,
+    modalRoot,
+    market,
+    side,
+    orderMode,
+  };
+
+  emitUpbitFlowDebug("UPBIT_VALIDATION_MODAL_OPEN", {
+    attemptId,
+    market,
+    side,
+    orderMode,
+    modalRoot,
+    previousFlowState,
+    nextFlowState: "VALIDATION_MODAL_OPEN",
+    reason: "validation_or_insufficient_balance",
+    source: options.source || null,
+    modalTextPreview: classification.modalTextPreview,
+    modalButtonTexts: classification.modalButtonTexts,
+  });
+  debugUpbitOrder("UPBIT_FEEDBACK_SKIPPED_VALIDATION_MODAL", {
+    attemptId,
+    market,
+    side,
+    orderMode,
+    reason: "validation_modal",
+    flowState: "VALIDATION_MODAL_OPEN",
+    source: options.source || null,
+    modalTextPreview: classification.modalTextPreview,
+    modalButtonTexts: classification.modalButtonTexts,
+  });
+}
+
+function handleUpbitCompletionModalOpen(options = {}) {
+  const modalRoot = options.modalRoot || null;
+  const classification =
+    options.classification ||
+    (modalRoot ? classifyUpbitModal(modalRoot) : null) ||
+    {};
+
+  emitUpbitFlowDebug("UPBIT_ORDER_COMPLETION_MODAL_OPEN", {
+    attemptId:
+      options.attemptId ||
+      upbitOrderFlow.attemptId ||
+      pendingAttempt?.attemptId ||
+      null,
+    market:
+      upbitOrderFlow.market ||
+      pendingAttempt?.snapshot?.market ||
+      behaviorState?.market ||
+      parseMarket(location.href),
+    side:
+      classification.side ||
+      upbitOrderFlow.side ||
+      pendingAttempt?.snapshot?.side ||
+      null,
+    orderMode:
+      classification.orderMode ||
+      upbitOrderFlow.orderMode ||
+      pendingAttempt?.snapshot?.orderMode ||
+      null,
+    modalRoot,
+    previousFlowState: upbitOrderFlow.state,
+    nextFlowState: "ORDER_COMPLETION_MODAL_OPEN",
+    source: options.source || null,
+    modalTextPreview: classification.modalTextPreview,
+    modalButtonTexts: classification.modalButtonTexts,
+  });
+}
+
+function createOrderDraftFromSnapshot(snapshot) {
+  if (!snapshot) {
+    return null;
+  }
+
+  return {
+    market: snapshot.market,
+    order_side: snapshot.side,
+    order_status: "WAIT",
+    order_type: snapshot.orderMode,
+    order_price: toNumber(snapshot.intentPrice),
+    order_volume: toNumber(snapshot.intentQuantity),
+    order_amount: toNumber(snapshot.intentAmount),
+    realized_loss_pct_1h: null,
+    order_request_time: snapshot.capturedAt || new Date().toISOString(),
+    order_cancel_time: null,
+  };
+}
+
 function detectOrderTypeFromText(text) {
   const normalized = String(text || "").replace(/\s/g, "");
+
+  if (normalized.includes("최유리")) {
+    return "BEST";
+  }
 
   if (normalized.includes("시장가")) {
     return "MARKET";
@@ -1141,12 +2336,9 @@ function findUpbitOrderConfirmButton(target) {
   }
 
   const dialog = findUpbitOrderDialog(button);
-  const side = detectOrderSideFromConfirmText(normalizedText(dialog));
-  const buttonText = normalizedText(button);
-  const isConfirmButton =
-    /^(확인|매수확인|매도확인|주문하기|매수|매도)$/.test(buttonText);
+  const side = getConfirmButtonSide(button);
 
-  if (!dialog || !side || !isConfirmButton) {
+  if (!dialog || !side || !isOrderConfirmButton(button)) {
     return null;
   }
 
@@ -1341,6 +2533,14 @@ function getOrderInputKind(input, panel = findOrderPanel(input)) {
 }
 
 function detectOrderType(panel, contextElement = null) {
+  const modalOrderType = detectOrderTypeFromText(
+    normalizedText(findUpbitModalRoot(contextElement)),
+  );
+
+  if (modalOrderType) {
+    return modalOrderType;
+  }
+
   if (!panel) {
     return detectOrderTypeFromText(
       normalizedText(findUpbitOrderDialog(contextElement) || contextElement),
@@ -1357,15 +2557,12 @@ function detectOrderType(panel, contextElement = null) {
       control.dataset.state === "active" ||
       /(^|\s)(active|selected|on)(\s|$)/i.test(control.className);
 
-    return isSelected && /시장가|지정가/.test(normalizedText(control));
+    return isSelected && /시장가|지정가|최유리/.test(normalizedText(control));
   });
 
-  if (normalizedText(selectedControl).includes("시장가")) {
-    return "MARKET";
-  }
-
-  if (normalizedText(selectedControl).includes("지정가")) {
-    return "LIMIT";
+  const selectedOrderType = detectOrderTypeFromText(normalizedText(selectedControl));
+  if (selectedOrderType) {
+    return selectedOrderType;
   }
 
   return detectOrderTypeFromText(
@@ -1654,7 +2851,7 @@ function findOrderTypeControl(target) {
 
   return control &&
     !control.closest(`#${PANEL_ID}`) &&
-    /시장가|지정가/.test(
+    /시장가|지정가|최유리/.test(
       `${normalizedText(control)} ${control.getAttribute("aria-label") || ""}`,
     )
     ? control
@@ -1842,18 +3039,35 @@ function normalizeMarketRiskFlags(marketData = {}) {
 }
 
 function createDemoMarketSnapshot(detail) {
-  const marketData = detail.marketData || {};
-  const market = detail.market || detail.currentOrder?.market || behaviorState?.market;
+  const sourceSnapshot = detail.marketSnapshot || detail.marketData || {};
+  const marketData = {
+    ...sourceSnapshot,
+    ...(detail.marketData || {}),
+  };
+  const market =
+    detail.market ||
+    sourceSnapshot.market ||
+    detail.currentOrder?.market ||
+    behaviorState?.market;
   const tradePrice = firstDefined(
     detail.currentPrice,
+    sourceSnapshot.current_price,
+    sourceSnapshot.currentPrice,
+    sourceSnapshot.tradePriceAtSnapshot,
+    sourceSnapshot.tradePrice,
+    sourceSnapshot.ticker?.trade_price,
+    sourceSnapshot.ticker?.tradePrice,
     marketData.tradePrice,
     marketData.tradePriceAtSnapshot,
     marketData.currentPrice,
     marketData.current_price,
+    marketData.ticker?.trade_price,
   );
   const signedChangeRate = firstDefined(
     marketData.signedChangeRate,
     marketData.signed_change_rate,
+    marketData.ticker?.signed_change_rate,
+    marketData.ticker?.signedChangeRate,
     marketData.price_change_rate_15m_decimal,
     ratioFromPercentLike(marketData.priceChangeRate15m),
     ratioFromPercentLike(marketData.price_change_rate_15m),
@@ -1879,6 +3093,9 @@ function createDemoMarketSnapshot(detail) {
   return {
     market: market || "UNKNOWN",
     tradePrice: decimalString(tradePrice),
+    current_price: toNumber(tradePrice),
+    currentPrice: toNumber(tradePrice),
+    tradePriceAtSnapshot: decimalString(tradePrice),
     signedChangeRate: signedChangeRate ?? null,
     shortTermReturn5m: shortTermReturn5m ?? null,
     spreadRate: firstDefined(marketData.spreadRate, marketData.spread_rate) ?? null,
@@ -1889,19 +3106,79 @@ function createDemoMarketSnapshot(detail) {
         marketData.price_position_in_5m_range,
       ) ?? null,
     volumeSpikeRatio5m: volumeSpikeRatio5m ?? null,
+    market_data: sourceSnapshot,
     fetchedAt,
     freshnessMs: 0,
-    source: "demo-page",
+    source: "demo-data",
   };
 }
 
+function filterDemoOrdersByMarket(orders, market) {
+  if (!Array.isArray(orders)) {
+    return [];
+  }
+
+  if (!market) {
+    return orders;
+  }
+
+  return orders.filter((order) => order?.market === market);
+}
+
+function attachDemoOrderMarket(orders, market) {
+  if (!Array.isArray(orders)) {
+    return [];
+  }
+
+  return orders.map((order) =>
+    order && market && !order.market ? { ...order, market } : order,
+  );
+}
+
 function createDemoPersonalSnapshot(detail) {
-  const market = detail.market || detail.currentOrder?.market || behaviorState?.market;
-  const balances = Array.isArray(detail.accounts) ? detail.accounts : [];
-  const openOrders = Array.isArray(detail.rawOpenOrders) ? detail.rawOpenOrders : [];
-  const recentTrades = Array.isArray(detail.rawClosedOrders)
-    ? detail.rawClosedOrders
-    : [];
+  const accountSnapshot = detail.accountSnapshot || detail.personalSnapshot || {};
+  const market =
+    detail.market ||
+    accountSnapshot.market ||
+    detail.currentOrder?.market ||
+    behaviorState?.market;
+  const balances = Array.isArray(detail.accounts)
+    ? detail.accounts
+    : Array.isArray(accountSnapshot.accounts)
+      ? accountSnapshot.accounts
+      : Array.isArray(accountSnapshot.balances)
+        ? accountSnapshot.balances
+        : [];
+  const allOrders = attachDemoOrderMarket([
+    ...(Array.isArray(detail.orders) ? detail.orders : []),
+    ...(Array.isArray(accountSnapshot.orders) ? accountSnapshot.orders : []),
+  ], market);
+  const openOrders = filterDemoOrdersByMarket(
+    attachDemoOrderMarket(
+      Array.isArray(detail.rawOpenOrders)
+        ? detail.rawOpenOrders
+        : Array.isArray(accountSnapshot.rawOpenOrders)
+          ? accountSnapshot.rawOpenOrders
+          : allOrders.filter((order) =>
+              ["wait", "watch"].includes(String(order?.state || "").toLowerCase()),
+            ),
+      market,
+    ),
+    market,
+  );
+  const recentTrades = filterDemoOrdersByMarket(
+    attachDemoOrderMarket(
+      Array.isArray(detail.rawClosedOrders)
+        ? detail.rawClosedOrders
+        : Array.isArray(accountSnapshot.rawClosedOrders)
+          ? accountSnapshot.rawClosedOrders
+          : allOrders.filter((order) =>
+              !["wait", "watch"].includes(String(order?.state || "").toLowerCase()),
+            ),
+      market,
+    ),
+    market,
+  );
   const baseCurrency = String(market || "").split("-")[1];
   const baseAccount = balances.find((account) => account?.currency === baseCurrency);
   const baseAssetAvgBuyPrice = firstDefined(
@@ -1918,8 +3195,21 @@ function createDemoPersonalSnapshot(detail) {
     market: market || "UNKNOWN",
     balances,
     openOrders,
-    recentOrders: Array.isArray(detail.recentOrders) ? detail.recentOrders : [],
+    accounts: balances,
+    recentOrders: filterDemoOrdersByMarket(
+      attachDemoOrderMarket(
+        Array.isArray(detail.recentOrders)
+          ? detail.recentOrders
+          : Array.isArray(accountSnapshot.recentOrders)
+            ? accountSnapshot.recentOrders
+            : allOrders,
+        market,
+      ),
+      market,
+    ),
     recentTrades,
+    rawOpenOrders: openOrders,
+    rawClosedOrders: recentTrades,
     baseAssetAvgBuyPrice:
       baseAssetAvgBuyPrice === undefined || baseAssetAvgBuyPrice === null
         ? null
@@ -1929,7 +3219,10 @@ function createDemoPersonalSnapshot(detail) {
     ),
     fetchedAt,
     freshnessMs: 0,
-    source: "demo-page",
+    personalDataSource: "demo-data",
+    demoPersonalAvailable: true,
+    privateDataAvailable: false,
+    source: "demo-data",
   };
 }
 
@@ -1956,14 +3249,89 @@ function withAuthoritativeOrderMarket(order, market = getAuthoritativeMarket()) 
   return { ...order, market };
 }
 
-function handleDemoScenario(event) {
-  if (!behaviorState || !isAppPage()) {
-    return;
-  }
+function normalizeDemoBridgeDetail(input = {}) {
+  const state = input.state || input.payload || input.detail || input;
+  const marketSnapshot =
+    state.marketSnapshot ||
+    (["DEMO_MARKET_SNAPSHOT", "MARKET_SNAPSHOT"].includes(input.type)
+      ? input.payload
+      : null);
+  const accountSnapshot =
+    state.accountSnapshot ||
+    state.personalSnapshot ||
+    (["DEMO_PERSONAL_SNAPSHOT", "ACCOUNT_SNAPSHOT"].includes(input.type)
+      ? input.payload
+      : null);
+  const orderCreated =
+    input.type === "DEMO_ORDER_CREATED" || input.type === "ORDER_CREATED"
+      ? input.payload
+      : null;
+  const orders = [
+    ...(Array.isArray(state.orders) ? state.orders : []),
+    ...(orderCreated ? [orderCreated] : []),
+  ];
+  const market =
+    state.market ||
+    marketSnapshot?.market ||
+    accountSnapshot?.market ||
+    state.currentOrder?.market ||
+    orderCreated?.market ||
+    behaviorState?.market;
 
-  acknowledgePageEvent(event);
-  const detail = event.detail || {};
-  const expiresAt = Number(detail.expiresAt) || Date.now() + 180_000;
+  return {
+    ...state,
+    market,
+    marketSnapshot,
+    accountSnapshot,
+    orders: attachDemoOrderMarket(orders, market),
+    currentOrder: state.currentOrder || orderCreated
+      ? withAuthoritativeOrderMarket(state.currentOrder || orderCreated, market)
+      : null,
+    behaviorData: state.behaviorData || null,
+    updatedAt: state.updatedAt || new Date().toISOString(),
+  };
+}
+
+function getDemoBridgeDebugPayload(type, override = null, source = null) {
+  const marketSnapshot = override?.demoMarketSnapshot || null;
+  const personalSnapshot = override?.demoPersonalSnapshot || null;
+  const orders = override?.demoData?.recentOrders || [];
+
+  return {
+    type,
+    source,
+    market:
+      marketSnapshot?.market ||
+      personalSnapshot?.market ||
+      override?.demoData?.market ||
+      latestDemoBridgeState?.market ||
+      null,
+    hasPayload: true,
+    hasMarketSnapshot: Boolean(marketSnapshot),
+    hasPersonalSnapshot: Boolean(personalSnapshot),
+    accountCount: personalSnapshot?.accounts?.length || 0,
+    orderCount: orders.length,
+    fields: {
+      tradePriceAtSnapshot: marketSnapshot?.tradePriceAtSnapshot ?? null,
+      signedChangeRate: marketSnapshot?.signedChangeRate ?? null,
+      shortTermReturn5m: marketSnapshot?.shortTermReturn5m ?? null,
+      spreadRate: marketSnapshot?.spreadRate ?? null,
+      pricePositionIn5mRange:
+        marketSnapshot?.pricePositionIn5mRange ?? null,
+      volumeSpikeRatio5m: marketSnapshot?.volumeSpikeRatio5m ?? null,
+    },
+  };
+}
+
+function emitDemoBridgeDebug(kind, payload) {
+  emitExtensionDebug("behavior", kind, {
+    kind,
+    ...payload,
+  });
+}
+
+function buildDemoOverrideFromState(state = {}) {
+  const detail = normalizeDemoBridgeDetail(state);
   const demoMarketSnapshot = createDemoMarketSnapshot(detail);
   const demoPersonalSnapshot = createDemoPersonalSnapshot(detail);
   const demoMarket = demoMarketSnapshot.market || detail.market || "UNKNOWN";
@@ -1972,37 +3340,175 @@ function handleDemoScenario(event) {
     demoMarket,
   );
   const marketData = {
+    ...(detail.marketSnapshot || {}),
     ...(detail.marketData || {}),
     market: demoMarket,
+    currentPrice:
+      detail.currentPrice ??
+      detail.marketSnapshot?.currentPrice ??
+      detail.marketSnapshot?.current_price ??
+      detail.marketSnapshot?.tradePriceAtSnapshot ??
+      demoMarketSnapshot.currentPrice ??
+      null,
+    tradePriceAtSnapshot:
+      detail.marketSnapshot?.tradePriceAtSnapshot ??
+      demoMarketSnapshot.tradePriceAtSnapshot ??
+      demoMarketSnapshot.tradePrice ??
+      null,
+    signedChangeRate:
+      detail.marketSnapshot?.signedChangeRate ??
+      demoMarketSnapshot.signedChangeRate ??
+      null,
+    shortTermReturn5m:
+      detail.marketSnapshot?.shortTermReturn5m ??
+      demoMarketSnapshot.shortTermReturn5m ??
+      null,
+    spreadRate:
+      detail.marketSnapshot?.spreadRate ??
+      demoMarketSnapshot.spreadRate ??
+      null,
+    pricePositionIn5mRange:
+      detail.marketSnapshot?.pricePositionIn5mRange ??
+      demoMarketSnapshot.pricePositionIn5mRange ??
+      null,
+    volumeSpikeRatio5m:
+      detail.marketSnapshot?.volumeSpikeRatio5m ??
+      demoMarketSnapshot.volumeSpikeRatio5m ??
+      null,
+    marketRiskFlags:
+      detail.marketSnapshot?.marketRiskFlags ||
+      demoMarketSnapshot.marketRiskFlags ||
+      [],
   };
-  behaviorState.demoOverride = {
+  const accounts =
+    demoPersonalSnapshot.accounts || demoPersonalSnapshot.balances || [];
+  const rawClosedOrders = demoPersonalSnapshot.rawClosedOrders || [];
+  const rawOpenOrders = demoPersonalSnapshot.rawOpenOrders || [];
+  const recentOrders = demoPersonalSnapshot.recentOrders || [];
+
+  return {
     behaviorData: detail.behaviorData || null,
     currentOrder,
     demoMarketSnapshot,
     demoPersonalSnapshot,
     demoData: {
       market: demoMarket,
-      recentOrders: Array.isArray(detail.recentOrders)
-        ? detail.recentOrders
-        : [],
+      personalDataSource: "demo-data",
+      demoPersonalAvailable: true,
+      currentPrice: marketData.currentPrice,
+      marketData,
+      accounts,
+      recentOrders,
+      rawClosedOrders,
+      rawOpenOrders,
+      updatedAt: detail.updatedAt || new Date().toISOString(),
       clientAverageBuyAmount:
         detail.clientAverageBuyAmount ??
         detail.behaviorData?.client_avg_buy_amount ??
         null,
-      currentPrice: detail.currentPrice ?? null,
-      marketData,
-      accounts: Array.isArray(detail.accounts) ? detail.accounts : [],
-      rawClosedOrders: Array.isArray(detail.rawClosedOrders)
-        ? detail.rawClosedOrders
-        : [],
-      rawOpenOrders: Array.isArray(detail.rawOpenOrders)
-        ? detail.rawOpenOrders
-        : [],
     },
-    expiresAt,
+    expiresAt: Number(detail.expiresAt) || Date.now() + 180_000,
   };
+}
 
-  behaviorState.market = demoMarket;
+function applyDemoOverrideState(state = {}, source = "demo-state") {
+  if (!behaviorState || !isDemoPage()) {
+    return;
+  }
+
+  const normalizedState = normalizeDemoBridgeDetail(state);
+  latestDemoBridgeState = {
+    ...latestDemoBridgeState,
+    ...normalizedState,
+  };
+  const previousOrders = behaviorState.demoOverride?.demoData || {};
+  const previousOverride = behaviorState.demoOverride || {};
+  const mergedState = {
+    ...normalizedState,
+    market:
+      normalizedState.market ||
+      getDemoOverrideMarket(previousOverride) ||
+      latestDemoBridgeState?.market,
+    marketSnapshot:
+      normalizedState.marketSnapshot ||
+      previousOverride.demoMarketSnapshot ||
+      latestDemoBridgeState?.marketSnapshot ||
+      null,
+    accountSnapshot:
+      normalizedState.accountSnapshot ||
+      previousOverride.demoPersonalSnapshot ||
+      latestDemoBridgeState?.accountSnapshot ||
+      null,
+    currentOrder:
+      normalizedState.currentOrder ||
+      previousOverride.currentOrder ||
+      latestDemoBridgeState?.currentOrder ||
+      null,
+    behaviorData:
+      normalizedState.behaviorData ||
+      previousOverride.behaviorData ||
+      latestDemoBridgeState?.behaviorData ||
+      null,
+    orders: [
+      ...(Array.isArray(previousOrders.rawClosedOrders)
+        ? previousOrders.rawClosedOrders
+        : []),
+      ...(Array.isArray(previousOrders.rawOpenOrders)
+        ? previousOrders.rawOpenOrders
+        : []),
+      ...(Array.isArray(previousOrders.recentOrders)
+        ? previousOrders.recentOrders
+        : []),
+      ...(Array.isArray(state.orders) ? state.orders : []),
+    ],
+  };
+  const override = buildDemoOverrideFromState(mergedState);
+  behaviorState.demoOverride = override;
+  behaviorState.market = override.demoMarketSnapshot.market;
+  latestDemoBridgeState = {
+    ...latestDemoBridgeState,
+    market: behaviorState.market,
+    marketSnapshot: override.demoMarketSnapshot,
+    accountSnapshot: override.demoPersonalSnapshot,
+    orders: override.demoData.recentOrders,
+    currentOrder: override.currentOrder,
+    behaviorData: override.behaviorData,
+    updatedAt: latestDemoBridgeState?.updatedAt || new Date().toISOString(),
+  };
+  const debugPayload = getDemoBridgeDebugPayload(
+    normalizedState.type || state.type || source,
+    override,
+    source,
+  );
+  if (override.demoMarketSnapshot) {
+    emitDemoBridgeDebug("DEMO_MARKET_SNAPSHOT_CACHED", debugPayload);
+  }
+  if (override.demoPersonalSnapshot) {
+    emitDemoBridgeDebug("DEMO_PERSONAL_SNAPSHOT_CACHED", debugPayload);
+  }
+  if (state.type === "ORDER_CREATED" || state.type === "DEMO_ORDER_CREATED") {
+    emitDemoBridgeDebug("DEMO_ORDER_CREATED_CACHED", debugPayload);
+  }
+  debugUpbitOrder("DEMO_SNAPSHOT_BRIDGE_UPDATED", {
+    source,
+    market: behaviorState.market,
+    hasMarketSnapshot: Boolean(override.demoMarketSnapshot),
+    hasPersonalSnapshot: Boolean(override.demoPersonalSnapshot),
+    accountsLength: override.demoData.accounts.length,
+    recentOrdersLength: override.demoData.recentOrders.length,
+  });
+}
+
+function handleDemoScenario(event) {
+  if (!behaviorState || !isAppPage()) {
+    return;
+  }
+
+  acknowledgePageEvent(event);
+  const detail = event.detail || {};
+  behaviorState.demoOverride = buildDemoOverrideFromState(detail);
+
+  behaviorState.market = behaviorState.demoOverride.demoMarketSnapshot.market;
   if (toNumber(detail.orderbookClickToSnapshotMs) !== null) {
     behaviorState.lastOrderbookClickAt =
       Date.now() - Math.max(0, toNumber(detail.orderbookClickToSnapshotMs));
@@ -2166,6 +3672,25 @@ function getDemoSnapshotOverride(snapshot) {
   };
 }
 
+function getDemoCacheDebugPayload(resolvedMarket) {
+  const override = getActiveDemoOverride();
+  const demoMarket = getDemoOverrideMarket(override);
+
+  return {
+    resolvedMarket: resolvedMarket || null,
+    demoMarketCacheKeys: demoMarket ? [demoMarket] : [],
+    demoPersonalCacheKeys: demoMarket && override?.demoPersonalSnapshot
+      ? [demoMarket]
+      : [],
+    latestDemoStateMarket: latestDemoBridgeState?.market || null,
+    latestDemoStateUpdatedAt: latestDemoBridgeState?.updatedAt || null,
+  };
+}
+
+function emitDemoCacheMissDebug(kind, resolvedMarket) {
+  emitDemoBridgeDebug(kind, getDemoCacheDebugPayload(resolvedMarket));
+}
+
 function getSnapshotsForOrderContext(snapshot) {
   if (isDemoPage()) {
     const demoSnapshots = getDemoSnapshotOverride(snapshot);
@@ -2179,6 +3704,14 @@ function getSnapshotsForOrderContext(snapshot) {
     )
       ? demoSnapshots.personalSnapshot
       : null;
+
+    if (!freshMarketSnapshot) {
+      emitDemoCacheMissDebug("DEMO_MARKET_SNAPSHOT_CACHE_MISS", snapshot.market);
+    }
+
+    if (!freshPersonalSnapshot) {
+      emitDemoCacheMissDebug("DEMO_PERSONAL_SNAPSHOT_CACHE_MISS", snapshot.market);
+    }
 
     return {
       ...demoSnapshots,
@@ -2293,6 +3826,10 @@ function getSnapshotFreshnessMs(snapshot) {
 }
 
 function emitOrderContextSnapshotDebug(snapshot) {
+  if (shouldBlockWarningOrVisualUpdate(snapshot?.attemptId)) {
+    return;
+  }
+
   const {
     freshMarketSnapshot,
     freshPersonalSnapshot,
@@ -2320,24 +3857,43 @@ function emitOrderContextSnapshotDebug(snapshot) {
       priceVsAvgBuyRateAtSnapshot: snapshot.priceVsAvgBuyRateAtSnapshot,
     },
   }, snapshot.capturedAt);
+  debugUpbitOrder("UPBIT_ORDER_CONTEXT_SNAPSHOT_BUILT", {
+    attemptId: snapshot.attemptId,
+    orderContextSnapshot: snapshot,
+    marketSnapshot: freshMarketSnapshot || null,
+    personalSnapshot: freshPersonalSnapshot || null,
+  });
 }
 
-function buildOrderContextSnapshot(orderButton, snapshotTrigger) {
-  const panel = findOrderPanel(orderButton);
-  const draft = readOrderDraft(orderButton);
+function buildOrderContextSnapshot(orderButton, snapshotTrigger, options = {}) {
+  const panel = options.formRoot || findOrderPanel(orderButton);
+  const draft = Object.prototype.hasOwnProperty.call(options, "draft")
+    ? options.draft
+    : readOrderDraft(orderButton);
   const capturedAt = new Date().toISOString();
   const now = Date.now();
   const market = isDemoPage()
     ? getDemoOverrideMarket() ||
+      options.market ||
       draft?.market ||
       behaviorState?.market ||
       parseMarket(location.href)
-    : draft?.market || behaviorState?.market || parseMarket(location.href);
-  const side = draft?.order_side || detectOrderSide(panel, orderButton) || "UNKNOWN";
-  const orderMode = draft?.order_type || detectOrderType(panel, orderButton) || "UNKNOWN";
-  const price = draft?.order_price ?? null;
-  const amount = draft?.order_amount ?? null;
-  const quantity = draft?.order_volume ?? null;
+    : options.market || draft?.market || behaviorState?.market || parseMarket(location.href);
+  const side =
+    options.side || draft?.order_side || detectOrderSide(panel, orderButton) ||
+    "UNKNOWN";
+  const orderMode =
+    options.orderMode || draft?.order_type || detectOrderType(panel, orderButton) ||
+    "UNKNOWN";
+  const price = Object.prototype.hasOwnProperty.call(options, "intentPrice")
+    ? options.intentPrice
+    : draft?.order_price ?? null;
+  const amount = Object.prototype.hasOwnProperty.call(options, "intentAmount")
+    ? options.intentAmount
+    : draft?.order_amount ?? null;
+  const quantity = Object.prototype.hasOwnProperty.call(options, "intentQuantity")
+    ? options.intentQuantity
+    : draft?.order_volume ?? null;
   const recentFieldEdits = (field) =>
     (behaviorState?.inputEditTimestampsByField?.[field] || []).filter(
       (timestamp) => timestamp >= now - 3 * 60_000,
@@ -2358,16 +3914,18 @@ function buildOrderContextSnapshot(orderButton, snapshotTrigger) {
   return {
     snapshotId: createUuid(),
     attemptId:
-      snapshotTrigger === "ORDER_INTENT_CLICK" ? createUuid() : null,
+      options.attemptId ||
+      (snapshotTrigger === "ORDER_INTENT_CLICK" ? createUuid() : null),
     snapshotTrigger,
     capturedAt,
     market: market || "UNKNOWN",
     side,
     orderMode,
     entryPoint: "NORMAL",
-    intentPrice: decimalString(draft?.order_price),
+    intentPrice: decimalString(price),
     intentQuantity: decimalString(quantity),
     intentAmount: decimalString(amount),
+    valid: options.valid ?? true,
     requestedBalanceRatio: null,
     draftDurationMs: behaviorState?.draftStartedAt
       ? now - behaviorState.draftStartedAt
@@ -2476,48 +4034,212 @@ function createLocalGuardrailResult(ruleEvaluation, snapshot) {
   };
 }
 
+function collectRuleConditionsForDebug(expression) {
+  if (!expression || typeof expression !== "object") {
+    return [];
+  }
+
+  if (expression.nodeType === "CONDITION") {
+    return [expression];
+  }
+
+  if (expression.nodeType !== "GROUP") {
+    return [];
+  }
+
+  return (Array.isArray(expression.children) ? expression.children : [])
+    .flatMap(collectRuleConditionsForDebug);
+}
+
+function buildRuleConditionResultsForDebug(rules, snapshot) {
+  return (Array.isArray(rules) ? rules : [])
+    .filter((rule) => rule?.isEnabled !== false)
+    .flatMap((rule) =>
+      collectRuleConditionsForDebug(rule.expression).map((condition) => {
+        const actualValue = getRuleFieldValue(snapshot, condition.leftField);
+        const expectedValue = getRuleOperandValue(
+          condition.rightOperand,
+          snapshot,
+        );
+
+        return {
+          ruleId: rule.ruleId || null,
+          ruleName: rule.name || rule.warningTitle || rule.title || null,
+          leftField: condition.leftField,
+          operator: condition.operator,
+          expectedValue,
+          actualValue,
+          actualType: actualValue === null ? "null" : typeof actualValue,
+          pass: evaluateRuleExpression(condition, snapshot),
+        };
+      }),
+    );
+}
+
 function evaluatePageGuardrailRulesForSnapshot(snapshot) {
-  const ruleEvaluation = evaluateGuardrailRules(pageGuardrailRules, snapshot);
+  const baseRuleEvaluation = evaluateGuardrailRules(pageGuardrailRules, snapshot);
   const evaluatedSnapshot = {
     ...snapshot,
-    matchedRuleIdsAtSnapshot: ruleEvaluation.matchedRuleIds,
-    primaryShownRuleId: ruleEvaluation.primaryRuleId,
-    shownRuleIds: ruleEvaluation.primaryRuleId
-      ? [ruleEvaluation.primaryRuleId]
+    matchedRuleIdsAtSnapshot: baseRuleEvaluation.matchedRuleIds,
+    primaryShownRuleId: baseRuleEvaluation.primaryRuleId,
+    shownRuleIds: baseRuleEvaluation.primaryRuleId
+      ? [baseRuleEvaluation.primaryRuleId]
       : [],
   };
+  const ruleEvaluation = {
+    ...baseRuleEvaluation,
+    conditionResults: buildRuleConditionResultsForDebug(
+      pageGuardrailRules,
+      evaluatedSnapshot,
+    ),
+  };
+  lastRuleEvaluation = ruleEvaluation;
   const result = createLocalGuardrailResult(
     ruleEvaluation,
     evaluatedSnapshot,
   );
 
+  debugUpbitOrder("UPBIT_RULE_EVALUATION_RESULT", {
+    attemptId: evaluatedSnapshot.attemptId,
+    market: evaluatedSnapshot.market,
+    side: evaluatedSnapshot.side,
+    orderMode: evaluatedSnapshot.orderMode,
+    orderType: evaluatedSnapshot.orderType,
+    orderContextSnapshot: evaluatedSnapshot,
+    ruleEvaluation,
+    matchedRules: ruleEvaluation.matchedRules || [],
+    primaryRule: ruleEvaluation.primaryRule || null,
+    conditionResults: ruleEvaluation.conditionResults || [],
+    snapshotCoreFields: {
+      side: evaluatedSnapshot?.side,
+      orderMode: evaluatedSnapshot?.orderMode,
+      orderType: evaluatedSnapshot?.orderType,
+      order_mode: evaluatedSnapshot?.order_mode,
+      intentPrice: evaluatedSnapshot?.intentPrice,
+      intentQuantity: evaluatedSnapshot?.intentQuantity,
+      intentAmount: evaluatedSnapshot?.intentAmount,
+    },
+  });
   return { snapshot: evaluatedSnapshot, result, ruleEvaluation };
 }
 
-function showDetectedGuardrailResult(result, snapshot) {
-  if (!result?.detected) {
+function showDetectedGuardrailResult(result, snapshot, options = {}) {
+  const attemptId =
+    getAttemptIdFromPayload(result) || snapshot?.attemptId || null;
+  const source =
+    options.source ||
+    result?.source ||
+    (upbitOrderFlow.state === "CONFIRM_MODAL_OPEN"
+      ? "UPBIT_CONFIRM_MODAL_OPEN"
+      : "ORDER_INTENT_CLICK");
+  const renderMode = options.renderMode || result?.renderMode || "WARNING_ONLY";
+  const flowStateBefore = upbitOrderFlow.state;
+  const primaryRule = result?.primaryRule || result?.ruleEvaluation?.primaryRule || null;
+  const warningDebugBase = {
+    source,
+    renderMode,
+    attemptId,
+    detected: Boolean(result?.detected),
+    primaryRuleId:
+      result?.primaryRuleId ||
+      result?.ruleEvaluation?.primaryRuleId ||
+      primaryRule?.ruleId ||
+      null,
+    primaryRuleName: primaryRule?.name || null,
+    visualMode:
+      result?.visualMode ||
+      result?.flameMode ||
+      result?.ruleEvaluation?.visualMode ||
+      primaryRule?.visualMode ||
+      null,
+    warningTitle:
+      result?.warningTitle ||
+      result?.ruleEvaluation?.warningTitle ||
+      primaryRule?.warningTitle ||
+      null,
+    warningMessage:
+      result?.message ||
+      result?.warningMessage ||
+      result?.ruleEvaluation?.warningMessage ||
+      primaryRule?.warningMessage ||
+      null,
+    flowStateBefore,
+  };
+
+  const emitSkipped = (reason) => {
+    const flowStateAfter = upbitOrderFlow.state;
+    debugUpbitOrder("UPBIT_WARNING_UI_SKIPPED", {
+      ...warningDebugBase,
+      reason,
+      flowStateAfter,
+      ...getWarningUiDebugState(attemptId),
+    });
     return false;
+  };
+
+  if (
+    source === "UPBIT_CONFIRM_MODAL_OPEN" &&
+    !warningDebugBase.primaryRuleId &&
+    result?.detected
+  ) {
+    return emitSkipped("NO_PRIMARY_RULE");
+  }
+
+  if (shouldBlockWarningOrVisualUpdate(attemptId)) {
+    if (feedbackCompletedAttemptIds.has(attemptId)) {
+      return emitSkipped("ATTEMPT_ALREADY_FEEDBACK_COMPLETED");
+    }
+    if (settledAttemptIds.has(attemptId)) {
+      return emitSkipped("ATTEMPT_ALREADY_SETTLED");
+    }
+    if (pendingAttempt?.attemptId && pendingAttempt.attemptId !== attemptId) {
+      return emitSkipped("STALE_ATTEMPT");
+    }
+    return emitSkipped("UNKNOWN");
+  }
+
+  if (!result?.detected) {
+    return emitSkipped("UNKNOWN");
   }
 
   if (result.type !== "USER_GUARDRAIL_RULE") {
-    return false;
+    return emitSkipped("UNKNOWN");
   }
 
   if (isGuardrailSnapshotHandled(snapshot?.snapshotId)) {
-    return false;
+    return emitSkipped("DUPLICATE_WARNING_ALREADY_APPLIED");
   }
 
-  dismissActiveTradeFeedback();
   activeDetectionResult = result;
-  rememberGuardrailSnapshot(shownGuardrailSnapshotIds, snapshot.snapshotId);
-  applyFlameTheme(result.visualMode || result.flameMode);
-  showGuardrail(result, snapshot.snapshotId);
-  activeGuardrailSnapshotId = snapshot.snapshotId;
+  activeGuardrailSnapshotId = snapshot?.snapshotId || null;
 
-  const panel = document.getElementById(PANEL_ID);
-  if (panel) {
-    setPanelCollapsed(panel, false);
+  const panelBeforeApply = document.getElementById(PANEL_ID);
+  if (!panelBeforeApply) {
+    return emitSkipped("NO_PANEL_ROOT");
   }
+
+  if (
+    activeTradeFeedback?.attemptId &&
+    activeTradeFeedback.attemptId === attemptId
+  ) {
+    return emitSkipped("ACTIVE_FEEDBACK_VIEW");
+  }
+
+  if (
+    activeTradeFeedback?.attemptId &&
+    activeTradeFeedback.attemptId !== attemptId
+  ) {
+    clearActiveFeedbackViewForNewAttempt(attemptId);
+  }
+
+  rememberGuardrailSnapshot(shownGuardrailSnapshotIds, snapshot.snapshotId);
+  applyFlameTheme(result.visualMode || result.flameMode, { attemptId });
+  showGuardrail(result, snapshot.snapshotId);
+
+  openSaltbreadPanel({
+    source: `${source}_DETECTED_GUARDRAIL`,
+    reason: "detected_guardrail",
+  });
 
   setAnalysisStatus(
     result.message || `${result.type} 감정 매매 타입을 감지했어요.`,
@@ -2526,6 +4248,43 @@ function showDetectedGuardrailResult(result, snapshot) {
     result.warningTitle || result.primaryRule?.warningTitle || null,
     result,
   );
+  focusGuardrailWarning();
+  scrollWarningIntoView();
+
+  const uiState = getWarningUiDebugState(attemptId);
+  if (!uiState.warningCardExists) {
+    return emitSkipped("PANEL_RENDER_FAILED");
+  }
+
+  const appliedAt = new Date().toISOString();
+
+  if (source === "UPBIT_CONFIRM_MODAL_OPEN") {
+    upbitOrderFlow = {
+      ...upbitOrderFlow,
+      state: "GUARDRAIL_SHOWN",
+      attemptId,
+    };
+  }
+
+  if (pendingAttempt?.attemptId === attemptId) {
+    pendingAttempt.guardrailShownAt = pendingAttempt.guardrailShownAt || appliedAt;
+    pendingAttempt.warningAppliedAt = pendingAttempt.warningAppliedAt || appliedAt;
+    pendingAttempt.feedbackShownAt = null;
+    pendingAttempt.feedbackRespondedAt = null;
+  }
+
+  const flowStateAfter = upbitOrderFlow.state;
+
+  debugUpbitOrder("UPBIT_WARNING_UI_APPLIED", {
+    ...warningDebugBase,
+    appliedAt,
+    flowStateAfter,
+    panelFlameMode: uiState.renderedVisualMode,
+    panelStatusState:
+      document.querySelector(".saltbread-analysis-status")?.dataset?.state ||
+      null,
+    ...uiState,
+  });
   return true;
 }
 
@@ -2535,9 +4294,28 @@ function clearActiveGuardrailResult() {
   setPanelWarningActive(false);
 }
 
+function clearActiveFeedbackViewForNewAttempt(nextAttemptId = null) {
+  if (
+    activeTradeFeedback?.attemptId &&
+    activeTradeFeedback.attemptId !== nextAttemptId
+  ) {
+    activeTradeFeedback = null;
+    setPanelFeedbackActive(false);
+  }
+}
+
+function clearActiveWarningForNewAttempt(nextAttemptId = null) {
+  const activeAttemptId = getAttemptIdFromPayload(activeDetectionResult);
+
+  if (activeAttemptId && activeAttemptId !== nextAttemptId) {
+    clearActiveGuardrailResult();
+  }
+}
+
 function reviewPendingAttemptWithPageRules() {
   if (
     !pendingAttempt?.snapshot ||
+    shouldBlockWarningOrVisualUpdate(pendingAttempt.snapshot.attemptId) ||
     activeDetectionResult?.detected ||
     isGuardrailSnapshotHandled(pendingAttempt.snapshot.snapshotId)
   ) {
@@ -2554,30 +4332,67 @@ function reviewPendingAttemptWithPageRules() {
   }
 }
 
-function beginOrderAttempt(orderButton) {
+function beginOrderAttempt(orderButton, options = {}) {
   if (pendingAttempt && !pendingAttempt.snapshotEmitted) {
     emitOrderContextSnapshot(pendingAttempt.snapshot, activeDetectionResult);
     pendingAttempt.snapshotEmitted = true;
   }
+  const previousAttemptId = pendingAttempt?.attemptId || null;
+  if (previousAttemptId && previousAttemptId !== options.attemptId) {
+    rememberSettledAttempt(previousAttemptId);
+  }
+  unlockFeedbackCompletedVisualStateForNewAttempt();
   const rawSnapshot = buildOrderContextSnapshot(
     orderButton,
     "ORDER_INTENT_CLICK",
+    options,
   );
   const snapshotWithCache = mergeCachedSnapshotsIntoOrderContext(rawSnapshot);
   const { snapshot, result } =
     evaluatePageGuardrailRulesForSnapshot(snapshotWithCache);
+  if (previousAttemptId && previousAttemptId !== snapshot.attemptId) {
+    clearActiveFeedbackViewForNewAttempt(snapshot.attemptId);
+    clearActiveWarningForNewAttempt(snapshot.attemptId);
+  }
   emitOrderContextSnapshotDebug(snapshot);
+  lastOrderIntent = {
+    attemptId: snapshot.attemptId,
+    market: snapshot.market,
+    side: snapshot.side,
+    orderMode: snapshot.orderMode,
+    intentPrice: snapshot.intentPrice,
+    intentQuantity: snapshot.intentQuantity,
+    intentAmount: snapshot.intentAmount,
+    valid: snapshot.valid,
+  };
+  lastOrderContextSnapshot = snapshot;
   pendingAttempt = {
     attemptId: snapshot.attemptId,
     snapshot,
     snapshotEmitted: true,
+    guardrailShownAt: null,
+    warningAppliedAt: null,
+    confirmClickedAt: null,
     feedbackShownAt: null,
     feedbackRespondedAt: null,
   };
+  debugUpbitOrder("ORDER_INTENT_CLICK", {
+    attemptId: snapshot.attemptId,
+    dto: lastOrderIntent,
+    rawOrderData: options.draft || null,
+    extraction: lastExtractionResult,
+    orderContextSnapshot: snapshot,
+    ruleEvaluation: result?.ruleEvaluation || lastRuleEvaluation,
+    matchedRules: result?.ruleEvaluation?.matchedRules || [],
+    primaryRule: result?.ruleEvaluation?.primaryRule || null,
+  });
   emitOrderContextSnapshot(snapshot, result);
   let warningShown = false;
   if (result?.detected) {
-    warningShown = showDetectedGuardrailResult(result, snapshot);
+    warningShown = showDetectedGuardrailResult(result, snapshot, {
+      source: options.guardrailSource || options.source || null,
+      renderMode: options.renderMode || "WARNING_ONLY",
+    });
   } else {
     clearActiveGuardrailResult();
   }
@@ -2603,6 +4418,10 @@ function closeGuardrail(action, options = {}) {
     };
 
     emitExtensionDebug("behavior", "GuardrailReactionDTO", reaction);
+    debugUpbitOrder("GuardrailReactionDTO", {
+      guardrailReactionDto: reaction,
+      action,
+    });
     sendBackendLogMessage("SAVE_GUARDRAIL_REACTION", reaction);
   }
   rememberGuardrailSnapshot(closedGuardrailSnapshotIds, snapshotId);
@@ -2640,11 +4459,19 @@ function emitTradeFeedback(feedbackAttempt, assessment) {
   };
 
   emitExtensionDebug("behavior", "TradeFeedbackDTO", feedback);
+  debugUpbitOrder("UPBIT_TRADE_FEEDBACK_SUBMITTED", {
+    attemptId: feedback.attemptId,
+    tradeFeedbackDto: feedback,
+    feedbackStatus: feedback.feedbackStatus,
+    selfAssessment: feedback.selfAssessment,
+  });
   sendBackendLogMessage("SAVE_TRADE_FEEDBACK", feedback);
+  return feedback;
 }
 
 function dismissActiveTradeFeedback() {
   if (activeTradeFeedback) {
+    rememberSettledAttempt(activeTradeFeedback.attemptId);
     emitTradeFeedback(activeTradeFeedback, "DISMISSED");
     if (pendingAttempt?.attemptId === activeTradeFeedback.attemptId) {
       pendingAttempt.feedbackRespondedAt = new Date().toISOString();
@@ -2660,23 +4487,76 @@ function answerTradeFeedback(assessment) {
     return;
   }
 
+  const previousFlowState = upbitOrderFlow.state;
   const respondedAt = new Date().toISOString();
+  const completedAttemptId = activeTradeFeedback.attemptId;
+  rememberFeedbackCompletedAttempt(activeTradeFeedback.attemptId);
   emitTradeFeedback(activeTradeFeedback, assessment);
   if (pendingAttempt?.attemptId === activeTradeFeedback.attemptId) {
     pendingAttempt.feedbackRespondedAt = respondedAt;
   }
+  if (upbitOrderFlow.attemptId === completedAttemptId) {
+    upbitOrderFlow = {
+      ...upbitOrderFlow,
+      state: "FEEDBACK_COMPLETED",
+    };
+  }
   activeTradeFeedback = null;
   setPanelFeedbackActive(false);
+  clearActiveGuardrailResult();
+  applyFlameTheme("default", { force: true });
   setAnalysisStatus("주문·체결 데이터를 확인하고 있어요.", "loading");
+  emitUpbitFlowDebug("UPBIT_FEEDBACK_COMPLETED", {
+    attemptId: completedAttemptId,
+    previousFlowState,
+    nextFlowState: "FEEDBACK_COMPLETED",
+    reason: assessment,
+  });
 }
 
-function showTradeFeedback() {
-  if (!pendingAttempt?.attemptId) return;
-  if (pendingAttempt.feedbackRespondedAt) return;
-  if (activeTradeFeedback?.attemptId === pendingAttempt.attemptId) return;
+function showTradeFeedback(options = {}) {
+  const source = options.source || null;
 
-  if (activeDetectionResult?.detected) {
-    closeGuardrail("PROCEED");
+  if (!pendingAttempt?.attemptId) {
+    debugUpbitOrder("UPBIT_FEEDBACK_SKIPPED_NO_PENDING_ATTEMPT", {
+      reason: "NO_PENDING_ATTEMPT",
+      source,
+      flowState: upbitOrderFlow.state,
+    });
+    return;
+  }
+
+  if (pendingAttempt.feedbackRespondedAt) {
+    debugUpbitOrder("UPBIT_ORDER_CAPTURE_SKIPPED", {
+      reason: "feedback_already_completed",
+      source,
+      attemptId: pendingAttempt.attemptId,
+      flowState: upbitOrderFlow.state,
+    });
+    return;
+  }
+
+  if (activeTradeFeedback?.attemptId === pendingAttempt.attemptId) {
+    return;
+  }
+
+  if (activeDetectionResult?.detected && source !== "UPBIT_CONFIRM_CLICK") {
+    debugUpbitOrder("UPBIT_FEEDBACK_SKIPPED_ACTIVE_WARNING", {
+      reason: "ACTIVE_GUARDRAIL_WARNING",
+      source,
+      attemptId: pendingAttempt.attemptId,
+      detected: true,
+      primaryRuleId:
+        activeDetectionResult.primaryRuleId ||
+        activeDetectionResult.primaryRule?.ruleId ||
+        null,
+      visualMode:
+        activeDetectionResult.visualMode ||
+        activeDetectionResult.flameMode ||
+        null,
+      flowState: upbitOrderFlow.state,
+    });
+    return;
   }
 
   const feedbackAttempt = {
@@ -2684,15 +4564,51 @@ function showTradeFeedback() {
     feedbackShownAt: new Date().toISOString(),
   };
   pendingAttempt.feedbackShownAt = feedbackAttempt.feedbackShownAt;
+  rememberSettledAttempt(feedbackAttempt.attemptId);
   activeTradeFeedback = feedbackAttempt;
+  const previousFlowState = upbitOrderFlow.state;
+  upbitOrderFlow = {
+    ...upbitOrderFlow,
+    state: "FEEDBACK_SHOWN",
+    attemptId: feedbackAttempt.attemptId,
+  };
   setPanelFeedbackActive(true);
   setPanelWarningActive(false);
+  clearActiveGuardrailResult();
   setAnalysisStatus(
     "이번 거래는 어떤 거래였나요?",
     "feedback",
     null,
     "거래 피드백",
   );
+  emitUpbitFlowDebug("UPBIT_FEEDBACK_SHOWN", {
+    attemptId: feedbackAttempt.attemptId,
+    market: feedbackAttempt.snapshot?.market,
+    side: feedbackAttempt.snapshot?.side,
+    orderMode: feedbackAttempt.snapshot?.orderMode,
+    intentPrice: feedbackAttempt.snapshot?.intentPrice,
+    intentQuantity: feedbackAttempt.snapshot?.intentQuantity,
+    intentAmount: feedbackAttempt.snapshot?.intentAmount,
+    previousFlowState,
+    nextFlowState: "FEEDBACK_SHOWN",
+    flowState: "FEEDBACK_SHOWN",
+    source,
+  });
+  if (source === "UPBIT_CONFIRM_CLICK") {
+    emitUpbitFlowDebug("UPBIT_FEEDBACK_SHOWN_AFTER_CONFIRM_CLICK", {
+      attemptId: feedbackAttempt.attemptId,
+      market: feedbackAttempt.snapshot?.market,
+      side: feedbackAttempt.snapshot?.side,
+      orderMode: feedbackAttempt.snapshot?.orderMode,
+      intentPrice: feedbackAttempt.snapshot?.intentPrice,
+      intentQuantity: feedbackAttempt.snapshot?.intentQuantity,
+      intentAmount: feedbackAttempt.snapshot?.intentAmount,
+      previousFlowState,
+      nextFlowState: "FEEDBACK_SHOWN",
+      flowState: "FEEDBACK_SHOWN",
+      source,
+    });
+  }
 
   const panel = document.getElementById(PANEL_ID);
   if (panel) {
@@ -2700,20 +4616,43 @@ function showTradeFeedback() {
   }
 }
 
-function ensurePendingAttemptForConfirmedOrder(orderButton) {
+function ensurePendingAttemptForConfirmedOrder(orderButton, options = {}) {
   if (pendingAttempt?.attemptId) {
     return pendingAttempt;
   }
 
+  unlockFeedbackCompletedVisualStateForNewAttempt();
   const rawSnapshot = buildOrderContextSnapshot(
     orderButton,
     "ORDER_INTENT_CLICK",
+    options,
   );
   const snapshotWithCache = mergeCachedSnapshotsIntoOrderContext(rawSnapshot);
   const { snapshot, result } =
     evaluatePageGuardrailRulesForSnapshot(snapshotWithCache);
 
   emitOrderContextSnapshotDebug(snapshot);
+  lastOrderIntent = {
+    attemptId: snapshot.attemptId,
+    market: snapshot.market,
+    side: snapshot.side,
+    orderMode: snapshot.orderMode,
+    intentPrice: snapshot.intentPrice,
+    intentQuantity: snapshot.intentQuantity,
+    intentAmount: snapshot.intentAmount,
+    valid: snapshot.valid,
+  };
+  lastOrderContextSnapshot = snapshot;
+  debugUpbitOrder("ORDER_INTENT_CLICK", {
+    attemptId: snapshot.attemptId,
+    dto: lastOrderIntent,
+    rawOrderData: options.draft || null,
+    extraction: lastExtractionResult,
+    orderContextSnapshot: snapshot,
+    ruleEvaluation: result?.ruleEvaluation || lastRuleEvaluation,
+    matchedRules: result?.ruleEvaluation?.matchedRules || [],
+    primaryRule: result?.ruleEvaluation?.primaryRule || null,
+  });
   pendingAttempt = {
     attemptId: snapshot.attemptId,
     snapshot,
@@ -2725,10 +4664,11 @@ function ensurePendingAttemptForConfirmedOrder(orderButton) {
   return pendingAttempt;
 }
 
-function notifyOrderActionDetectedForConfirmedOrder(orderButton) {
-  const orderPanel = findOrderPanel(orderButton);
+function notifyOrderActionDetectedForConfirmedOrder(orderButton, options = {}) {
+  const orderPanel = options.formRoot || findOrderPanel(orderButton);
   const orderDraft = withAuthoritativeOrderMarket(
-    readOrderDraft(orderButton) ||
+    options.orderDraft ||
+      readOrderDraft(orderButton) ||
       pendingAttempt?.snapshot?.currentOrder ||
       null,
   );
@@ -2741,18 +4681,42 @@ function notifyOrderActionDetectedForConfirmedOrder(orderButton) {
   behaviorState.lastOrderAt = Date.now();
   behaviorState.lastOrderSessionId = behaviorState.sessionId;
 
+  const backgroundMessagePayload = {
+    market: behaviorState.market,
+    sessionId: behaviorState.sessionId,
+    pageUrl: location.href,
+    currentOrder: orderDraft,
+    behaviorData,
+    orderContextSnapshot: pendingAttempt?.snapshot || null,
+    demoData: getActiveDemoData(),
+    refreshAlreadyRequested: true,
+  };
+  emitUpbitFlowDebug("UPBIT_ORDER_ACTION_DETECTED_SENT", {
+    attemptId: pendingAttempt?.attemptId || null,
+    market: backgroundMessagePayload.market,
+    side: pendingAttempt?.snapshot?.side || null,
+    orderMode: pendingAttempt?.snapshot?.orderMode || null,
+    intentPrice: pendingAttempt?.snapshot?.intentPrice || null,
+    intentQuantity: pendingAttempt?.snapshot?.intentQuantity || null,
+    intentAmount: pendingAttempt?.snapshot?.intentAmount || null,
+    backgroundMessagePayload,
+  });
+  debugUpbitOrder("ORDER_ACTION_DETECTED", {
+    attemptId: pendingAttempt?.attemptId || null,
+    orderIntentDto: lastOrderIntent,
+    attemptLogDto: pendingAttempt,
+    orderContextSnapshot: pendingAttempt?.snapshot || null,
+    marketSnapshot: lastDtoSnapshot?.market || null,
+    personalSnapshot: lastDtoSnapshot?.personal || null,
+    ruleEvaluation: lastRuleEvaluation,
+    matchedRules: lastRuleEvaluation?.matchedRules || [],
+    primaryRule: lastRuleEvaluation?.primaryRule || null,
+    backgroundMessagePayload,
+  });
+
   safeRuntimeSendMessage({
       type: "ORDER_ACTION_DETECTED",
-      payload: {
-        market: behaviorState.market,
-        sessionId: behaviorState.sessionId,
-        pageUrl: location.href,
-        currentOrder: orderDraft,
-        behaviorData,
-        orderContextSnapshot: pendingAttempt?.snapshot || null,
-        demoData: getActiveDemoData(),
-        refreshAlreadyRequested: true,
-      },
+      payload: backgroundMessagePayload,
     })
     .then((response) => {
       if (!response?.ok && response?.error && !activeTradeFeedback) {
@@ -2764,14 +4728,861 @@ function notifyOrderActionDetectedForConfirmedOrder(orderButton) {
   syncOrderType(orderPanel, false);
 }
 
-function handleUpbitOrderConfirmClick(orderButton) {
-  ensurePendingAttemptForConfirmedOrder(orderButton);
+function scanAndHandleUpbitOrderModal(options = {}) {
+  if (!isUpbitExchangePage()) {
+    return false;
+  }
+
+  const modalRoot = options.modalRoot || findActiveUpbitOrderModal();
+
+  if (!modalRoot) {
+    return false;
+  }
+
+  const classification =
+    options.classification || classifyUpbitModal(modalRoot);
+  emitUpbitFlowDebug("UPBIT_MODAL_MUTATION_DETECTED", {
+    ...classification,
+    modalRoot,
+    source: options.source || null,
+  });
+  emitUpbitFlowDebug("UPBIT_MODAL_CLASSIFIED", {
+    ...classification,
+    modalRoot,
+    source: options.source || null,
+  });
+
+  if (classification.classification === "CONFIRM") {
+    const confirmButton = findOrderConfirmButtonInModal(modalRoot);
+
+    if (!confirmButton) {
+      emitUpbitOrderCaptureSkipped("button_text_not_confirm", {
+        ...classification,
+        modalRoot,
+        source: options.source || null,
+        reason: "confirm_modal_missing_confirm_button",
+      });
+      return false;
+    }
+
+    if (options.source === "FORM_SUBMIT_POLLING") {
+      debugUpbitOrder("UPBIT_CONFIRM_MODAL_EARLY_DETECTED", {
+        attemptId: options.attemptId || upbitOrderFlow.attemptId || null,
+        source: options.source,
+        tickCount: options.tickCount ?? null,
+        detectionLagMs: options.detectionLagMs ?? null,
+        modalTextPreview: classification.modalTextPreview,
+        modalButtonTexts: classification.modalButtonTexts,
+      });
+    }
+
+    handleUpbitConfirmModalOpen(confirmButton, modalRoot, {
+      attemptId: options.attemptId || upbitOrderFlow.attemptId || null,
+      source: options.source || "MODAL_SCAN",
+      classification,
+    });
+    return true;
+  }
+
+  if (classification.classification === "VALIDATION") {
+    handleUpbitValidationModalOpen({
+      attemptId: options.attemptId || upbitOrderFlow.attemptId || null,
+      modalRoot,
+      classification,
+      source: options.source || "MODAL_SCAN",
+    });
+    return true;
+  }
+
+  if (classification.classification === "COMPLETION") {
+    handleUpbitCompletionModalOpen({
+      attemptId: options.attemptId || upbitOrderFlow.attemptId || null,
+      modalRoot,
+      classification,
+      source: options.source || "MODAL_SCAN",
+    });
+    return true;
+  }
+
+  return false;
+}
+
+function stopUpbitConfirmModalWaitLoop(reason = "stopped") {
+  if (upbitConfirmModalWaitTimerId !== null) {
+    window.clearTimeout?.(upbitConfirmModalWaitTimerId);
+  }
+
+  if (upbitConfirmModalWaitContext) {
+    debugUpbitOrder("UPBIT_CONFIRM_MODAL_WAIT_STOPPED", {
+      attemptId: upbitConfirmModalWaitContext.attemptId,
+      reason,
+    });
+  }
+
+  upbitConfirmModalWaitTimerId = null;
+  upbitConfirmModalWaitContext = null;
+}
+
+function startUpbitConfirmModalWaitLoop(context = {}) {
+  stopUpbitConfirmModalWaitLoop("restart");
+
+  const startedAt = Date.now();
+  const waitContext = {
+    ...context,
+    startedAt,
+  };
+  upbitConfirmModalWaitContext = waitContext;
+
+  debugUpbitOrder("UPBIT_CONFIRM_MODAL_WAIT_STARTED", {
+    attemptId: context.attemptId,
+    market: context.market,
+    side: context.side,
+    orderMode: context.orderMode,
+    source: context.source,
+    startedAt: new Date(startedAt).toISOString(),
+  });
+
+  let tickCount = 0;
+
+  const tick = () => {
+    tickCount += 1;
+
+    if (upbitConfirmModalWaitContext !== waitContext) {
+      return;
+    }
+
+    if (
+      !pendingAttempt?.attemptId ||
+      pendingAttempt.attemptId !== context.attemptId
+    ) {
+      debugUpbitOrder("UPBIT_CONFIRM_MODAL_WAIT_STOPPED", {
+        attemptId: context.attemptId,
+        reason: "STALE_ATTEMPT",
+        tickCount,
+      });
+      upbitConfirmModalWaitTimerId = null;
+      upbitConfirmModalWaitContext = null;
+      return;
+    }
+
+    const handled = scanAndHandleUpbitOrderModal({
+      attemptId: context.attemptId,
+      source: "FORM_SUBMIT_POLLING",
+      tickCount,
+      detectionLagMs: Date.now() - startedAt,
+    });
+
+    if (handled) {
+      upbitConfirmModalWaitTimerId = null;
+      upbitConfirmModalWaitContext = null;
+      return;
+    }
+
+    if (Date.now() - startedAt >= UPBIT_CONFIRM_MODAL_WAIT_TIMEOUT_MS) {
+      debugUpbitOrder("UPBIT_CONFIRM_MODAL_WAIT_TIMEOUT", {
+        attemptId: context.attemptId,
+        elapsedMs: Date.now() - startedAt,
+        tickCount,
+      });
+      upbitConfirmModalWaitTimerId = null;
+      upbitConfirmModalWaitContext = null;
+      return;
+    }
+
+    upbitConfirmModalWaitTimerId = window.setTimeout(
+      tick,
+      UPBIT_CONFIRM_MODAL_POLL_INTERVAL_MS,
+    );
+  };
+
+  upbitConfirmModalWaitTimerId = window.setTimeout(tick, 0);
+}
+
+function scheduleUpbitConfirmModalRafScans(context = {}) {
+  if (typeof window.requestAnimationFrame !== "function") {
+    return;
+  }
+
+  window.requestAnimationFrame(() => {
+    scanAndHandleUpbitOrderModal({
+      attemptId: context.attemptId,
+      source: "FORM_SUBMIT_RAF_1",
+    });
+
+    window.requestAnimationFrame(() => {
+      scanAndHandleUpbitOrderModal({
+        attemptId: context.attemptId,
+        source: "FORM_SUBMIT_RAF_2",
+      });
+    });
+  });
+}
+
+function handleUpbitConfirmModalOpen(orderButton, modalRoot = null, options = {}) {
+  const previousFlowState = upbitOrderFlow.state;
+  const formRoot = upbitOrderFlow.formRoot || findOrderPanel(orderButton);
+  const normalizedOpenedAt =
+    upbitOrderFlow.modalOpenedAtRounded ||
+    Math.floor(Date.now() / 1000) * 1000;
+  const intent = collectUpbitOrderIntent({
+    button: orderButton,
+    formRoot,
+    modalRoot,
+  });
+  const reusablePendingAttemptId = pendingAttempt?.feedbackRespondedAt
+    ? null
+    : pendingAttempt?.attemptId;
+  const attemptId =
+    options.attemptId ||
+    upbitOrderFlow.attemptId ||
+    reusablePendingAttemptId ||
+    createUuid();
+  const confirmKey = buildUpbitConfirmKey(intent, normalizedOpenedAt);
+  const buttonText = normalizeButtonText(orderButton);
+  const source = options.source || "MODAL_OBSERVER";
+  const commonDebugFields = {
+    ...intent,
+    attemptId,
+    buttonText,
+    clickedElementText: buttonText,
+    modalRoot,
+    confirmKey,
+    previousFlowState,
+    source,
+  };
+
+  if (!formRoot) {
+    emitUpbitOrderCaptureSkipped("missing_form_root", commonDebugFields);
+  }
+
+  if (!intent.market) {
+    emitUpbitOrderCaptureSkipped("missing_market", commonDebugFields);
+    return;
+  }
+
+  if (!intent.side) {
+    emitUpbitOrderCaptureSkipped("missing_side", commonDebugFields);
+    return;
+  }
+
+  if (!intent.orderMode || intent.orderMode === "UNKNOWN") {
+    emitUpbitOrderCaptureSkipped("missing_order_mode", commonDebugFields);
+    return;
+  }
+
+  if (
+    intent.side === "BUY" &&
+    intent.orderMode === "MARKET" &&
+    intent.intentAmount === null
+  ) {
+    emitUpbitOrderCaptureSkipped(
+      "missing_intent_amount_for_market_buy",
+      commonDebugFields,
+    );
+    return;
+  }
+
+  if (
+    upbitOrderFlow.intentCaptured &&
+    upbitOrderFlow.confirmKey === confirmKey &&
+    pendingAttempt?.attemptId === attemptId
+  ) {
+    if (pendingAttempt.warningAppliedAt) {
+      debugUpbitOrder("UPBIT_CONFIRM_MODAL_DUPLICATE_SKIPPED", {
+        ...commonDebugFields,
+        flowState: upbitOrderFlow.state,
+        warningAppliedAt: pendingAttempt.warningAppliedAt,
+      });
+      emitUpbitOrderCaptureSkipped("duplicate_confirm_key", {
+        ...commonDebugFields,
+        flowState: upbitOrderFlow.state,
+      });
+      return pendingAttempt;
+    }
+
+    debugUpbitOrder("UPBIT_CONFIRM_MODAL_DUPLICATE_SKIPPED", {
+      ...commonDebugFields,
+      flowState: upbitOrderFlow.state,
+      reason: "duplicate_without_warning_reapplying",
+    });
+  }
+
+  upbitOrderFlow = {
+    ...upbitOrderFlow,
+    state: "CONFIRM_MODAL_OPEN",
+    attemptId,
+    formRoot,
+    modalRoot,
+    modalOpenedAtRounded: normalizedOpenedAt,
+    confirmKey,
+    ...intent,
+  };
+
+  emitUpbitFlowDebug("UPBIT_CONFIRM_MODAL_OPEN", {
+    ...commonDebugFields,
+    nextFlowState: "CONFIRM_MODAL_OPEN",
+  });
+
+  const rawSnapshotOptions = {
+    attemptId,
+    formRoot,
+    draft: null,
+    guardrailSource: source === "CONFIRM_CLICK_HANDLER"
+      ? "CONFIRM_CLICK_HANDLER"
+      : "UPBIT_CONFIRM_MODAL_OPEN",
+    renderMode: "WARNING_ONLY",
+    ...intent,
+  };
+  const warningShown = beginOrderAttempt(orderButton, rawSnapshotOptions);
+  const nextFlowState = warningShown
+    ? "GUARDRAIL_SHOWN"
+    : "CONFIRM_MODAL_OPEN";
+  upbitOrderFlow = {
+    ...upbitOrderFlow,
+    state: nextFlowState,
+    intentCaptured: true,
+  };
+
+  emitUpbitFlowDebug("UPBIT_CONFIRM_ORDER_INTENT_CAPTURED", {
+    ...commonDebugFields,
+    flowState: upbitOrderFlow.state,
+    nextFlowState,
+    snapshotId: pendingAttempt?.snapshot?.snapshotId || null,
+  });
+  stopUpbitConfirmModalWaitLoop("handled_confirm_modal");
+
   sendSnapshotRefreshMessage(
     "ORDER_CONFIRM_MODAL",
     pendingAttempt?.snapshot?.market || behaviorState?.market,
   );
-  showTradeFeedback();
-  notifyOrderActionDetectedForConfirmedOrder(orderButton);
+  return pendingAttempt;
+}
+
+function handleUpbitOrderConfirmClick(orderButton, modalRoot = null) {
+  const modal = modalRoot || findUpbitModalRoot(orderButton);
+  let openedAttempt = pendingAttempt?.snapshot ? pendingAttempt : null;
+  const modalClassification = modal ? classifyUpbitModal(modal, orderButton) : null;
+  const wasLateConfirmModalOpen = !openedAttempt;
+  const hadPriorWarningBeforeConfirmClick = Boolean(
+    pendingAttempt?.warningAppliedAt,
+  );
+
+  if (wasLateConfirmModalOpen) {
+    debugUpbitOrder("UPBIT_CONFIRM_MODAL_LATE_DETECTED_ON_CONFIRM_CLICK", {
+      attemptId: upbitOrderFlow.attemptId || pendingAttempt?.attemptId || null,
+      source: "CONFIRM_CLICK_HANDLER",
+      hasPendingAttempt: Boolean(pendingAttempt),
+      hasSnapshot: Boolean(pendingAttempt?.snapshot),
+      warningAppliedAt: pendingAttempt?.warningAppliedAt ?? null,
+      modalTextPreview: modalClassification?.modalTextPreview ||
+        getModalTextPreview(modal),
+      modalButtonTexts:
+        modalClassification?.modalButtonTexts || getModalButtonTexts(modal),
+    });
+    openedAttempt = handleUpbitConfirmModalOpen(orderButton, modal, {
+      attemptId: upbitOrderFlow.attemptId || pendingAttempt?.attemptId || null,
+      source: "CONFIRM_CLICK_HANDLER",
+      classification: modalClassification,
+    });
+  }
+  const buttonText = normalizeButtonText(orderButton);
+  const attemptId =
+    openedAttempt?.attemptId || upbitOrderFlow.attemptId || createUuid();
+  const confirmClickedAt = new Date().toISOString();
+  const confirmKey =
+    upbitOrderFlow.confirmKey ||
+    buildUpbitConfirmKey(
+      collectUpbitOrderIntent({
+        button: orderButton,
+        formRoot: upbitOrderFlow.formRoot || findOrderPanel(orderButton),
+        modalRoot: modal,
+      }),
+      upbitOrderFlow.modalOpenedAtRounded ||
+        Math.floor(Date.now() / 1000) * 1000,
+    );
+
+  if (!pendingAttempt?.attemptId) {
+    emitUpbitOrderCaptureSkipped("missing_pending_attempt", {
+      attemptId,
+      buttonText,
+      modalRoot: modal,
+      flowState: upbitOrderFlow.state,
+    });
+    return;
+  }
+
+  if (!hadPriorWarningBeforeConfirmClick) {
+    debugUpbitOrder("UPBIT_CONFIRM_CLICK_WITHOUT_PRIOR_WARNING", {
+      attemptId,
+      modalTextPreview: modalClassification?.modalTextPreview ||
+        getModalTextPreview(modal),
+      modalButtonTexts:
+        modalClassification?.modalButtonTexts || getModalButtonTexts(modal),
+      hasSnapshot: Boolean(pendingAttempt?.snapshot),
+      hasRuleEvaluation: Boolean(lastRuleEvaluation),
+      warningAppliedAt: pendingAttempt?.warningAppliedAt ?? null,
+    });
+  }
+
+  if (pendingAttempt.confirmClickedAt || handledUpbitConfirmKeys.has(confirmKey)) {
+    emitUpbitOrderCaptureSkipped("duplicate_confirm_key", {
+      attemptId,
+      buttonText,
+      modalRoot: modal,
+      confirmKey,
+      flowState: upbitOrderFlow.state,
+    });
+    emitUpbitFlowDebug("UPBIT_CONFIRM_BUTTON_CLICKED", {
+      attemptId,
+      buttonText,
+      clickedElementText: buttonText,
+      modalRoot: modal,
+      confirmKey,
+      ignored: true,
+      reason: "duplicate_confirm_key",
+    });
+    return;
+  }
+
+  const previousFlowState = upbitOrderFlow.state;
+  pendingAttempt.confirmClickedAt = confirmClickedAt;
+  const warningLeadTimeMs = pendingAttempt.warningAppliedAt
+    ? Date.now() - Date.parse(pendingAttempt.warningAppliedAt)
+    : null;
+  upbitOrderFlow = {
+    ...upbitOrderFlow,
+    state: "CONFIRM_CLICKED",
+    attemptId,
+    confirmKey,
+  };
+  rememberUpbitConfirmKey(confirmKey);
+
+  emitUpbitFlowDebug("UPBIT_CONFIRM_BUTTON_CLICKED", {
+    attemptId,
+    market: pendingAttempt.snapshot?.market,
+    side: pendingAttempt.snapshot?.side,
+    orderMode: pendingAttempt.snapshot?.orderMode,
+    intentPrice: pendingAttempt.snapshot?.intentPrice,
+    intentQuantity: pendingAttempt.snapshot?.intentQuantity,
+    intentAmount: pendingAttempt.snapshot?.intentAmount,
+    buttonText,
+    clickedElementText: buttonText,
+    modalRoot: modal,
+    confirmKey,
+    previousFlowState,
+    nextFlowState: "CONFIRM_CLICKED",
+    warningAppliedAt: pendingAttempt.warningAppliedAt ?? null,
+    warningLeadTimeMs,
+    warningWasVisibleBeforeConfirmClick:
+      typeof warningLeadTimeMs === "number" && warningLeadTimeMs >= 300,
+  });
+
+  notifyOrderActionDetectedForConfirmedOrder(orderButton, {
+    formRoot: upbitOrderFlow.formRoot || findOrderPanel(orderButton),
+    orderDraft: createOrderDraftFromSnapshot(pendingAttempt?.snapshot),
+  });
+  debugUpbitOrder("UPBIT_FEEDBACK_REQUESTED_AFTER_CONFIRM_CLICK", {
+    attemptId,
+    warningAppliedAt: pendingAttempt.warningAppliedAt ?? null,
+    warningLeadTimeMs,
+    activeViewBeforeFeedback: getActivePanelView(),
+    source: "UPBIT_CONFIRM_CLICK",
+  });
+  showTradeFeedback({ source: "UPBIT_CONFIRM_CLICK" });
+}
+
+function handleUpbitInitialOrderFormClick(orderButton) {
+  const previousFlowState = upbitOrderFlow.state;
+  const formRoot = findOrderPanel(orderButton);
+
+  if (!formRoot) {
+    emitUpbitOrderCaptureSkipped("missing_form_root", {
+      buttonText: normalizeButtonText(orderButton),
+      clickedElementText: normalizeButtonText(orderButton),
+      previousFlowState,
+    });
+    return false;
+  }
+
+  const buttonText = normalizeButtonText(orderButton);
+  const side = buttonText === "매수" ? "BUY" : "SELL";
+  const orderMode =
+    detectOrderType(formRoot, orderButton) ||
+    detectOrderTypeFromText(normalizedText(formRoot)) ||
+    null;
+  const attemptId = createUuid();
+
+  rememberSettledAttempt(upbitOrderFlow.attemptId);
+  rememberSettledAttempt(pendingAttempt?.attemptId);
+  pendingAttempt = {
+    attemptId,
+    snapshot: null,
+    snapshotEmitted: true,
+    guardrailShownAt: null,
+    warningAppliedAt: null,
+    confirmClickedAt: null,
+    feedbackShownAt: null,
+    feedbackRespondedAt: null,
+  };
+  upbitOrderFlow = {
+    ...createIdleUpbitOrderFlow(),
+    state: "FORM_SUBMIT_CLICKED",
+    attemptId,
+    formRoot,
+    market: behaviorState?.market || parseMarket(location.href),
+    side,
+    orderMode,
+  };
+
+  emitUpbitFlowDebug("UPBIT_FORM_SUBMIT_CLICKED", {
+    attemptId,
+    market: upbitOrderFlow.market,
+    side,
+    orderMode,
+    buttonText,
+    clickedElementText: buttonText,
+    previousFlowState,
+    nextFlowState: "FORM_SUBMIT_CLICKED",
+    flowState: upbitOrderFlow.state,
+  });
+  setAnalysisStatus("주문 확인 팝업을 확인하고 있어요.", "loading");
+  startUpbitConfirmModalWaitLoop({
+    attemptId,
+    market: upbitOrderFlow.market,
+    side,
+    orderMode,
+    source: "FORM_SUBMIT_CLICKED",
+    startedAt: Date.now(),
+  });
+  scheduleUpbitConfirmModalRafScans({
+    attemptId,
+    market: upbitOrderFlow.market,
+    side,
+    orderMode,
+  });
+  return true;
+}
+
+function handleUpbitValidationModalAck(button, modalRoot) {
+  const previousFlowState = upbitOrderFlow.state;
+  const buttonText = normalizeButtonText(button);
+  const modalSide =
+    upbitOrderFlow.side || detectOrderSideFromConfirmText(normalizedText(modalRoot));
+  const orderMode =
+    upbitOrderFlow.orderMode || detectOrderTypeFromText(normalizedText(modalRoot));
+  const attemptId = upbitOrderFlow.attemptId || createUuid();
+  const market =
+    upbitOrderFlow.market || behaviorState?.market || parseMarket(location.href);
+
+  upbitOrderFlow = {
+    ...upbitOrderFlow,
+    state: "VALIDATION_MODAL_OPEN",
+    attemptId,
+    modalRoot,
+    market,
+    side: modalSide,
+    orderMode,
+  };
+
+  emitUpbitFlowDebug("UPBIT_VALIDATION_MODAL_OPEN", {
+    attemptId,
+    market,
+    side: modalSide,
+    orderMode,
+    buttonText,
+    clickedElementText: buttonText,
+    modalRoot,
+    previousFlowState,
+    nextFlowState: "VALIDATION_MODAL_OPEN",
+    reason: "validation_or_insufficient_balance",
+  });
+  emitUpbitFlowDebug("UPBIT_VALIDATION_MODAL_ACK", {
+    attemptId,
+    market,
+    side: modalSide,
+    orderMode,
+    buttonText,
+    clickedElementText: buttonText,
+    modalRoot,
+    previousFlowState: "VALIDATION_MODAL_OPEN",
+    nextFlowState: "SETTLED",
+    reason: "validation_or_insufficient_balance",
+  });
+  debugUpbitOrder("UPBIT_FEEDBACK_SKIPPED_VALIDATION_MODAL", {
+    attemptId,
+    market,
+    side: modalSide,
+    orderMode,
+    buttonText,
+    clickedElementText: buttonText,
+    reason: "validation_modal",
+    flowState: "VALIDATION_MODAL_OPEN",
+  });
+  emitUpbitOrderCaptureSkipped("validation_modal", {
+    attemptId,
+    market,
+    side: modalSide,
+    orderMode,
+    buttonText,
+    clickedElementText: buttonText,
+    modalRoot,
+    previousFlowState: "VALIDATION_MODAL_OPEN",
+  });
+
+  rememberSettledAttempt(attemptId);
+  upbitOrderFlow = {
+    ...upbitOrderFlow,
+    state: "SETTLED",
+  };
+  emitUpbitFlowDebug("UPBIT_ORDER_FLOW_SETTLED", {
+    attemptId,
+    market,
+    side: modalSide,
+    orderMode,
+    buttonText,
+    modalRoot,
+    reason: "validation_or_insufficient_balance",
+  });
+  pendingAttempt = null;
+  resetUpbitOrderFlow();
+}
+
+function handleUpbitOrderCompletionAck(button, modalRoot) {
+  const previousFlowState = upbitOrderFlow.state;
+  const buttonText = normalizeButtonText(button);
+  const attemptId =
+    upbitOrderFlow.attemptId || pendingAttempt?.attemptId ||
+    activeTradeFeedback?.attemptId || null;
+  const market =
+    upbitOrderFlow.market || pendingAttempt?.snapshot?.market ||
+    behaviorState?.market || parseMarket(location.href);
+  const side = upbitOrderFlow.side || pendingAttempt?.snapshot?.side || null;
+  const orderMode =
+    upbitOrderFlow.orderMode || pendingAttempt?.snapshot?.orderMode || null;
+
+  upbitOrderFlow = {
+    ...upbitOrderFlow,
+    state: "ORDER_COMPLETION_MODAL_OPEN",
+    attemptId,
+    modalRoot,
+    market,
+    side,
+    orderMode,
+  };
+  emitUpbitFlowDebug("UPBIT_ORDER_COMPLETION_MODAL_OPEN", {
+    attemptId,
+    market,
+    side,
+    orderMode,
+    buttonText,
+    clickedElementText: buttonText,
+    modalRoot,
+    previousFlowState,
+    nextFlowState: "ORDER_COMPLETION_MODAL_OPEN",
+  });
+  emitUpbitFlowDebug("UPBIT_ORDER_COMPLETION_ACK", {
+    attemptId,
+    market,
+    side,
+    orderMode,
+    buttonText,
+    clickedElementText: buttonText,
+    modalRoot,
+    previousFlowState: "ORDER_COMPLETION_MODAL_OPEN",
+    nextFlowState: "SETTLED",
+  });
+  debugUpbitOrder("UPBIT_FEEDBACK_SKIPPED_COMPLETION_MODAL", {
+    attemptId,
+    market,
+    side,
+    orderMode,
+    buttonText,
+    clickedElementText: buttonText,
+    reason: "completion_modal",
+    flowState: "ORDER_COMPLETION_MODAL_OPEN",
+  });
+  emitUpbitOrderCaptureSkipped("completion_modal", {
+    attemptId,
+    market,
+    side,
+    orderMode,
+    buttonText,
+    clickedElementText: buttonText,
+    modalRoot,
+    previousFlowState: "ORDER_COMPLETION_MODAL_OPEN",
+  });
+
+  rememberSettledAttempt(attemptId);
+  upbitOrderFlow = {
+    ...upbitOrderFlow,
+    state: "SETTLED",
+  };
+  emitUpbitFlowDebug("UPBIT_ORDER_FLOW_SETTLED", {
+    attemptId,
+    market,
+    side,
+    orderMode,
+    buttonText,
+    modalRoot,
+    reason: "order_completion_ack",
+  });
+}
+
+function handleUpbitDomClick(event) {
+  if (!isUpbitExchangePage() || !(event.target instanceof Element)) {
+    return false;
+  }
+
+  const button = event.target.closest(ORDER_ACTION_BUTTON_SELECTOR);
+
+  if (!button || button.closest(`#${PANEL_ID}`)) {
+    return false;
+  }
+
+  const modalRoot = findUpbitModalRoot(button);
+
+  if (modalRoot) {
+    const modalClassification = classifyUpbitModal(modalRoot, button);
+    emitUpbitFlowDebug("UPBIT_MODAL_MUTATION_DETECTED", {
+      ...modalClassification,
+      modalRoot,
+      clickedElementText: normalizeButtonText(button),
+    });
+    emitUpbitFlowDebug("UPBIT_MODAL_CLASSIFIED", {
+      ...modalClassification,
+      modalRoot,
+      clickedElementText: normalizeButtonText(button),
+    });
+
+    if (isOrderConfirmButton(button)) {
+      handleUpbitOrderConfirmClick(button, modalRoot);
+      return true;
+    }
+
+    if (isGenericOkButton(button)) {
+      const isValidationAck =
+        modalHasOnlyGenericOkButton(modalRoot, button) &&
+        !upbitOrderFlow.intentCaptured &&
+        ["IDLE", "FORM_SUBMIT_CLICKED", "VALIDATION_MODAL_OPEN"].includes(
+          upbitOrderFlow.state,
+        );
+
+      if (
+        isValidationAck
+      ) {
+        emitUpbitOrderCaptureSkipped("generic_ok_button", {
+          buttonText: normalizeButtonText(button),
+          clickedElementText: normalizeButtonText(button),
+          modalRoot,
+          reason: "validation_modal",
+        });
+        handleUpbitValidationModalAck(button, modalRoot);
+      } else {
+        emitUpbitOrderCaptureSkipped("generic_ok_button", {
+          buttonText: normalizeButtonText(button),
+          clickedElementText: normalizeButtonText(button),
+          modalRoot,
+          reason: "completion_modal",
+        });
+        handleUpbitOrderCompletionAck(button, modalRoot);
+      }
+      return true;
+    }
+
+    emitUpbitOrderCaptureSkipped("button_text_not_confirm", {
+      buttonText: normalizeButtonText(button),
+      clickedElementText: normalizeButtonText(button),
+      modalRoot,
+    });
+    return ["닫기", "취소"].includes(normalizeButtonText(button));
+  }
+
+  if (
+    isInitialOrderFormButton(button) &&
+    button.getAttribute("role") !== "tab" &&
+    !button.closest("[role='tablist']")
+  ) {
+    return handleUpbitInitialOrderFormClick(button);
+  }
+
+  if (/확인|매수|매도/.test(normalizeButtonText(button))) {
+    emitUpbitOrderCaptureSkipped("missing_modal_root", {
+      buttonText: normalizeButtonText(button),
+      clickedElementText: normalizeButtonText(button),
+    });
+  }
+
+  return false;
+}
+
+function startUpbitModalObserver() {
+  if (
+    upbitModalObserver ||
+    !isRealUpbitExchangePage() ||
+    typeof MutationObserver !== "function" ||
+    !document.body
+  ) {
+    return;
+  }
+
+  upbitModalObserver = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      if (
+        mutation.type === "attributes" &&
+        mutation.target instanceof Element
+      ) {
+        const modalRoot = mutation.target.matches?.(UPBIT_ORDER_DIALOG_SELECTOR)
+          ? mutation.target
+          : mutation.target.closest?.(UPBIT_ORDER_DIALOG_SELECTOR);
+
+        if (modalRoot) {
+          scanAndHandleUpbitOrderModal({
+            modalRoot,
+            source: "MUTATION_OBSERVER_ATTRIBUTES",
+          });
+          continue;
+        }
+      }
+
+      for (const node of mutation.addedNodes || []) {
+        if (!(node instanceof Element)) {
+          continue;
+        }
+
+        const modalRoot =
+          node.matches?.(UPBIT_ORDER_DIALOG_SELECTOR)
+            ? node
+            : node.querySelector?.(UPBIT_ORDER_DIALOG_SELECTOR);
+
+        if (!modalRoot) {
+          continue;
+        }
+
+        scanAndHandleUpbitOrderModal({
+          modalRoot,
+          source: "MUTATION_OBSERVER_CHILD_LIST",
+        });
+      }
+    }
+  });
+  upbitModalObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: [
+      "style",
+      "class",
+      "aria-hidden",
+      "hidden",
+      "data-state",
+      "data-open",
+    ],
+  });
+}
+
+function stopUpbitModalObserver() {
+  upbitModalObserver?.disconnect?.();
+  upbitModalObserver = null;
 }
 
 function handleDemoContext(event) {
@@ -2782,6 +5593,96 @@ function handleDemoContext(event) {
 function handleDemoOrderEvent(event) {
   if (!isDemoPage()) return;
   acknowledgePageEvent(event);
+  applyDemoOverrideState(event.detail || {}, "demo-order-event");
+}
+
+function handleDemoBridgeEvent(event) {
+  if (!isDemoPage()) return;
+  const detail = event.detail || {};
+  if (detail.source && detail.source !== SALTBREAD_DEMO_PAGE_SOURCE) {
+    return;
+  }
+  emitDemoBridgeDebug("DEMO_BRIDGE_MESSAGE_RECEIVED", {
+    type: detail.type || null,
+    source: "custom-event",
+    market: detail.payload?.market || detail.market || null,
+    hasPayload: Boolean(detail.payload || detail),
+  });
+  applyDemoOverrideState(detail, "demo-custom-event");
+}
+
+function handleDemoBridgeMessage(event) {
+  if (!isDemoPage()) return;
+  if (event.source && event.source !== window) return;
+
+  const data = event.data || {};
+  if (data.source !== SALTBREAD_DEMO_PAGE_SOURCE) {
+    return;
+  }
+
+  if (
+    ![
+      "DEMO_STATE",
+      "DEMO_STATE_SYNC",
+      "DEMO_MARKET_SNAPSHOT",
+      "MARKET_SNAPSHOT",
+      "DEMO_PERSONAL_SNAPSHOT",
+      "ACCOUNT_SNAPSHOT",
+      "DEMO_ORDER_CREATED",
+      "ORDER_CREATED",
+      "ORDER_UPDATED",
+      "ORDER_INTENT_CLICK",
+    ].includes(data.type)
+  ) {
+    return;
+  }
+
+  emitDemoBridgeDebug("DEMO_BRIDGE_MESSAGE_RECEIVED", {
+    type: data.type,
+    source: "postMessage",
+    market: data.payload?.market || data.state?.market || null,
+    hasPayload: Boolean(data.payload || data.state),
+  });
+  if (data.type === "DEMO_STATE_SYNC") {
+    emitDemoBridgeDebug("DEMO_STATE_SYNC_RECEIVED", {
+      type: data.type,
+      source: "postMessage",
+      market: data.payload?.market || null,
+      hasPayload: Boolean(data.payload),
+      hasMarketSnapshot: Boolean(data.payload?.marketSnapshot),
+      hasPersonalSnapshot: Boolean(data.payload?.accountSnapshot),
+      accountCount: data.payload?.accountSnapshot?.accounts?.length || 0,
+      orderCount: data.payload?.orders?.length || 0,
+    });
+  }
+  applyDemoOverrideState(data, `postMessage:${data.type}`);
+}
+
+function requestDemoStateSync() {
+  if (!isDemoPage()) return;
+
+  try {
+    window.postMessage(
+      {
+        source: SALTBREAD_EXTENSION_SOURCE,
+        type: SALTBREAD_DEMO_STATE_REQUEST,
+      },
+      "*",
+    );
+  } catch {}
+}
+
+function hydrateDemoStateFromPageGlobal() {
+  if (!isDemoPage()) return;
+
+  try {
+    const state = window.__SALTBREAD_DEMO_STATE__;
+    if (state && typeof state === "object") {
+      applyDemoOverrideState(state, "window.__SALTBREAD_DEMO_STATE__");
+    }
+  } catch {
+    // Content scripts may run in an isolated world; postMessage/custom events cover that case.
+  }
 }
 
 function handleDocumentClick(event) {
@@ -2789,7 +5690,13 @@ function handleDocumentClick(event) {
     return;
   }
 
-  const upbitConfirmButton = findUpbitOrderConfirmButton(event.target);
+  if (handleUpbitDomClick(event)) {
+    return;
+  }
+
+  const upbitConfirmButton = isDemoPage()
+    ? null
+    : findUpbitOrderConfirmButton(event.target);
   if (upbitConfirmButton) {
     try {
       handleUpbitOrderConfirmClick(upbitConfirmButton);
@@ -3026,10 +5933,13 @@ function syncCurrentMarket() {
   behaviorState.draftEditCount = 0;
   behaviorState.inputRevertCount = 0;
   behaviorState.priceDirectionChangeCount = 0;
+  rememberSettledAttempt(pendingAttempt?.attemptId);
+  rememberSettledAttempt(activeTradeFeedback?.attemptId);
   pendingAttempt = null;
   activeDetectionResult = null;
   activeGuardrailSnapshotId = null;
   activeTradeFeedback = null;
+  resetUpbitOrderFlow();
   setPanelWarningActive(false);
   setPanelFeedbackActive(false);
   startNewOrderSession();
@@ -3075,6 +5985,13 @@ function setAnalysisStatus(
   title = null,
   detectionResult = null,
 ) {
+  if (
+    state === "detected" &&
+    shouldBlockWarningOrVisualUpdate(getAttemptIdFromPayload(detectionResult))
+  ) {
+    return;
+  }
+
   const status = document.querySelector(".saltbread-analysis-status");
   const badgeElement = status?.querySelector("[data-status-badge]");
   const titleElement = status?.querySelector("[data-status-title]");
@@ -3191,6 +6108,8 @@ function startBehaviorTracking() {
     return;
   }
 
+  installUpbitDebugHelper();
+  startUpbitModalObserver();
   loadLocalSnapshotCaches();
 
   behaviorState = {
@@ -3249,6 +6168,11 @@ function startBehaviorTracking() {
   document.addEventListener("saltbread:demo-reset", handleDemoReset);
   document.addEventListener("saltbread:demo-context", handleDemoContext);
   document.addEventListener("saltbread:demo-order-event", handleDemoOrderEvent);
+  document.addEventListener("saltbread:demo-state", handleDemoBridgeEvent);
+  document.addEventListener("saltbread:demo-market-snapshot", handleDemoBridgeEvent);
+  document.addEventListener("saltbread:demo-personal-snapshot", handleDemoBridgeEvent);
+  window.addEventListener?.("saltbread:demo-bridge", handleDemoBridgeEvent);
+  window.addEventListener?.("message", handleDemoBridgeMessage);
   document.addEventListener("visibilitychange", handleVisibilityChange);
   syncCurrentOrderType(false);
   behaviorTimerId = window.setInterval(() => {
@@ -3264,6 +6188,8 @@ function startBehaviorTracking() {
   }, 1000);
   if (!extensionContextInvalidated) {
     renderBehaviorMetrics();
+    hydrateDemoStateFromPageGlobal();
+    requestDemoStateSync();
     registerCurrentContext();
   }
 }
@@ -3273,6 +6199,7 @@ function stopBehaviorTracking() {
     return;
   }
 
+  stopUpbitModalObserver();
   document.removeEventListener("input", handleAmountInput, true);
   document.removeEventListener("click", handleDocumentClick, true);
   document.removeEventListener("saltbread:demo-scenario", handleDemoScenario);
@@ -3280,6 +6207,11 @@ function stopBehaviorTracking() {
   document.removeEventListener("saltbread:demo-reset", handleDemoReset);
   document.removeEventListener("saltbread:demo-context", handleDemoContext);
   document.removeEventListener("saltbread:demo-order-event", handleDemoOrderEvent);
+  document.removeEventListener("saltbread:demo-state", handleDemoBridgeEvent);
+  document.removeEventListener("saltbread:demo-market-snapshot", handleDemoBridgeEvent);
+  document.removeEventListener("saltbread:demo-personal-snapshot", handleDemoBridgeEvent);
+  window.removeEventListener?.("saltbread:demo-bridge", handleDemoBridgeEvent);
+  window.removeEventListener?.("message", handleDemoBridgeMessage);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   for (const pending of behaviorState.pendingInputEvents.values()) {
     window.clearTimeout(pending.timerId);
@@ -3287,10 +6219,13 @@ function stopBehaviorTracking() {
   window.clearInterval(behaviorTimerId);
   behaviorTimerId = null;
   behaviorState = null;
+  rememberSettledAttempt(pendingAttempt?.attemptId);
+  rememberSettledAttempt(activeTradeFeedback?.attemptId);
   pendingAttempt = null;
   activeDetectionResult = null;
   activeGuardrailSnapshotId = null;
   activeTradeFeedback = null;
+  resetUpbitOrderFlow();
 }
 
 function syncPanel(auth) {
@@ -3308,6 +6243,14 @@ function hasActiveGuardrailWarning() {
 
 function shouldIgnoreDetectionResultForActiveWarning(result) {
   const resultAttemptId = result?.orderContextSnapshot?.attemptId;
+
+  if (result?.detected && shouldBlockWarningOrVisualUpdate(resultAttemptId)) {
+    return true;
+  }
+
+  if (shouldIgnoreIncomingAttempt(resultAttemptId)) {
+    return true;
+  }
 
   if (
     resultAttemptId &&
@@ -3358,6 +6301,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "ORDER_DATA_UPDATED" && behaviorState) {
+    debugUpbitOrder("ORDER_DATA_UPDATED", {
+      messageType: message.type,
+      payload: message.payload,
+      attemptId: pendingAttempt?.attemptId || null,
+      market: message.payload?.market || behaviorState.market,
+    });
     behaviorState.clientAvgBuyAmount =
       message.payload?.clientAverageBuyAmount ?? null;
     renderBehaviorMetrics();
@@ -3372,8 +6321,26 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "DETECTION_RESULT") {
     const result = message.payload;
+    debugUpbitOrder("UPBIT_DETECTION_RESULT_RECEIVED", {
+      messageType: message.type,
+      attemptId: getAttemptIdFromPayload(result),
+      market: result?.orderContextSnapshot?.market || behaviorState?.market,
+      side: result?.orderContextSnapshot?.side || null,
+      orderMode: result?.orderContextSnapshot?.orderMode || null,
+      intentPrice: result?.orderContextSnapshot?.intentPrice || null,
+      intentQuantity: result?.orderContextSnapshot?.intentQuantity || null,
+      intentAmount: result?.orderContextSnapshot?.intentAmount || null,
+      payload: result,
+      ruleEvaluation: result?.ruleEvaluation || null,
+      matchedRules: result?.ruleEvaluation?.matchedRules || [],
+      primaryRule: result?.ruleEvaluation?.primaryRule || null,
+    });
 
     if (shouldIgnoreDetectionResultForActiveWarning(result)) {
+      emitUpbitOrderCaptureSkipped("stale_attempt", {
+        attemptId: getAttemptIdFromPayload(result),
+        reason: "stale_attempt",
+      });
       return false;
     }
 
@@ -3439,6 +6406,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "DEBUG_DATA_UPDATED") {
+    if (
+      shouldIgnoreDebugPayload(
+        message.payload?.kind || "COLLECTED_DATA",
+        message.payload?.data,
+      )
+    ) {
+      return false;
+    }
+
     emitExtensionDebug(
       message.payload?.category || "market",
       message.payload?.kind || "COLLECTED_DATA",
@@ -3448,7 +6424,37 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "DTO_DEBUG_SNAPSHOT") {
-    console.log("[Saltbread DTO Debug]", message.payload);
+    if (shouldIgnoreDebugPayload("DTO_DEBUG_SNAPSHOT", message.payload)) {
+      return false;
+    }
+
+    lastDtoSnapshot = message.payload;
+    lastOrderContextSnapshot =
+      message.payload?.orderContext || lastOrderContextSnapshot;
+    lastRuleEvaluation =
+      message.payload?.ruleEvaluation || lastRuleEvaluation;
+    debugUpbitOrder("UPBIT_DTO_SNAPSHOT_BUILT", {
+      attemptId: message.payload?.orderContext?.attemptId || null,
+      attemptLogDto: pendingAttempt,
+      orderContextSnapshot: message.payload?.orderContext || null,
+      marketSnapshot: message.payload?.market || null,
+      personalSnapshot: message.payload?.personal || null,
+      ruleEvaluation: message.payload?.ruleEvaluation || null,
+      matchedRules: message.payload?.ruleEvaluation?.matchedRules || [],
+      primaryRule: message.payload?.ruleEvaluation?.primaryRule || null,
+    });
+    debugUpbitOrder("DTO_SNAPSHOT", {
+      attemptId: message.payload?.orderContext?.attemptId || null,
+      attemptLogDto: pendingAttempt,
+      orderContextSnapshot: message.payload?.orderContext || null,
+      marketSnapshot: message.payload?.market || null,
+      personalSnapshot: message.payload?.personal || null,
+      ruleEvaluation: message.payload?.ruleEvaluation || null,
+      matchedRules: message.payload?.ruleEvaluation?.matchedRules || [],
+      primaryRule: message.payload?.ruleEvaluation?.primaryRule || null,
+      backgroundMessagePayload: message.payload,
+    });
+    console.log("[Saltbread DTO Debug]", sanitizeDebugPayload(message.payload));
     emitExtensionDebug(
       "behavior",
       "DTO_DEBUG_SNAPSHOT",
@@ -3474,10 +6480,17 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
 
   if (changes.flameTheme) {
-    if (hasActiveGuardrailWarning()) {
-      return;
+    const flameTheme = changes.flameTheme.newValue || {};
+    const incomingMode = normalizeFlameMode(flameTheme.mode);
+    const shouldSkipFlameTheme =
+      incomingMode !== "DEFAULT" &&
+      shouldBlockWarningOrVisualUpdate(flameTheme.attemptId || null);
+
+    if (!shouldSkipFlameTheme && !hasActiveGuardrailWarning()) {
+      applyFlameTheme(flameTheme.mode, {
+        attemptId: flameTheme.attemptId || null,
+      });
     }
-    applyFlameTheme(changes.flameTheme.newValue?.mode);
   }
 
   if (changes[GUARDRAIL_RULES_CACHE_KEY]) {
@@ -3496,6 +6509,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   );
 });
 
+installUpbitDebugHelper();
 refreshPanelState();
 
 window.setInterval(() => {

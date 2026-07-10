@@ -95,6 +95,7 @@
   display: flex;
   align-items: center;
   gap: 9px;
+  margin-bottom: 16px;
 }
 
 .saltbread-panel__title {
@@ -233,15 +234,6 @@
   font-weight: 900;
   line-height: 1;
   transform: translate(-50%, -52%);
-}
-
-.saltbread-panel__account {
-  overflow: hidden;
-  margin: 10px 0 8px;
-  color: #65738b;
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .saltbread-analysis-status {
@@ -516,6 +508,20 @@
   white-space: nowrap;
 }
 
+.saltbread-rule-row__flame-icon {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--rule-primary);
+  background: color-mix(in srgb, var(--rule-soft) 82%, #ffffff);
+  border: 1px solid color-mix(in srgb, var(--rule-primary) 24%, #ffffff);
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1;
+}
+
 .saltbread-rule-row__mode {
   flex: 0 0 auto;
   min-width: 38px;
@@ -590,14 +596,14 @@
 }
 
 .saltbread-action-button--review,
-.saltbread-action-button--history {
+.saltbread-action-button--rule-check {
   border: 1px solid var(--flame-border);
   color: var(--flame-deep);
   background: #ffffff;
 }
 
 .saltbread-action-button--review:hover,
-.saltbread-action-button--history:hover {
+.saltbread-action-button--rule-check:hover {
   border-color: var(--flame-primary);
   background: var(--flame-soft);
   box-shadow: 0 6px 14px var(--flame-shadow);

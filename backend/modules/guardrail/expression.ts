@@ -9,14 +9,13 @@
 7. requiresPrivateApi 자동 계산 */
 
 import { ApiError } from "@/backend/common/api";
-import { getRuleFieldDefinition } from "./catalog";
+import { getRuleEligibleFieldDefinition } from "./catalog";
 import type {
   RuleCondition,
   RuleExpression,
   RuleFieldDefinition,
   RuleOperand,
   RuleOperator,
-  RuleValueType,
 } from "./types";
 
 const NULL_OPERATORS: RuleOperator[] = ["IS_NULL", "IS_NOT_NULL"];
@@ -40,55 +39,112 @@ function isDecimalString(value: string) {
   return /^-?\d+(\.\d+)?$/.test(value);
 }
 
-function assertOperatorAllowed(valueType: RuleValueType, operator: RuleOperator) {
-  if (NULL_OPERATORS.includes(operator)) return;
-
-  if (!COMPARISON_OPERATORS.includes(operator)) {
+function assertOperatorAllowed(
+  definition: RuleFieldDefinition,
+  operator: RuleOperator,
+) {
+  if (!definition.supportedOperators.includes(operator)) {
     throw new ApiError(
       400,
       "INVALID_RULE_OPERATOR",
-      `허용되지 않은 operator입니다: ${operator}`
+      `${definition.label}에 사용할 수 없는 조건입니다.`
+    );
+  }
+}
+
+function isKnownOperator(operator: string): operator is RuleOperator {
+  return [...NULL_OPERATORS, ...COMPARISON_OPERATORS].includes(
+    operator as RuleOperator,
+  );
+}
+
+function allowedOptionValues(definition: RuleFieldDefinition) {
+  return new Set(
+    (definition.input.options || []).map((option) => String(option.value)),
+  );
+}
+
+function assertFiniteNumber(value: unknown, message: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new ApiError(400, "INVALID_RULE_LITERAL", message);
+  }
+}
+
+function assertNumberRange(definition: RuleFieldDefinition, value: number) {
+  const { min, max, step } = definition.input;
+
+  if (min !== undefined && value < min) {
+    throw new ApiError(
+      400,
+      "INVALID_RULE_LITERAL_RANGE",
+      `${definition.label} 값은 ${formatStorageValue(definition, min)} 이상이어야 합니다.`
     );
   }
 
-  if (valueType === "BOOLEAN") {
-    if (!["EQ", "NEQ"].includes(operator)) {
-      throw new ApiError(
-        400,
-        "INVALID_RULE_OPERATOR",
-        `BOOLEAN 필드는 EQ, NEQ만 사용할 수 있습니다.`
-      );
-    }
-  }
-
-  if (valueType === "STRING") {
-    if (!["EQ", "NEQ", "IN", "NOT_IN"].includes(operator)) {
-      throw new ApiError(
-        400,
-        "INVALID_RULE_OPERATOR",
-        `STRING 필드는 EQ, NEQ, IN, NOT_IN만 사용할 수 있습니다.`
-      );
-    }
-  }
-
-  if (
-    (valueType === "NUMBER" || valueType === "DECIMAL_STRING") &&
-    !COMPARISON_OPERATORS.includes(operator)
-  ) {
+  if (max !== undefined && value > max) {
     throw new ApiError(
       400,
-      "INVALID_RULE_OPERATOR",
-      `${valueType} 필드에 사용할 수 없는 operator입니다.`
+      "INVALID_RULE_LITERAL_RANGE",
+      `${definition.label} 값은 ${formatStorageValue(definition, max)} 이하여야 합니다.`
+    );
+  }
+
+  if (definition.semanticType === "COUNT" || definition.semanticType === "DURATION_MS") {
+    if (!Number.isInteger(value)) {
+      throw new ApiError(
+        400,
+        "INVALID_RULE_LITERAL_RANGE",
+        `${definition.label}에는 정수만 사용할 수 있습니다.`
+      );
+    }
+  }
+
+  if (step === 1 && !Number.isInteger(value)) {
+    throw new ApiError(
+      400,
+      "INVALID_RULE_LITERAL_RANGE",
+      `${definition.label}에는 정수만 사용할 수 있습니다.`
+    );
+  }
+}
+
+function formatStorageValue(definition: RuleFieldDefinition, value: number) {
+  if (definition.input.storageUnit === "ratio") {
+    return `${Number((value * 100).toFixed(8))}%`;
+  }
+
+  if (definition.input.storageUnit === "ms") {
+    return `${value}ms`;
+  }
+
+  return String(value);
+}
+
+function assertDecimalRange(definition: RuleFieldDefinition, value: string) {
+  if (!isDecimalString(value)) {
+    throw new ApiError(
+      400,
+      "INVALID_RULE_LITERAL",
+      `${definition.label}에는 올바른 숫자만 사용할 수 있습니다.`
+    );
+  }
+
+  if (definition.input.min !== undefined && value.startsWith("-")) {
+    throw new ApiError(
+      400,
+      "INVALID_RULE_LITERAL_RANGE",
+      `${definition.label}에는 음수를 사용할 수 없습니다.`
     );
   }
 }
 
 function assertLiteralValueType(params: {
-  valueType: RuleValueType;
+  definition: RuleFieldDefinition;
   operator: RuleOperator;
-  value: string | number | boolean | string[];
+  value: string | number | boolean | string[] | null;
 }) {
-  const { valueType, operator, value } = params;
+  const { definition, operator, value } = params;
+  const valueType = definition.valueType;
 
   if (operator === "IN" || operator === "NOT_IN") {
     if (!Array.isArray(value)) {
@@ -99,12 +155,24 @@ function assertLiteralValueType(params: {
       );
     }
 
-    if (valueType === "STRING") {
+    if (valueType === "STRING" || valueType === "STRING_ARRAY") {
       if (!value.every((item) => typeof item === "string")) {
         throw new ApiError(
           400,
           "INVALID_RULE_LITERAL",
-          "STRING IN 비교값은 string[]이어야 합니다."
+          "배열 비교값은 string[]이어야 합니다."
+        );
+      }
+
+      const allowedValues = allowedOptionValues(definition);
+      if (
+        allowedValues.size > 0 &&
+        !value.every((item) => allowedValues.has(String(item)))
+      ) {
+        throw new ApiError(
+          400,
+          "INVALID_RULE_LITERAL",
+          `${definition.label}에 허용되지 않은 값이 있습니다.`
         );
       }
       return;
@@ -125,12 +193,23 @@ function assertLiteralValueType(params: {
     );
   }
 
-  if (valueType === "NUMBER" && typeof value !== "number") {
-    throw new ApiError(
-      400,
-      "INVALID_RULE_LITERAL",
-      "NUMBER 필드의 LITERAL value는 number여야 합니다."
+  if (valueType === "STRING" && typeof value === "string") {
+    const allowedValues = allowedOptionValues(definition);
+    if (allowedValues.size > 0 && !allowedValues.has(String(value))) {
+      throw new ApiError(
+        400,
+        "INVALID_RULE_LITERAL",
+        `${definition.label}에 허용되지 않은 값입니다.`
+      );
+    }
+  }
+
+  if (valueType === "NUMBER") {
+    assertFiniteNumber(
+      value,
+      "NUMBER 필드의 LITERAL value는 유한한 number여야 합니다.",
     );
+    assertNumberRange(definition, value);
   }
 
   if (valueType === "BOOLEAN" && typeof value !== "boolean") {
@@ -142,11 +221,23 @@ function assertLiteralValueType(params: {
   }
 
   if (valueType === "DECIMAL_STRING") {
-    if (typeof value !== "string" || !isDecimalString(value)) {
+    if (typeof value !== "string") {
       throw new ApiError(
         400,
         "INVALID_RULE_LITERAL",
         "DECIMAL_STRING 필드의 LITERAL value는 decimal string이어야 합니다."
+      );
+    }
+    assertDecimalRange(definition, value);
+  }
+
+  if (valueType === "MIXED_ENUM") {
+    const allowedValues = allowedOptionValues(definition);
+    if (value !== null && !allowedValues.has(String(value))) {
+      throw new ApiError(
+        400,
+        "INVALID_RULE_LITERAL",
+        `${definition.label}에 허용되지 않은 값입니다.`
       );
     }
   }
@@ -169,7 +260,7 @@ function validateRightOperand(params: {
 
   if (rightOperand.operandType === "LITERAL") {
     assertLiteralValueType({
-      valueType: leftFieldDefinition.valueType,
+      definition: leftFieldDefinition,
       operator,
       value: rightOperand.value,
     });
@@ -180,7 +271,7 @@ function validateRightOperand(params: {
   }
 
   if (rightOperand.operandType === "FIELD") {
-    const rightFieldDefinition = getRuleFieldDefinition(rightOperand.field);
+    const rightFieldDefinition = getRuleEligibleFieldDefinition(rightOperand.field);
 
     if (!rightFieldDefinition) {
       throw new ApiError(
@@ -190,11 +281,14 @@ function validateRightOperand(params: {
       );
     }
 
-    if (rightFieldDefinition.valueType !== leftFieldDefinition.valueType) {
+    if (
+      !leftFieldDefinition.comparisonGroup ||
+      leftFieldDefinition.comparisonGroup !== rightFieldDefinition.comparisonGroup
+    ) {
       throw new ApiError(
         400,
         "INVALID_RULE_FIELD_TYPE",
-        `FIELD 비교는 같은 valueType끼리만 가능합니다. left=${leftFieldDefinition.valueType}, right=${rightFieldDefinition.valueType}`
+        "서로 의미가 같은 항목끼리만 비교할 수 있습니다."
       );
     }
 
@@ -211,7 +305,7 @@ function validateRightOperand(params: {
 }
 
 function validateCondition(condition: RuleCondition) {
-  const leftFieldDefinition = getRuleFieldDefinition(condition.leftField);
+  const leftFieldDefinition = getRuleEligibleFieldDefinition(condition.leftField);
 
   if (!leftFieldDefinition) {
     throw new ApiError(
@@ -221,7 +315,15 @@ function validateCondition(condition: RuleCondition) {
     );
   }
 
-  assertOperatorAllowed(leftFieldDefinition.valueType, condition.operator);
+  if (!isKnownOperator(condition.operator)) {
+    throw new ApiError(
+      400,
+      "INVALID_RULE_OPERATOR",
+      `허용되지 않은 operator입니다: ${condition.operator}`
+    );
+  }
+
+  assertOperatorAllowed(leftFieldDefinition, condition.operator);
 
   let requiresPrivateApi = leftFieldDefinition.requiresPrivateApi;
 

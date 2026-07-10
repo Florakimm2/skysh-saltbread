@@ -1,43 +1,59 @@
 (function initializeSaltbreadCore(globalScope) {
   const MINUTE_MS = 60_000;
+  const PRICE_GROUP = "PRICE";
+  const RATE_GROUP = "RATE";
+  const COUNT_GROUP = "COUNT";
+  const DURATION_GROUP = "DURATION";
   const RULE_FIELD_CATALOG = {
-    side: { valueType: "STRING", requiresPrivateApi: false },
-    orderMode: { valueType: "STRING", requiresPrivateApi: false },
-    snapshotTrigger: { valueType: "STRING", requiresPrivateApi: false },
-    signedChangeRate: { valueType: "NUMBER", requiresPrivateApi: false },
-    shortTermReturn5m: { valueType: "NUMBER", requiresPrivateApi: false },
-    pricePositionIn5mRange: { valueType: "NUMBER", requiresPrivateApi: false },
-    requestedBalanceRatio: { valueType: "NUMBER", requiresPrivateApi: false },
-    orderbookClickToSnapshotMs: { valueType: "NUMBER", requiresPrivateApi: false },
-    intentPrice: { valueType: "DECIMAL_STRING", requiresPrivateApi: false },
-    intentQuantity: { valueType: "DECIMAL_STRING", requiresPrivateApi: false },
-    intentAmount: { valueType: "DECIMAL_STRING", requiresPrivateApi: false },
-    tradePriceAtSnapshot: { valueType: "DECIMAL_STRING", requiresPrivateApi: false },
+    snapshotTrigger: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: "SNAPSHOT_TRIGGER" },
+    market: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: "MARKET" },
+    side: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: "ORDER_SIDE" },
+    orderMode: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: "ORDER_MODE" },
+    entryPoint: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: "ENTRY_POINT" },
+    intentPrice: { valueType: "DECIMAL_STRING", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: PRICE_GROUP },
+    intentQuantity: { valueType: "DECIMAL_STRING", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: "QUANTITY" },
+    intentAmount: { valueType: "DECIMAL_STRING", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: "AMOUNT" },
+    requestedBalanceRatio: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: RATE_GROUP },
+    allocationPresetPercent: { valueType: "MIXED_ENUM", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: "ALLOCATION_PRESET" },
+    draftDurationMs: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: DURATION_GROUP },
+    lastEditToSnapshotMs: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: DURATION_GROUP },
+    draftEditCount: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: COUNT_GROUP },
+    amountChangeRate: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: RATE_GROUP },
+    modeChangedToMarket: { valueType: "BOOLEAN", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: "BOOLEAN" },
+    orderbookClickToSnapshotMs: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: DURATION_GROUP },
+    orderIntentCount1m: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: COUNT_GROUP },
+    actualOrderCreatedCount10m: { valueType: "NUMBER", requiresPrivateApi: true, ruleEligible: true, comparisonGroup: COUNT_GROUP },
+    sameSideIntentCount1m: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: COUNT_GROUP },
+    marketChangeCount5m: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: COUNT_GROUP },
+    sideChangeCount3m: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: COUNT_GROUP },
+    priceEditCount3m: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: COUNT_GROUP },
+    quantityEditCount3m: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: COUNT_GROUP },
+    amountEditCount3m: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: COUNT_GROUP },
+    inputRevertCount: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: COUNT_GROUP },
+    priceDirectionChangeCount: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: COUNT_GROUP },
+    priceChangeRate: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: RATE_GROUP },
+    orderModeChangeCount3m: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: COUNT_GROUP },
+    draftResetCount3m: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: COUNT_GROUP },
+    tradePriceAtSnapshot: { valueType: "DECIMAL_STRING", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: PRICE_GROUP },
+    shortTermReturn5m: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: RATE_GROUP },
+    signedChangeRate: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: RATE_GROUP },
+    spreadRate: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: RATE_GROUP },
+    marketRiskFlags: { valueType: "STRING_ARRAY", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: "FLAG_SET" },
+    pricePositionIn5mRange: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: RATE_GROUP },
+    volumeSpikeRatio5m: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: "MULTIPLIER" },
     baseAssetAvgBuyPriceBeforeSnapshot: {
       valueType: "DECIMAL_STRING",
       requiresPrivateApi: true,
+      ruleEligible: true,
+      comparisonGroup: PRICE_GROUP,
     },
-    priceVsAvgBuyRateAtSnapshot: { valueType: "NUMBER", requiresPrivateApi: true },
-    actualOrderCreatedCount10m: { valueType: "NUMBER", requiresPrivateApi: true },
-    orderIntentCount1m: { valueType: "NUMBER", requiresPrivateApi: false },
-    sameSideIntentCount1m: { valueType: "NUMBER", requiresPrivateApi: false },
-    marketChangeCount5m: { valueType: "NUMBER", requiresPrivateApi: false },
-    sideChangeCount3m: { valueType: "NUMBER", requiresPrivateApi: false },
-    priceEditCount3m: { valueType: "NUMBER", requiresPrivateApi: false },
-    quantityEditCount3m: { valueType: "NUMBER", requiresPrivateApi: false },
-    amountEditCount3m: { valueType: "NUMBER", requiresPrivateApi: false },
-    inputRevertCount: { valueType: "NUMBER", requiresPrivateApi: false },
-    priceDirectionChangeCount: { valueType: "NUMBER", requiresPrivateApi: false },
-    priceChangeRate: { valueType: "NUMBER", requiresPrivateApi: false },
-    amountChangeRate: { valueType: "NUMBER", requiresPrivateApi: false },
-    draftDurationMs: { valueType: "NUMBER", requiresPrivateApi: false },
-    lastEditToSnapshotMs: { valueType: "NUMBER", requiresPrivateApi: false },
-    draftEditCount: { valueType: "NUMBER", requiresPrivateApi: false },
-    orderModeChangeCount3m: { valueType: "NUMBER", requiresPrivateApi: false },
-    allocationPresetPercent: { valueType: "NUMBER", requiresPrivateApi: false },
-    spreadRate: { valueType: "NUMBER", requiresPrivateApi: false },
-    volumeSpikeRatio5m: { valueType: "NUMBER", requiresPrivateApi: false },
-    modeChangedToMarket: { valueType: "BOOLEAN", requiresPrivateApi: false },
+    priceVsAvgBuyRateAtSnapshot: { valueType: "NUMBER", requiresPrivateApi: true, ruleEligible: true, comparisonGroup: RATE_GROUP },
+    snapshotId: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: false },
+    attemptId: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: false },
+    capturedAt: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: false },
+    matchedRuleIdsAtSnapshot: { valueType: "STRING_ARRAY", requiresPrivateApi: false, ruleEligible: false },
+    primaryShownRuleId: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: false },
+    shownRuleIds: { valueType: "STRING_ARRAY", requiresPrivateApi: false, ruleEligible: false },
   };
   const VISUAL_MODES = new Set([
     "DEFAULT",
@@ -127,7 +143,7 @@
       DEFAULT: "DEFAULT",
       AUTO: "DEFAULT",
       BLUE: "SAD",
-      PINK: "SCARED",
+      PINK: "FAST_BURN",
     };
     const resolved = aliases[normalized] || normalized;
 
@@ -486,9 +502,57 @@
       return leftValue === rightValue ? 0 : leftValue ? 1 : -1;
     }
 
+    if (valueType === "MIXED_ENUM") {
+      const leftMixed = leftValue === null ? null : String(leftValue);
+      const rightMixed = rightValue === null ? null : String(rightValue);
+      return leftMixed === rightMixed ? 0 : leftMixed > rightMixed ? 1 : -1;
+    }
+
     const leftString = String(leftValue);
     const rightString = String(rightValue);
     return leftString === rightString ? 0 : leftString > rightString ? 1 : -1;
+  }
+
+  function areComparableFields(leftField, rightField) {
+    const leftDefinition = RULE_FIELD_CATALOG[leftField];
+    const rightDefinition = RULE_FIELD_CATALOG[rightField];
+
+    if (!leftDefinition?.ruleEligible || !rightDefinition?.ruleEligible) {
+      return false;
+    }
+
+    return Boolean(
+      leftDefinition.comparisonGroup &&
+        leftDefinition.comparisonGroup === rightDefinition.comparisonGroup,
+    );
+  }
+
+  function evaluateArrayCondition(leftValue, operator, rightValue) {
+    if (!Array.isArray(leftValue)) {
+      return false;
+    }
+
+    if (operator === "IS_NOT_NULL") {
+      return leftValue.length > 0;
+    }
+
+    if (operator === "IS_NULL") {
+      return false;
+    }
+
+    const expected = Array.isArray(rightValue) ? rightValue.map(String) : [];
+    const actual = leftValue.map(String);
+    const matched = expected.some((value) => actual.includes(value));
+
+    if (operator === "IN") {
+      return matched;
+    }
+
+    if (operator === "NOT_IN") {
+      return !matched;
+    }
+
+    return false;
   }
 
   function evaluateRuleCondition(condition, context) {
@@ -496,7 +560,22 @@
       return false;
     }
 
+    const fieldDefinition = RULE_FIELD_CATALOG[condition.leftField] || null;
+
+    if (!fieldDefinition?.ruleEligible) {
+      return false;
+    }
+
     const leftValue = getRuleFieldValue(context, condition.leftField);
+
+    if (fieldDefinition.valueType === "STRING_ARRAY") {
+      if (condition.operator === "IS_NULL") {
+        return leftValue === null || leftValue === undefined;
+      }
+
+      const rightValue = resolveOperandValue(condition.rightOperand, context);
+      return evaluateArrayCondition(leftValue, condition.operator, rightValue);
+    }
 
     if (condition.operator === "IS_NULL") {
       return leftValue === null || leftValue === undefined;
@@ -510,10 +589,14 @@
       return false;
     }
 
-    const fieldDefinition = RULE_FIELD_CATALOG[condition.leftField] || {
-      valueType: "STRING",
-    };
     const rightValue = resolveOperandValue(condition.rightOperand, context);
+
+    if (
+      condition.rightOperand?.operandType === "FIELD" &&
+      !areComparableFields(condition.leftField, condition.rightOperand.field)
+    ) {
+      return false;
+    }
 
     if (condition.operator === "IN" || condition.operator === "NOT_IN") {
       const values = Array.isArray(rightValue) ? rightValue.map(String) : [];
