@@ -16,7 +16,7 @@ export default async function DashboardPage() {
   const behaviorData = await loadDashboardBehaviorData(session.userId);
   const insight =
     behaviorData.status === "ready"
-      ? await requestDashboardInsight(behaviorData.records)
+      ? await requestDashboardInsight(session.userId, behaviorData.records)
       : { status: "error" as const, sourceCount: 0 };
 
   return (
