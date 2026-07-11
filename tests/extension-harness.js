@@ -34,8 +34,8 @@ globalThis.chrome = {
                   detected: isAllInBuy,
                   type: isAllInBuy ? "ALL_IN_IMPULSE" : null,
                   message: isAllInBuy
-                    ? "최대 금액 매수 감정 매매 타입을 감지했어요."
-                    : "현재 감정적 매매 패턴은 감지되지 않았어요.",
+                    ? "최대 금액 매수 가드레일 기준을 감지했어요."
+                    : "현재 설정한 가드레일 기준에 해당하는 주문은 감지되지 않았어요.",
                   flameMode:
                     message.payload.currentOrder.order_side === "SELL"
                       ? "blue"

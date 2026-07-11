@@ -1995,7 +1995,7 @@ export default function TradingTerminal() {
             <div className="demo-console__heading">
               <div>
                 <span>DEMO CONTROLLER</span>
-                <strong>감정 매매 시나리오</strong>
+                <strong>가드레일 점검 시나리오</strong>
               </div>
               <kbd>Ctrl</kbd>
               <b>+</b>

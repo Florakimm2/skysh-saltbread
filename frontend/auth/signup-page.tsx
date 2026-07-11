@@ -99,12 +99,12 @@ export default function SignupPage({ extensionId }: { extensionId?: string }) {
 
         <div className={styles.authGrid}>
           <AuthArtwork mode="curious">
-            <p className={styles.kicker}>투자를 더 침착하게,</p>
+            <p className={styles.kicker}>투자에 원칙을 더하다</p>
             <h1 id="signup-title">회원가입</h1>
             <p>
-              불씨와 함께 현명한 투자 습관을 만들어가세요.
+              나만의 가드레일을 세우고 거래 기록을 쌓아보세요.
               <br />
-              당신의 여정에 든든한 동반자가 되어드릴게요.
+              같은 후회를 반복하지 않도록 불씨가 함께 확인할게요.
             </p>
           </AuthArtwork>
 

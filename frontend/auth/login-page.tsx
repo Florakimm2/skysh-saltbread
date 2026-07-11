@@ -75,14 +75,14 @@ export default function LoginPage({
 
         <div className={styles.authGrid}>
           <AuthArtwork>
-            <p className={styles.kicker}>당신의 투자를 더 침착하게</p>
+            <p className={styles.kicker}>규칙적인 투자를 지켜나가기</p>
             <h1>
               <em>이메일로</em> 로그인
             </h1>
             <p>
-              당신의 투자를 더 차분하게,
+              직접 정한 원칙을 주문 순간에 확인하고,
               <br />
-              불씨가 함께 지켜드릴게요.
+              거래 기록을 불씨와 함께 돌아보세요.
             </p>
           </AuthArtwork>
 

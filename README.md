@@ -8,14 +8,29 @@
   투자에 <strong>규칙</strong>을 정하다<br/>
 </p>
 
+<p align="center">
+  <img src="https://img.shields.io/badge/Next.js-16-000000?style=flat-square&logo=nextdotjs&logoColor=white" alt="Next.js" />
+  <img src="https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black" alt="React" />
+  <img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI" />
+  <img src="https://img.shields.io/badge/Firebase-FFCA28?style=flat-square&logo=firebase&logoColor=black" alt="Firebase" />
+  <img src="https://img.shields.io/badge/Chrome_Extension-MV3-4285F4?style=flat-square&logo=googlechrome&logoColor=white" alt="Chrome Extension Manifest V3" />
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/github/last-commit/Florakimm2/skysh-saltbread?style=flat-square" alt="Last Commit" />
+  <img src="https://img.shields.io/github/contributors/Florakimm2/skysh-saltbread?style=flat-square" alt="Contributors" />
+  <img src="https://img.shields.io/github/issues/Florakimm2/skysh-saltbread?style=flat-square" alt="Issues" />
+</p>
+
 ---
 
 <p align="center">
   <img src="img/img1.png" alt="bulssi1" width="640" />
 </p>
 
-감정적인 매매 신호를 주문 직전에 감지하고, 사용자가 한 번 더 판단할 수 있도록 돕는 투자 보조 서비스입니다.  
-Chrome Extension은 Upbit 거래 화면의 입력·클릭 흐름을 관찰하고, 웹 대시보드는 누적된 행동 기록과 AI 인사이트를 보여줍니다.
+사용자가 설정한 투자 원칙과 실제 주문이 어긋나는 순간을 감지하고, 주문 직전에 한 번 더 확인할 수 있도록 돕는 개인 투자 가드레일 서비스입니다.
+Chrome Extension은 Upbit 거래 화면에서 주문 흐름과 가드레일 충족 여부를 확인하고, 웹 대시보드는 누적된 가드레일 기록과 원칙 준수 결과, AI 인사이트를 보여줍니다.
 
 > 불씨는 주문을 대신 실행하거나 투자 수익을 보장하지 않아요. 감지 결과는 투자 판단을 돕기 위한 참고 정보입니다.
 
@@ -28,10 +43,10 @@ Chrome Extension은 Upbit 거래 화면의 입력·클릭 흐름을 관찰하고
 </p>
 
 - Upbit 거래 화면에서 주문 입력, 클릭, 종목 이동 등 행동 흐름 감지
-- 급등 추격 매수, 반복 주문 수정, 손실 직후 복구 매매 등 감정 매매 패턴 분석
+- 급등 추격 매수, 반복 주문, 손실 직후 재진입 등 후회했던 거래를 줄이기 위한 개인 가드레일 적용
 - Chrome Extension 패널을 통한 실시간 경고 및 피드백 표시
 - 웹 대시보드에서 감지 기록, 가드레일 반응, 투자 경향 확인
-- FastAPI 기반 AI 서버를 통한 최근 행동 요약 및 인사이트 생성
+- FastAPI 기반 AI 서버를 통한 주문 시도 기록 요약 및 투자 원칙 개선 인사이트 생성
 
 ## 프로젝트 구조
 

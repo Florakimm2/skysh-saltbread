@@ -6,7 +6,10 @@ import type {
   GuardrailTimelineItem,
   OrderContextSnapshotDTO,
 } from "@/backend/modules/logs/types";
-import { buildExpressionPreview } from "@/frontend/dashboard/rule-expression-format";
+import {
+  buildExpressionPreview,
+  formatConditionEvaluation,
+} from "@/frontend/dashboard/rule-expression-format";
 import {
   formatCurrency,
   formatDateTime,
@@ -190,6 +193,7 @@ export default function WarningDetailModal({
   const hasStoredRule = Boolean(rule && rule.historySource !== "MISSING_RULE");
   const expressionPreview =
     hasStoredRule && rule ? buildExpressionPreview(rule.expression) : null;
+  const conditionResults = rule?.conditionResults ?? [];
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -315,6 +319,39 @@ export default function WarningDetailModal({
                 <strong>규칙 조건 요약</strong>
                 <p>{expressionPreview}</p>
               </div>
+              {conditionResults.length > 0 ? (
+                <div className={styles.warningRuleConditionResults}>
+                  <strong>판정된 조건</strong>
+                  <ul>
+                    {conditionResults.map((condition, index) => {
+                      const formatted = formatConditionEvaluation({
+                        leftField: condition.leftField,
+                        operator: condition.operator,
+                        expectedValue: condition.expectedValue,
+                        actualValue: condition.actualValue,
+                        matched: condition.matched,
+                        unavailableReason: condition.unavailableReason,
+                      });
+
+                      return (
+                        <li key={`${condition.leftField}-${index}`}>
+                          <span aria-label={formatted.matched ? "충족" : "미충족"}>
+                            {formatted.matched ? "✓" : "–"}
+                          </span>
+                          <div>
+                            <strong>{formatted.description}</strong>
+                            <p>
+                              기준 {formatted.criteriaText} · 당시{" "}
+                              {formatted.actualText}
+                            </p>
+                            <small>{formatted.actualSentence}</small>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ) : null}
               <details className={styles.warningRuleRawExpression}>
                 <summary>원본 expression 보기</summary>
                 <pre>{JSON.stringify(rule.expression, null, 2)}</pre>

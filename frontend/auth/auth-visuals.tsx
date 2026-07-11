@@ -103,7 +103,7 @@ export function TrustFooter() {
       <i />
       <span>
         <LockIcon />
-        안전하고 투명하게, 당신의 투자를 지켜드려요.
+        내가 정한 원칙을 안전하게 기록해요.
       </span>
     </div>
   );

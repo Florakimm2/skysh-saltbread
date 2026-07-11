@@ -6,7 +6,7 @@ import DashboardShell from "@/frontend/dashboard/dashboard-shell";
 
 export const metadata: Metadata = {
   title: "대시보드 | 불씨",
-  description: "투자 기록과 AI 분석을 확인하는 불씨 대시보드",
+  description: "거래 기록과 가드레일 인사이트를 확인하는 불씨 대시보드",
 };
 
 export default async function DashboardLayout({

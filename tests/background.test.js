@@ -1191,7 +1191,7 @@ test("실제 Upbit 주문 액션은 로그 보정 후 사용자 규칙 evaluatio
         return {
           detected: false,
           type: null,
-          message: "현재 감정적 매매 패턴은 감지되지 않았어요.",
+          message: "현재 설정한 가드레일 기준에 해당하는 주문은 감지되지 않았어요.",
         };
       },
     };
@@ -1663,6 +1663,103 @@ test("market mismatch가 있으면 사용자 규칙 평가를 건너뛰고 DTO d
     sentTabMessages.some(({ message }) => message.type === "DETECTION_RESULT"),
     false,
   );
+});
+
+test("실제 Upbit 개인 API 미연결은 demo fallback 없이 UNAVAILABLE로 평가한다", async () => {
+  const { context, localStore, sentTabMessages } = createBackgroundHarness();
+  localStore.auth = {
+    accessToken: "backend-access-token",
+    expiresAt: Date.now() + 60 * 60 * 1000,
+    user: { id: "test-user" },
+  };
+  localStore.guardrailRulesCache = {
+    userId: "test-user",
+    fetchedAt: new Date().toISOString(),
+    rules: [
+      {
+        ruleId: "private-order-count",
+        isEnabled: true,
+        priority: 1,
+        expression: {
+          nodeType: "CONDITION",
+          leftField: "actualOrderCreatedCount10m",
+          operator: "GTE",
+          rightOperand: { operandType: "LITERAL", value: 1 },
+        },
+      },
+    ],
+  };
+  context.fetch = async (url) => {
+    if (url.endsWith("/api/behavior/events")) {
+      return {
+        ok: true,
+        async json() {
+          return { ok: true };
+        },
+      };
+    }
+
+    throw new Error(`Unexpected request: ${url}`);
+  };
+
+  const result = await vm.runInContext(
+    `callDetectionApi(
+      19,
+      {
+        market: "KRW-DOGE",
+        pageUrl: "https://upbit.com/exchange?code=CRIX.UPBIT.KRW-DOGE",
+        currentOrder: {
+          market: "KRW-DOGE",
+          order_side: "BUY",
+          order_status: "WAIT",
+          order_type: "MARKET",
+          order_price: null,
+          order_volume: null,
+          order_amount: 5000,
+          realized_loss_pct_1h: null,
+          order_request_time: "2026-06-28T10:30:00+09:00",
+          order_cancel_time: null
+        },
+        behaviorData: {
+          buy_click_count_1m: 1,
+          input_edit_count: 1,
+          page_stay_duration: 30
+        },
+        orderContextSnapshot: {
+          snapshotId: "snapshot-doge",
+          attemptId: "attempt-doge",
+          snapshotTrigger: "ORDER_INTENT_CLICK",
+          capturedAt: "2026-06-28T01:30:00.000Z",
+          market: "KRW-DOGE",
+          side: "BUY",
+          orderMode: "MARKET",
+          intentAmount: "5000"
+        }
+      },
+      {
+        market: "KRW-DOGE",
+        current_price: 116,
+        tradePriceAtSnapshot: "116",
+        signedChangeRate: -0.0085,
+        market_data: {},
+        source: "backend-market-snapshot"
+      },
+      { logSubmitAttempt: false }
+    )`,
+    context,
+  );
+  const dtoMessage = sentTabMessages.find(
+    ({ message }) => message.type === "DTO_DEBUG_SNAPSHOT",
+  );
+  const condition = dtoMessage.message.payload.ruleEvaluation.conditionResults[0];
+
+  assert.equal(result.detected, false);
+  assert.equal(dtoMessage.message.payload.dataSource, "UPBIT");
+  assert.equal(dtoMessage.message.payload.personal.personalSource, "UNAVAILABLE");
+  assert.equal(dtoMessage.message.payload.personal.personalDataSource, "unavailable");
+  assert.equal(dtoMessage.message.payload.personal.demoPersonalAvailable, false);
+  assert.equal(condition.actualValue, null);
+  assert.equal(condition.missingReason, "MISSING_PERSONAL_DATA");
 });
 
 test("주문 클릭 시 인증 주문을 조회하고 detect용 이력으로 변환한다", async () => {

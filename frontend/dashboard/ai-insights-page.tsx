@@ -20,7 +20,7 @@ export default function AiInsightsPage({
       <PageHeader
         eyebrow="Intelligence"
         title="AI 인사이트"
-        description="최근 30일의 주문 행동을 바탕으로 발견한 투자 습관입니다."
+        description="최근 30일의 주문과 가드레일 기록을 바탕으로 원칙 준수 흐름을 정리합니다."
       />
 
       <section
@@ -47,15 +47,13 @@ export default function AiInsightsPage({
               <SparklesIcon />
             </span>
             <div>
-              {/* 상단 요약 문장 렌더링 */}
               {summaryText.split(/\n+/).map((paragraph: string, index: number) => (
                 <p key={`${index}-${paragraph.slice(0, 16)}`}>{paragraph}</p>
               ))}
 
-              {/* 💡 핵심 수정: 하단 인사이트 카드 리스트 렌더링 */}
               {cards.length > 0 && (
                 <div style={{ marginTop: "24px", display: "flex", flexDirection: "column", gap: "12px" }}>
-                  {cards.map((card: any, index: number) => (
+                  {cards.map((card: { title?: string; description?: string; severity?: string }, index: number) => (
                     <div 
                       key={index} 
                       style={{ 
@@ -69,7 +67,6 @@ export default function AiInsightsPage({
                         margin: "0 0 8px 0", 
                         fontSize: "16px", 
                         fontWeight: "600",
-                        // 위험도에 따라 글씨 색상을 다르게 표현합니다 (critical/high는 빨간색 계열)
                         color: card.severity === "critical" || card.severity === "high" ? "#e03131" : "#1971c2" 
                       }}>
                         {card.title}
@@ -96,7 +93,7 @@ export default function AiInsightsPage({
               </strong>
               <p>
                 {insight.status === "empty"
-                  ? "새로운 주문 행동이 쌓이면 맞춤형 인사이트를 생성합니다."
+                  ? "새로운 주문과 가드레일 기록이 쌓이면 맞춤형 인사이트를 생성합니다."
                   : "잠시 후 페이지를 새로고침해 다시 확인해 주세요."}
               </p>
             </div>

@@ -36,7 +36,7 @@ export default function Sidebar() {
         </span>
         <span className={styles.brandText}>
           <strong>불씨</strong>
-          <span>CALM INVESTING</span>
+          <span>WITH GUARDRAIL</span>
         </span>
       </Link>
 
@@ -65,9 +65,9 @@ export default function Sidebar() {
 
       <div className={styles.sidebarFooter}>
         <p>
-          더 차분한 투자 판단을 위한
+          투자에 원칙을 더하는
           <br />
-          나만의 트레이딩 가드레일
+          나만의 거래 가드레일
         </p>
         <LogoutButton />
       </div>

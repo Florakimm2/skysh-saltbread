@@ -1,7 +1,7 @@
 /**
  * FireMascot / FlameAnimation
  *
- * 하나의 공용 SVG rig로 6개 감정 모드를 표현한다.
+ * 하나의 공용 SVG rig로 6개 가드레일 표시 모드를 표현한다.
  *
  * const mascot = createFlameAnimation("#mascot", {
  *   size: 240,
