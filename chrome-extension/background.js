@@ -2,7 +2,9 @@ importScripts("config.js", "data-core.js");
 
 const {
   calculateAverageBuyAmount,
+  createGuardrailRuleSnapshot,
   evaluateGuardrailRules,
+  getOrderTimeParts,
   mapUpbitOrder,
   parseMarket,
   resolveVisualMode,
@@ -858,6 +860,8 @@ function normalizeOrderContextSnapshotLog(snapshot) {
     "attemptId",
     "snapshotTrigger",
     "capturedAt",
+    "orderTime",
+    "orderTimeMinutes",
     "market",
     "side",
     "orderMode",
@@ -889,6 +893,9 @@ function normalizeOrderContextSnapshotLog(snapshot) {
     "matchedRuleIdsAtSnapshot",
     "primaryShownRuleId",
     "shownRuleIds",
+    "ruleSnapshot",
+    "ruleSnapshots",
+    "ruleEvaluationSnapshots",
     "tradePriceAtSnapshot",
     "shortTermReturn5m",
     "signedChangeRate",
@@ -904,7 +911,18 @@ function normalizeOrderContextSnapshotLog(snapshot) {
     payload.matchedRuleIdsAtSnapshot,
   );
   payload.shownRuleIds = normalizeArray(payload.shownRuleIds);
+  payload.ruleSnapshots = normalizeArray(payload.ruleSnapshots);
+  payload.ruleEvaluationSnapshots = normalizeArray(
+    payload.ruleEvaluationSnapshots,
+  );
   payload.marketRiskFlags = normalizeArray(payload.marketRiskFlags);
+
+  if ((!payload.orderTime || payload.orderTimeMinutes === undefined) && payload.capturedAt) {
+    const orderTimeParts = getOrderTimeParts(payload.capturedAt);
+    payload.orderTime = payload.orderTime ?? orderTimeParts.orderTime;
+    payload.orderTimeMinutes =
+      payload.orderTimeMinutes ?? orderTimeParts.orderTimeMinutes;
+  }
 
   return payload;
 }
@@ -1758,12 +1776,24 @@ async function callDetectionApi(
       order.realized_loss_pct_1h !== null &&
       Date.now() - Date.parse(order.order_request_time) <= 60 * 60 * 1000,
   );
+  const requestOrderTimeParts = getOrderTimeParts(
+    normalizedContext.orderContextSnapshot?.capturedAt ||
+      normalizedContext.currentOrder.order_request_time,
+  );
   const requestBody = {
     market: normalizedContext.market,
     current_price: normalizedMarketData.current_price,
     market_data: normalizedMarketData.market_data,
     current_order: {
       ...normalizedContext.currentOrder,
+      order_time:
+        normalizedContext.currentOrder.order_time ??
+        normalizedContext.orderContextSnapshot?.orderTime ??
+        requestOrderTimeParts.orderTime,
+      order_time_minutes:
+        normalizedContext.currentOrder.order_time_minutes ??
+        normalizedContext.orderContextSnapshot?.orderTimeMinutes ??
+        requestOrderTimeParts.orderTimeMinutes,
       realized_loss_pct_1h: lastLoss?.realized_loss_pct_1h ?? null,
     },
     behavior_data: {
@@ -1931,6 +1961,15 @@ async function callDetectionApi(
     rulesState.rules,
     orderContextSnapshot,
   );
+  const ruleSnapshots = Array.isArray(ruleEvaluation.matchedRules)
+    ? ruleEvaluation.matchedRules
+        .map((rule) => createGuardrailRuleSnapshot(rule))
+        .filter(Boolean)
+    : [];
+  const ruleSnapshot =
+    ruleSnapshots.find((item) => item.ruleId === ruleEvaluation.primaryRuleId) ||
+    ruleSnapshots[0] ||
+    null;
   const evaluatedSnapshot = {
     ...orderContextSnapshot,
     matchedRuleIdsAtSnapshot: ruleEvaluation.matchedRuleIds,
@@ -1938,6 +1977,8 @@ async function callDetectionApi(
     shownRuleIds: ruleEvaluation.primaryRuleId
       ? [ruleEvaluation.primaryRuleId]
       : [],
+    ruleSnapshot,
+    ruleSnapshots,
   };
 
   await sendDtoDebugSnapshot(tabId, {
@@ -2250,12 +2291,17 @@ function enrichOrderContextSnapshot(context, marketData, orderData = {}) {
   const isDemoPersonalData =
     orderData?.personalDataSource === "demo-data" ||
     orderData?.isDemoPersonalData;
+  const capturedAt = base.capturedAt || new Date().toISOString();
+  const orderTimeParts = getOrderTimeParts(capturedAt);
 
   return {
     snapshotId: base.snapshotId || crypto.randomUUID(),
     attemptId: base.attemptId || null,
     snapshotTrigger: base.snapshotTrigger || "ORDER_INTENT_CLICK",
-    capturedAt: base.capturedAt || new Date().toISOString(),
+    capturedAt,
+    orderTime: base.orderTime ?? orderTimeParts.orderTime,
+    orderTimeMinutes:
+      base.orderTimeMinutes ?? orderTimeParts.orderTimeMinutes,
     market,
     side,
     orderMode,
@@ -2298,6 +2344,8 @@ function enrichOrderContextSnapshot(context, marketData, orderData = {}) {
     matchedRuleIdsAtSnapshot: base.matchedRuleIdsAtSnapshot || [],
     primaryShownRuleId: base.primaryShownRuleId || null,
     shownRuleIds: base.shownRuleIds || [],
+    ruleSnapshot: base.ruleSnapshot || null,
+    ruleSnapshots: base.ruleSnapshots || [],
     tradePriceAtSnapshot:
       base.tradePriceAtSnapshot ??
       marketData.tradePriceAtSnapshot ??

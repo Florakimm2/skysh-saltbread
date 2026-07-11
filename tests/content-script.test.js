@@ -1600,6 +1600,9 @@ test("Upbit 시장가 매수는 주문금액과 MARKET 모드를 snapshot에 담
   assert.equal(snapshot.intentAmount, "150000");
   assert.equal(snapshot.intentPrice, null);
   assert.equal(snapshot.intentQuantity, null);
+  assert.match(snapshot.orderTime, /^([01]\d|2[0-3]):[0-5]\d$/);
+  assert.equal(Number.isInteger(snapshot.orderTimeMinutes), true);
+  assert.ok(snapshot.orderTimeMinutes >= 0 && snapshot.orderTimeMinutes <= 1439);
   assert.deepEqual(JSON.parse(JSON.stringify(snapshot.matchedRuleIdsAtSnapshot)), [
     "market-buy-rule",
   ]);

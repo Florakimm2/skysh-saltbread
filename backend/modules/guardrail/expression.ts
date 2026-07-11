@@ -117,6 +117,12 @@ function formatStorageValue(definition: RuleFieldDefinition, value: number) {
     return `${value}ms`;
   }
 
+  if (definition.input.storageUnit === "minutes") {
+    const hour = Math.floor(value / 60);
+    const minute = value % 60;
+    return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  }
+
   return String(value);
 }
 

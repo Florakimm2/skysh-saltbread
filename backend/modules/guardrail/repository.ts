@@ -384,6 +384,40 @@ export async function patchOwnedRule(params: {
   return ruleDocToDTO(updated.id, updated.data() ?? {});
 }
 
+export async function reorderOwnedRules(params: {
+  userId: string;
+  ruleIds: string[];
+}): Promise<UserGuardrailRuleDTO[] | null> {
+  const currentRules = await listUserRules(params.userId);
+  const currentRuleIds = currentRules.map((rule) => rule.ruleId);
+  const requestedRuleIds = [...params.ruleIds];
+
+  if (
+    currentRuleIds.length !== requestedRuleIds.length ||
+    new Set(requestedRuleIds).size !== requestedRuleIds.length ||
+    currentRuleIds.some((ruleId) => !requestedRuleIds.includes(ruleId))
+  ) {
+    return null;
+  }
+
+  const now = Timestamp.now();
+
+  await adminDb.runTransaction(async (transaction) => {
+    requestedRuleIds.forEach((ruleId, index) => {
+      transaction.set(
+        rulesRef.doc(ruleId),
+        {
+          priority: index + 1,
+          updatedAt: now,
+        },
+        { merge: true },
+      );
+    });
+  });
+
+  return listUserRules(params.userId);
+}
+
 export async function deleteOwnedRule(params: {
   userId: string;
   ruleId: string;

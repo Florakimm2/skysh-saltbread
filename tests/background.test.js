@@ -405,6 +405,8 @@ test("확장 로그 DTO는 /api/me/logs 엔드포인트로 인증 저장된다",
   assert.equal(snapshotRequest.options.headers["X-User-Id"], undefined);
   assert.equal(snapshotBody.snapshotId, "snapshot-logs-1");
   assert.equal(snapshotBody.market, "KRW-BTC");
+  assert.equal(snapshotBody.orderTime, "10:00");
+  assert.equal(snapshotBody.orderTimeMinutes, 600);
   assert.equal(snapshotBody.debugOnly, undefined);
   assert.equal(reactionBody.snapshotId, "snapshot-logs-1");
   assert.equal(reactionBody.action, "PROCEED");

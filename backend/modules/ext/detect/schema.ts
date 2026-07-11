@@ -7,6 +7,12 @@ const nullableNumber = z.union([z.number().finite(), z.null()]);
 const orderSideSchema = z.enum(["BUY", "SELL"]);
 const orderStatusSchema = z.enum(["WAIT", "DONE", "CANCEL"]);
 const orderTypeSchema = z.enum(["LIMIT", "MARKET"]);
+const orderTimeSchema = z
+  .string()
+  .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+  .nullable()
+  .optional();
+const orderTimeMinutesSchema = z.number().int().min(0).max(1439).nullable().optional();
 
 const orderSchema = z.object({
   market: z.string().min(1),
@@ -18,6 +24,8 @@ const orderSchema = z.object({
   order_amount: nullableNumber,
   realized_loss_pct_1h: nullableNumber,
   order_request_time: z.string().min(1),
+  order_time: orderTimeSchema,
+  order_time_minutes: orderTimeMinutesSchema,
   order_cancel_time: z.union([z.string().min(1), z.null()]),
 });
 
@@ -41,6 +49,8 @@ export const detectEmotionTradeRequestSchema = z.object({
     order_amount: z.number().finite().nonnegative(),
     realized_loss_pct_1h: nullableNumber,
     order_request_time: z.string().min(1),
+    order_time: orderTimeSchema,
+    order_time_minutes: orderTimeMinutesSchema,
     order_cancel_time: z.union([z.string().min(1), z.null()]),
   }),
 

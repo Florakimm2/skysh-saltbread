@@ -10,6 +10,7 @@
     side: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: "ORDER_SIDE" },
     orderMode: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: "ORDER_MODE" },
     entryPoint: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: "ENTRY_POINT" },
+    orderTimeMinutes: { valueType: "NUMBER", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: "TIME_OF_DAY" },
     intentPrice: { valueType: "DECIMAL_STRING", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: PRICE_GROUP },
     intentQuantity: { valueType: "DECIMAL_STRING", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: "QUANTITY" },
     intentAmount: { valueType: "DECIMAL_STRING", requiresPrivateApi: false, ruleEligible: true, comparisonGroup: "AMOUNT" },
@@ -51,6 +52,7 @@
     snapshotId: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: false },
     attemptId: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: false },
     capturedAt: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: false },
+    orderTime: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: false },
     matchedRuleIdsAtSnapshot: { valueType: "STRING_ARRAY", requiresPrivateApi: false, ruleEligible: false },
     primaryShownRuleId: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: false },
     shownRuleIds: { valueType: "STRING_ARRAY", requiresPrivateApi: false, ruleEligible: false },
@@ -394,6 +396,26 @@
     return String(side).toLowerCase() === "ask" ? "SELL" : "BUY";
   }
 
+  function getOrderTimeParts(timestamp) {
+    const date = new Date(timestamp);
+
+    if (Number.isNaN(date.getTime())) {
+      return {
+        orderTime: null,
+        orderTimeMinutes: null,
+      };
+    }
+
+    const kst = new Date(date.getTime() + 9 * 60 * MINUTE_MS);
+    const hour = kst.getUTCHours();
+    const minute = kst.getUTCMinutes();
+
+    return {
+      orderTime: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`,
+      orderTimeMinutes: hour * 60 + minute,
+    };
+  }
+
   function mapUpbitOrder(order, averageBuyPrices = {}) {
     const side = mapOrderSide(order.side);
     const executedVolume = toNumber(order.executed_volume) ?? 0;
@@ -679,6 +701,32 @@
     };
   }
 
+  function createGuardrailRuleSnapshot(rule) {
+    if (!rule || typeof rule !== "object" || !rule.ruleId) {
+      return null;
+    }
+
+    return {
+      ruleId: String(rule.ruleId),
+      name: String(rule.name || rule.warningTitle || "이름 없는 규칙"),
+      description:
+        rule.description === undefined || rule.description === null
+          ? null
+          : String(rule.description),
+      priority:
+        Number.isFinite(Number(rule.priority)) ? Number(rule.priority) : undefined,
+      riskLevel: ["LOW", "MEDIUM", "HIGH"].includes(rule.riskLevel)
+        ? rule.riskLevel
+        : "MEDIUM",
+      visualMode: normalizeVisualMode(rule.visualMode) === "DEFAULT"
+        ? "CURIOUS"
+        : normalizeVisualMode(rule.visualMode),
+      expression: rule.expression,
+      warningTitle: rule.warningTitle ? String(rule.warningTitle) : undefined,
+      warningMessage: rule.warningMessage ? String(rule.warningMessage) : undefined,
+    };
+  }
+
   function buildBehaviorSnapshot(state, now = Date.now()) {
     const currentMarket = state.market;
     const buyClicks = pruneTimestamps(
@@ -705,9 +753,11 @@
     buildBehaviorSnapshot,
     calculateAverageBuyAmount,
     calculateMarketData,
+    createGuardrailRuleSnapshot,
     detectOrderActionSide,
     evaluateGuardrailRules,
     evaluateRuleExpression,
+    getOrderTimeParts,
     mapOrderSide,
     mapOrderStatus,
     mapOrderType,

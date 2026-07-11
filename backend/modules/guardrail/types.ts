@@ -92,7 +92,8 @@ export type RuleFieldDefinition = {
     | "FLAG_SET"
     | "ALLOCATION_PRESET"
     | "IDENTIFIER"
-    | "DATETIME";
+    | "DATETIME"
+    | "TIME_OF_DAY";
   nullable: boolean;
   ruleEligible: boolean;
   requiresPrivateApi: boolean;
@@ -107,7 +108,8 @@ export type RuleFieldDefinition = {
       | "COUNT_STEPPER"
       | "BOOLEAN_SELECT"
       | "FLAG_MULTI_SELECT"
-      | "PRESET_SELECT";
+      | "PRESET_SELECT"
+      | "TIME";
     min?: number;
     max?: number;
     step?: number;
@@ -184,3 +186,7 @@ export type UserGuardrailRuleCreateRequest = {
 export type UserGuardrailRulePatchRequest = Partial<
   UserGuardrailRuleCreateRequest
 >;
+
+export type UserGuardrailRuleReorderRequest = {
+  ruleIds: string[];
+};

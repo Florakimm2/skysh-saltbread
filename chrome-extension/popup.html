@@ -34,6 +34,10 @@
           height="80"
         />
         <h1>불씨</h1>
+        <p class="advisory-note">
+          불씨는 수익률을 높이거나 투자를 추천하는 도구가 아닙니다.
+          내가 설정한 거래 규칙을 주문 직전에 다시 알려주는 개인 투자 보조 도구입니다.
+        </p>
         <div class="auth-actions">
           <button id="open-login-button" class="primary-button" type="button">
             로그인
@@ -59,6 +63,9 @@
         </header>
 
         <h1 id="account-greeting" class="account-greeting"></h1>
+        <p class="advisory-note advisory-note--compact">
+          불씨는 수익률을 높이거나 투자를 추천하지 않고, 내가 설정한 거래 규칙을 주문 직전에 알려줍니다.
+        </p>
         <button
           id="open-onboarding-button"
           class="primary-button onboarding-button"
@@ -138,8 +145,18 @@
                   class="primary-button"
                   type="submit"
                 >
-                  검증 후 암호화 저장
+                  API 연결하기
                 </button>
+                <a
+                  id="api-guide-link"
+                  class="api-guide-link"
+                  href="#"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="업비트 Open API 연결 가이드를 새 탭에서 열기"
+                >
+                  연결 가이드 보기 <span aria-hidden="true">↗</span>
+                </a>
                 <button
                   id="unlock-api-key-button"
                   class="secondary-button"

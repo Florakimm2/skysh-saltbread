@@ -43,7 +43,8 @@ button {
 }
 
 button:focus-visible,
-input:focus-visible {
+input:focus-visible,
+a:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 2px;
 }
@@ -125,10 +126,30 @@ input:focus-visible {
 }
 
 .signed-out-view h1 {
-  margin: 0 0 22px;
+  margin: 0 0 14px;
   font-size: 27px;
   line-height: 1.2;
   letter-spacing: -0.04em;
+}
+
+.advisory-note {
+  width: 100%;
+  margin: 0 0 16px;
+  padding: 11px 12px;
+  border: 1px solid #ffd5c4;
+  border-radius: 13px;
+  background: #fff7f2;
+  color: #6b4b3f;
+  font-size: 11px;
+  font-weight: 680;
+  line-height: 1.55;
+  text-align: left;
+}
+
+.advisory-note--compact {
+  margin-top: -10px;
+  margin-bottom: 14px;
+  font-size: 10px;
 }
 
 .auth-actions {
@@ -411,6 +432,26 @@ input:focus {
   display: grid;
   gap: 8px;
   margin-top: 4px;
+}
+
+.api-guide-link {
+  display: inline-flex;
+  width: 100%;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid #f1bcb6;
+  border-radius: 12px;
+  color: #36425a;
+  background: #fff;
+  font-size: 13px;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.api-guide-link:hover {
+  background: var(--primary-soft);
 }
 
 .account-view > .message {

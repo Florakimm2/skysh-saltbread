@@ -1,6 +1,6 @@
 import { getDashboardSession } from "@/backend/modules/auth/session";
 import PastTrendsPage from "@/frontend/dashboard/past-trends-page";
-import { loadDashboardBehaviorData } from "../load-dashboard-data";
+import { loadDashboardTimelineData } from "../load-dashboard-data";
 
 export default async function TrendsPage() {
   const session = await getDashboardSession();
@@ -9,12 +9,12 @@ export default async function TrendsPage() {
     return null;
   }
 
-  const behaviorData = await loadDashboardBehaviorData(session.userId);
+  const timelineData = await loadDashboardTimelineData(session.userId, 20);
 
   return (
     <PastTrendsPage
-      trends={behaviorData.records}
-      isDataUnavailable={behaviorData.status === "unavailable"}
+      timeline={timelineData.timeline}
+      isDataUnavailable={timelineData.status === "unavailable"}
     />
   );
 }

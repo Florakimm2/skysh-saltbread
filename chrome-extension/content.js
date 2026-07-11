@@ -20,9 +20,11 @@ const UPBIT_CONFIRM_MODAL_WAIT_TIMEOUT_MS = 3000;
 const UPBIT_CONFIRM_MODAL_POLL_INTERVAL_MS = 50;
 const {
   buildBehaviorSnapshot,
+  createGuardrailRuleSnapshot,
   detectOrderActionSide,
   evaluateGuardrailRules,
   evaluateRuleExpression,
+  getOrderTimeParts,
   parseMarket,
   resolveVisualMode,
   RULE_FIELD_CATALOG,
@@ -77,6 +79,8 @@ const RULE_FIELD_LABELS = {
   draftResetCount3m: "3분 주문 초기화 횟수",
   market: "거래 종목",
   entryPoint: "주문 시작 방식",
+  orderTimeMinutes: "주문하는 시간",
+  orderTime: "주문하는 시간",
 };
 
 let behaviorState = null;
@@ -740,6 +744,13 @@ function formatRuleValue(value, field = null) {
   const fieldType = RULE_FIELD_CATALOG?.[field]?.valueType || null;
 
   if (numeric !== null && fieldType === "NUMBER") {
+    if (field === "orderTimeMinutes") {
+      const normalized = Math.max(0, Math.min(1439, Math.trunc(numeric)));
+      const hour = Math.floor(normalized / 60);
+      const minute = normalized % 60;
+      return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+    }
+
     if (
       /Rate|Ratio|ChangeRate|Return|Position/.test(String(field || "")) &&
       Math.abs(numeric) <= 10
@@ -825,6 +836,16 @@ function buildConditionDescription(condition, snapshot) {
   }
 
   if (condition.operator === "GT" || condition.operator === "GTE") {
+    if (condition.leftField === "orderTimeMinutes") {
+      return {
+        parts: [
+          { text: `${label}이 ` },
+          { text: rightText, emphasis: true },
+          { text: condition.operator === "GT" ? " 이후예요." : " 이상이에요." },
+        ],
+      };
+    }
+
     return {
       parts: [
         { text: `${label}이 ` },
@@ -841,6 +862,16 @@ function buildConditionDescription(condition, snapshot) {
   }
 
   if (condition.operator === "LT" || condition.operator === "LTE") {
+    if (condition.leftField === "orderTimeMinutes") {
+      return {
+        parts: [
+          { text: `${label}이 ` },
+          { text: rightText, emphasis: true },
+          { text: condition.operator === "LT" ? " 이전이에요." : " 이하예요." },
+        ],
+      };
+    }
+
     return {
       parts: [
         { text: `${label}이 ` },
@@ -912,30 +943,34 @@ function renderDetectedStatusMessage(messageElement, message, result = null) {
   messageElement.replaceChildren();
   messageElement.append(document.createTextNode(message));
 
-  if (descriptions.length === 0) {
-    return;
-  }
+  if (descriptions.length > 0) {
+    messageElement.append(document.createElement("br"));
+    messageElement.append(document.createElement("br"));
 
-  messageElement.append(document.createElement("br"));
-  messageElement.append(document.createElement("br"));
+    const list = document.createElement("span");
+    list.className = "saltbread-rule-match-list";
 
-  const list = document.createElement("span");
-  list.className = "saltbread-rule-match-list";
+    descriptions.forEach((description) => {
+      const line = document.createElement("span");
+      line.className = "saltbread-rule-match-line";
 
-  descriptions.forEach((description) => {
-    const line = document.createElement("span");
-    line.className = "saltbread-rule-match-line";
+      description.parts.forEach((part) => {
+        const node = document.createElement(part.emphasis ? "strong" : "span");
+        node.textContent = part.text;
+        line.append(node);
+      });
 
-    description.parts.forEach((part) => {
-      const node = document.createElement(part.emphasis ? "strong" : "span");
-      node.textContent = part.text;
-      line.append(node);
+      list.append(line);
     });
 
-    list.append(line);
-  });
+    messageElement.append(list);
+  }
 
-  messageElement.append(list);
+  const disclaimer = document.createElement("span");
+  disclaimer.className = "saltbread-warning-disclaimer";
+  disclaimer.textContent =
+    "이 경고는 투자 추천이 아니라, 내가 설정한 규칙에 대한 알림입니다.";
+  messageElement.append(disclaimer);
 }
 
 function summarizeRuleForLog(rule) {
@@ -2302,6 +2337,8 @@ function createOrderDraftFromSnapshot(snapshot) {
     order_amount: toNumber(snapshot.intentAmount),
     realized_loss_pct_1h: null,
     order_request_time: snapshot.capturedAt || new Date().toISOString(),
+    order_time: snapshot.orderTime || null,
+    order_time_minutes: snapshot.orderTimeMinutes ?? null,
     order_cancel_time: null,
   };
 }
@@ -3871,6 +3908,7 @@ function buildOrderContextSnapshot(orderButton, snapshotTrigger, options = {}) {
     ? options.draft
     : readOrderDraft(orderButton);
   const capturedAt = new Date().toISOString();
+  const orderTimeParts = getOrderTimeParts(capturedAt);
   const now = Date.now();
   const market = isDemoPage()
     ? getDemoOverrideMarket() ||
@@ -3918,6 +3956,8 @@ function buildOrderContextSnapshot(orderButton, snapshotTrigger, options = {}) {
       (snapshotTrigger === "ORDER_INTENT_CLICK" ? createUuid() : null),
     snapshotTrigger,
     capturedAt,
+    orderTime: orderTimeParts.orderTime,
+    orderTimeMinutes: orderTimeParts.orderTimeMinutes,
     market: market || "UNKNOWN",
     side,
     orderMode,
@@ -3972,6 +4012,8 @@ function buildOrderContextSnapshot(orderButton, snapshotTrigger, options = {}) {
     matchedRuleIdsAtSnapshot: [],
     primaryShownRuleId: null,
     shownRuleIds: [],
+    ruleSnapshot: null,
+    ruleSnapshots: [],
     tradePriceAtSnapshot: null,
     shortTermReturn5m: null,
     signedChangeRate: null,
@@ -3987,12 +4029,27 @@ function buildOrderContextSnapshot(orderButton, snapshotTrigger, options = {}) {
 function emitOrderContextSnapshot(snapshot, detection = null) {
   const matchedRuleIds = detection?.matchedRuleIds || [];
   const primaryRuleId = detection?.primaryRuleId || null;
+  const ruleSnapshots = Array.isArray(detection?.ruleEvaluation?.matchedRules)
+    ? detection.ruleEvaluation.matchedRules
+        .map((rule) => createGuardrailRuleSnapshot(rule))
+        .filter(Boolean)
+    : [];
+  const ruleSnapshot =
+    ruleSnapshots.find((item) => item.ruleId === primaryRuleId) ||
+    ruleSnapshots[0] ||
+    null;
   const payload = {
     ...snapshot,
     matchedRuleIdsAtSnapshot: matchedRuleIds,
     primaryShownRuleId: primaryRuleId,
     shownRuleIds: primaryRuleId ? [primaryRuleId] : [],
+    ruleSnapshot,
+    ruleSnapshots,
   };
+  payload.ruleEvaluationSnapshots = buildRuleEvaluationSnapshots(
+    detection?.ruleEvaluation,
+    payload,
+  );
   emitExtensionDebug(
     "behavior",
     payload.snapshotTrigger || "OrderContextSnapshotDTO",
@@ -4076,8 +4133,95 @@ function buildRuleConditionResultsForDebug(rules, snapshot) {
     );
 }
 
+function getRuleEvaluationDataCategory(field) {
+  if (
+    [
+      "draftDurationMs",
+      "lastEditToSnapshotMs",
+      "draftEditCount",
+      "amountChangeRate",
+      "modeChangedToMarket",
+      "orderbookClickToSnapshotMs",
+      "orderIntentCount1m",
+      "sameSideIntentCount1m",
+      "marketChangeCount5m",
+      "sideChangeCount3m",
+      "priceEditCount3m",
+      "quantityEditCount3m",
+      "amountEditCount3m",
+      "inputRevertCount",
+      "priceDirectionChangeCount",
+      "priceChangeRate",
+      "orderModeChangeCount3m",
+      "draftResetCount3m",
+    ].includes(field)
+  ) {
+    return "BEHAVIOR";
+  }
+
+  if (
+    [
+      "tradePriceAtSnapshot",
+      "shortTermReturn5m",
+      "signedChangeRate",
+      "spreadRate",
+      "marketRiskFlags",
+      "pricePositionIn5mRange",
+      "volumeSpikeRatio5m",
+    ].includes(field)
+  ) {
+    return "MARKET";
+  }
+
+  if (
+    [
+      "actualOrderCreatedCount10m",
+      "baseAssetAvgBuyPriceBeforeSnapshot",
+      "priceVsAvgBuyRateAtSnapshot",
+    ].includes(field)
+  ) {
+    return "ACCOUNT";
+  }
+
+  return "ORDER";
+}
+
+function buildRuleEvaluationSnapshots(ruleEvaluation, snapshot) {
+  const matchedRules = Array.isArray(ruleEvaluation?.matchedRules)
+    ? ruleEvaluation.matchedRules
+    : [];
+
+  return matchedRules.map((rule) => ({
+    ...(createGuardrailRuleSnapshot(rule) || {}),
+    ruleId: rule.ruleId,
+    ruleVersion: rule.schemaVersion || "v1",
+    ruleName: rule.name || rule.warningTitle || "이름 없는 규칙",
+    description: rule.description || rule.warningMessage || null,
+    visualMode: rule.visualMode || "CURIOUS",
+    riskLevel: rule.riskLevel || "MEDIUM",
+    expression: rule.expression,
+    conditions: collectRuleConditionsForDebug(rule.expression).map((condition) => ({
+      leftField: condition.leftField,
+      operator: condition.operator,
+      expectedValue: getRuleOperandValue(condition.rightOperand, snapshot),
+      actualValue: getRuleFieldValue(snapshot, condition.leftField),
+      matched: evaluateRuleExpression(condition, snapshot),
+      dataCategory: getRuleEvaluationDataCategory(condition.leftField),
+    })),
+  }));
+}
+
 function evaluatePageGuardrailRulesForSnapshot(snapshot) {
   const baseRuleEvaluation = evaluateGuardrailRules(pageGuardrailRules, snapshot);
+  const ruleSnapshots = Array.isArray(baseRuleEvaluation.matchedRules)
+    ? baseRuleEvaluation.matchedRules
+        .map((rule) => createGuardrailRuleSnapshot(rule))
+        .filter(Boolean)
+    : [];
+  const ruleSnapshot =
+    ruleSnapshots.find((item) => item.ruleId === baseRuleEvaluation.primaryRuleId) ||
+    ruleSnapshots[0] ||
+    null;
   const evaluatedSnapshot = {
     ...snapshot,
     matchedRuleIdsAtSnapshot: baseRuleEvaluation.matchedRuleIds,
@@ -4085,6 +4229,8 @@ function evaluatePageGuardrailRulesForSnapshot(snapshot) {
     shownRuleIds: baseRuleEvaluation.primaryRuleId
       ? [baseRuleEvaluation.primaryRuleId]
       : [],
+    ruleSnapshot,
+    ruleSnapshots,
   };
   const ruleEvaluation = {
     ...baseRuleEvaluation,

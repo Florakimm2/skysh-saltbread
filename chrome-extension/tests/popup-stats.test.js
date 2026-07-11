@@ -7,11 +7,14 @@ const vm = require("node:vm");
 
 function createElement(id = "") {
   const attributes = new Map();
+  const eventListeners = new Map();
 
   return {
     id,
     hidden: false,
     disabled: false,
+    href: "",
+    clickCount: 0,
     textContent: "",
     dataset: {},
     elements: {
@@ -22,7 +25,18 @@ function createElement(id = "") {
       add() {},
       remove() {},
     },
-    addEventListener() {},
+    addEventListener(type, listener) {
+      eventListeners.set(type, listener);
+    },
+    dispatchEvent(type, event) {
+      eventListeners.get(type)?.(event);
+    },
+    click() {
+      this.clickCount += 1;
+      eventListeners.get("click")?.({
+        stopPropagation() {},
+      });
+    },
     setAttribute(name, value) {
       attributes.set(name, String(value));
     },
@@ -52,6 +66,7 @@ async function createPopupHarness(statsResponse) {
     "api-key-status",
     "api-key-message",
     "save-api-key-button",
+    "api-guide-link",
     "unlock-api-key-button",
     "delete-api-key-button",
   ];
@@ -163,4 +178,39 @@ test("popup stats 인증 오류 시 로그인 필요 문구를 표시한다", as
     elements["statistics-summary"].textContent,
     "로그인하면 불씨 기록을 확인할 수 있어요.",
   );
+});
+
+test("업비트 API 가이드 링크는 외부 가이드 URL을 사용하고 클릭 전파를 막는다", async () => {
+  const { elements } = await createPopupHarness({
+    ok: true,
+    data: "통계 메시지",
+  });
+  let propagationStopped = false;
+  let defaultPrevented = false;
+
+  assert.equal(
+    elements["api-guide-link"].href,
+    "https://glistening-theater-371.notion.site/API-399634ca4bdf80879c7fdcd41c4ba099?source=copy_link",
+  );
+
+  elements["api-guide-link"].dispatchEvent("click", {
+    stopPropagation() {
+      propagationStopped = true;
+    },
+  });
+
+  assert.equal(propagationStopped, true);
+
+  elements["api-guide-link"].dispatchEvent("keydown", {
+    key: " ",
+    preventDefault() {
+      defaultPrevented = true;
+    },
+    stopPropagation() {
+      propagationStopped = true;
+    },
+  });
+
+  assert.equal(defaultPrevented, true);
+  assert.equal(elements["api-guide-link"].clickCount, 1);
 });

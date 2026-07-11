@@ -147,6 +147,29 @@ const catalog = {
     comparisonGroup: "ENTRY_POINT",
     keywords: ["일반 주문", "간편 주문", "다시 주문", "entryPoint"],
   }),
+  orderTimeMinutes: define({
+    label: "주문하는 시간",
+    shortDescription: "주문 버튼을 누른 시점의 시간을 기준으로 판정해요.",
+    detailedDescription:
+      "확장 프로그램이 주문 의도를 포착한 시각을 서비스 표시 기준인 Asia/Seoul 시간으로 변환해 비교합니다.",
+    category: "ORDER_CONTEXT",
+    valueType: "NUMBER",
+    semanticType: "TIME_OF_DAY",
+    nullable: true,
+    ruleEligible: true,
+    requiresPrivateApi: false,
+    supportedOperators: NUMERIC_OPERATORS,
+    input: {
+      control: "TIME",
+      min: 0,
+      max: 1439,
+      step: 1,
+      displayUnit: "HH:mm",
+      storageUnit: "minutes",
+    },
+    comparisonGroup: "TIME_OF_DAY",
+    keywords: ["주문 시간", "시간대", "시각", "orderTime", "orderTimeMinutes"],
+  }),
 
   intentPrice: define({
     label: "입력한 주문 가격",
@@ -410,6 +433,7 @@ const catalog = {
   snapshotId: defineSystem("snapshotId", "Snapshot 자체 식별자는 규칙 결과와 무관한 관리용 값입니다.", "IDENTIFIER"),
   attemptId: defineSystem("attemptId", "주문 시도 연결용 식별자는 규칙 조건으로 쓰지 않습니다.", "IDENTIFIER", true),
   capturedAt: defineSystem("capturedAt", "저장 시각은 서버 관리 값이므로 규칙 조건에서 제외합니다.", "DATETIME"),
+  orderTime: defineSystem("orderTime", "주문 시각 표시 문자열은 주문하는 시간 조건에서 파생되는 값입니다.", "TIME_OF_DAY", true),
   matchedRuleIdsAtSnapshot: defineSystem("matchedRuleIdsAtSnapshot", "이미 매칭된 규칙 목록은 규칙 판정 결과이므로 조건으로 쓰지 않습니다.", "FLAG_SET"),
   primaryShownRuleId: defineSystem("primaryShownRuleId", "대표로 표시된 규칙은 판정 결과이므로 조건으로 쓰지 않습니다.", "IDENTIFIER", true),
   shownRuleIds: defineSystem("shownRuleIds", "표시된 규칙 목록은 판정 결과이므로 조건으로 쓰지 않습니다.", "FLAG_SET"),

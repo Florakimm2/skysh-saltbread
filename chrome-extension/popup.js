@@ -16,13 +16,19 @@ const apiKeyForm = document.querySelector("#api-key-form");
 const apiKeyStatus = document.querySelector("#api-key-status");
 const apiKeyMessage = document.querySelector("#api-key-message");
 const saveApiKeyButton = document.querySelector("#save-api-key-button");
+const apiGuideLink = document.querySelector("#api-guide-link");
 const unlockApiKeyButton = document.querySelector("#unlock-api-key-button");
 const deleteApiKeyButton = document.querySelector("#delete-api-key-button");
+const apiKeyTitle = document.querySelector("#api-key-title");
+const UPBIT_API_GUIDE_URL =
+  "https://glistening-theater-371.notion.site/API-399634ca4bdf80879c7fdcd41c4ba099?source=copy_link";
 const STATS_LOADING_TEXT = "불씨 기록을 불러오는 중...";
 const STATS_FALLBACK_TEXT = "불씨 기록을 불러오지 못했어요.";
 const STATS_AUTH_REQUIRED_TEXT = "로그인하면 불씨 기록을 확인할 수 있어요.";
 let authLoadRequestId = 0;
 let statsLoadRequestId = 0;
+
+apiGuideLink.href = UPBIT_API_GUIDE_URL;
 
 function setPopupView(view) {
   const normalizedView =
@@ -128,11 +134,14 @@ async function refreshCredentialStatus() {
       : status.unlocked
         ? "ready"
         : "locked";
+    apiKeyTitle.textContent = status.configured
+      ? "업비트 API가 연결되어 있어요"
+      : "API를 연결해 더 정확하게 탐지해요";
     unlockApiKeyButton.hidden = !status.configured || status.unlocked;
     deleteApiKeyButton.hidden = !status.configured;
     saveApiKeyButton.textContent = status.configured
-      ? "새 키 검증 후 다시 저장"
-      : "검증 후 암호화 저장";
+      ? "API 관리"
+      : "API 연결하기";
   } catch (error) {
     setApiKeyMessage(error.message);
   }
@@ -173,6 +182,20 @@ openOnboardingButton.addEventListener("click", async () => {
 apiKeyToggle.addEventListener("click", () => {
   const isExpanded = apiKeyToggle.getAttribute("aria-expanded") === "true";
   setApiKeyExpanded(!isExpanded);
+});
+
+apiGuideLink.addEventListener("click", (event) => {
+  event.stopPropagation();
+});
+
+apiGuideLink.addEventListener("keydown", (event) => {
+  if (event.key !== " " && event.key !== "Spacebar") {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  apiGuideLink.click();
 });
 
 apiKeyForm.addEventListener("submit", async (event) => {

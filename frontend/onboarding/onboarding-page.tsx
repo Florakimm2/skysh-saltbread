@@ -40,6 +40,23 @@ const DEFAULT_PROGRESS: OnboardingProgress = {
   completedAt: null,
 };
 
+function normalizeConsents(
+  consents: Partial<ConsentState> | undefined,
+): ConsentState {
+  return {
+    ...EMPTY_CONSENTS,
+    ...consents,
+  };
+}
+
+function normalizeProgress(progress: OnboardingProgress): OnboardingProgress {
+  return {
+    ...DEFAULT_PROGRESS,
+    ...progress,
+    consents: normalizeConsents(progress.consents),
+  };
+}
+
 function onboardingStorageKey(userId: string) {
   return `fireguard:onboarding:v1:${userId}`;
 }
@@ -206,7 +223,7 @@ export default function OnboardingPage({ userId }: { userId: string }) {
     if (stored) {
       try {
         const parsed = JSON.parse(stored) as unknown;
-        if (isOnboardingProgress(parsed)) restored = parsed;
+        if (isOnboardingProgress(parsed)) restored = normalizeProgress(parsed);
       } catch {
         window.localStorage.removeItem(onboardingStorageKey(userId));
       }
@@ -401,22 +418,35 @@ export default function OnboardingPage({ userId }: { userId: string }) {
             </small>
           </section>
 
+          <section className={styles.investmentNotice} aria-label="투자 보조도구 안내">
+            <span>
+              <UiIcon name="info" />
+            </span>
+            <p>
+              <strong>불씨는 투자 자문 도구가 아닙니다.</strong>
+              불씨는 투자 수익률을 높이거나 매수·매도 시점을 추천하지 않습니다.
+              사용자가 직접 설정한 거래 규칙을 주문 직전에 다시 확인하도록 돕는
+              개인 투자 보조 도구이며, 최종 투자 판단과 책임은 사용자에게 있습니다.
+            </p>
+          </section>
+
           <div className={styles.consentGrid}>
             <div className={styles.consentList}>
               {CONSENT_ITEMS.map((item) => {
                 const open = openConsentId === item.id;
+                const checked = Boolean(progress.consents[item.id]);
 
                 return (
                   <div className={styles.consentItem} key={item.id}>
                     <label>
                       <input
                         type="checkbox"
-                        checked={progress.consents[item.id]}
+                        checked={checked}
                         onChange={(event) =>
                           updateConsent(item.id, event.target.checked)
                         }
                       />
-                      <ChoiceCheckbox checked={progress.consents[item.id]} />
+                      <ChoiceCheckbox checked={checked} />
                       <span className={styles.consentIcon}>
                         <UiIcon name={item.icon} />
                       </span>
@@ -439,7 +469,20 @@ export default function OnboardingPage({ userId }: { userId: string }) {
                         <path d="m7 10 5 5 5-5" />
                       </svg>
                     </button>
-                    {open && <p className={styles.consentDetail}>{item.detail}</p>}
+                    {open && (
+                      <div className={styles.consentDetail}>
+                        {item.detailSections.map((section) => (
+                          <section key={section.title}>
+                            <strong>{section.title}</strong>
+                            <ul>
+                              {section.items.map((detail) => (
+                                <li key={detail}>{detail}</li>
+                              ))}
+                            </ul>
+                          </section>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -447,7 +490,7 @@ export default function OnboardingPage({ userId }: { userId: string }) {
 
             <aside className={styles.privacyPanel}>
               <div className={styles.privacyVisual}>
-                <FlameMascot mode="curious" size={125} speed="slow" />
+                <FlameMascot mode="default" size={125} speed="slow" />
                 <span className={styles.privacyShield}>
                   <UiIcon name="shield" />
                 </span>
@@ -455,23 +498,23 @@ export default function OnboardingPage({ userId }: { userId: string }) {
               {[
                 [
                   "chart",
-                  "수집 예시",
-                  "주문 입력값, 시장 변화 맥락, 규칙 매칭 결과, 피드백 응답",
+                  "서버 저장",
+                  "계정, 규칙, 주문 snapshot, 경고 반응, 거래 피드백",
                 ],
                 [
                   "fire",
-                  "수집 목적",
-                  "감정적 매매 패턴 분석, 개인 규칙 추천, 가드레일 개선",
+                  "판정 목적",
+                  "내가 설정한 규칙과 주문 직전 데이터를 비교해 알려줘요",
                 ],
                 [
                   "lock",
-                  "보관 제외",
-                  "계정 비밀번호와 거래소 자산 자체는 보관하지 않아요",
+                  "로컬 보관",
+                  "온보딩 진행 상태와 암호화된 업비트 API 키는 브라우저에 저장돼요",
                 ],
                 [
                   "clock",
-                  "임시 저장",
-                  "이번 화면의 선택은 브라우저에만 데모 데이터로 저장돼요",
+                  "선택 처리",
+                  "업비트 개인 API 데이터는 연결한 사용자에게만 적용돼요",
                 ],
                 [
                   "shield",

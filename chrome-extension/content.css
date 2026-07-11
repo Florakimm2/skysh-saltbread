@@ -356,6 +356,17 @@
   font-weight: 900;
 }
 
+.saltbread-warning-disclaimer {
+  display: block;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid color-mix(in srgb, var(--flame-border) 70%, #ffffff);
+  color: #7b6a62;
+  font-size: 10px;
+  font-weight: 750;
+  line-height: 1.45;
+}
+
 .saltbread-analysis-status[data-state="detected"]
   .saltbread-analysis-status__dot {
   background: var(--flame-primary);
