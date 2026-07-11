@@ -1,210 +1,161 @@
+// backend/modules/insight/repository.ts
+//
+// ┌─────────────────────────────────────────────────────────┐
+// │ 핵심 수정: 컬렉션명을 logs/repository.ts의 실제 저장     │
+// │ 컬렉션명(snake_case)과 통일                              │
+// │                                                         │
+// │ 기존 (camelCase - 데이터 없음):                           │
+// │   orderSnapshots, guardrailReactions,                   │
+// │   tradeFeedbacks, confirmedTradeLogs                    │
+// │                                                         │
+// │ 수정 (snake_case - 실제 데이터 저장 위치):                │
+// │   order_context_snapshots, guardrail_reactions,          │
+// │   trade_feedbacks, confirmed_trade_logs                  │
+// └─────────────────────────────────────────────────────────┘
+
 import { adminDb } from "@/backend/infrastructure/firebase/firebase-admin";
 import { toIsoString } from "../behavior/repository";
 
-type TimestampLike = {
-  toDate: () => Date;
-};
-
-type InsightRecord = Record<string, unknown>;
-
-type JoinedTradeUnit = {
-  attemptId: string;
-  snapshot: InsightRecord;
-  reaction: InsightRecord | null;
-  feedback: InsightRecord | null;
-  trade: InsightRecord | null;
-  outcome: InsightRecord | null;
-};
-
-export type OptimizedTradeUnit = {
-  attemptId: string;
-  snapshot: {
-    orderMode?: unknown;
-    spreadRate?: unknown;
-    shortTermReturn5m?: unknown;
-    requestedBalanceRatio?: unknown;
-    tradePriceAtIntent?: unknown;
-  };
-  reaction: {
-    action?: unknown;
-    reactionTimeMs: number | null;
-  } | null;
-  trade: {
-    ordType?: unknown;
-    orderCreatedAt: string;
-  } | null;
-  outcome: {
-    state?: unknown;
-    executedVolume?: unknown;
-    paidFee?: unknown;
-    executedFunds?: unknown;
-  } | null;
-  feedback: {
-    feedbackStatus?: unknown;
-    selfAssessment?: unknown;
-  } | null;
-};
-
-export type MonthlyAggregateRecord = InsightRecord;
-
-// Timestamp 또는 ISO 문자열을 ms(숫자)로 안전하게 변환하는 헬퍼 함수
-function getTimeMs(val: unknown): number {
+function getTimeMs(val: any): number {
     if (!val) return 0;
-    if (
-      typeof val === "object" &&
-      val !== null &&
-      "toDate" in val &&
-      typeof (val as TimestampLike).toDate === "function"
-    ) {
-      return (val as TimestampLike).toDate().getTime();
-    }
-    if (val instanceof Date || typeof val === "string" || typeof val === "number") {
-      return new Date(val).getTime();
-    }
-    return 0;
+    if (typeof val.toDate === "function") return val.toDate().getTime();
+    return new Date(val).getTime();
 }
 
-export async function getMonthlyTradeUnits(userId: string): Promise<OptimizedTradeUnit[]> {
-// 1. 여기서 확실하게 체크합니다!
-// 1. 확실한 방어막! (글자가 아닌 이상한 데이터 덩어리가 들어와도 무조건 막아냄)
+export async function getMonthlyTradeUnits(userId: string) {
     if (!userId || typeof userId !== "string") {
-    userId = "GUEST_USER_NO_ID"; // 파이어베이스가 뻗지 않도록 임시 ID를 넣어서 자연스럽게 '빈 결과'를 유도합니다.
+        userId = "GUEST_USER_NO_ID";
     }
 
-    // 1달 전 날짜 시간(ms) 계산
-  const thirtyDaysAgoMs = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    const thirtyDaysAgoMs = Date.now() - 30 * 24 * 60 * 60 * 1000;
 
-
-  // 1. 병렬 쿼리 (단일 인덱스만 사용: userId)
+    // 1. 병렬 쿼리 — 실제 저장 컬렉션명(snake_case)으로 통일
     const [
-    snapshotsSnap,
-    reactionsSnap,
-    feedbacksSnap,
-    tradeLogsSnap
+        snapshotsSnap,
+        reactionsSnap,
+        feedbacksSnap,
+        tradeLogsSnap
     ] = await Promise.all([
-    adminDb.collection("orderSnapshots").where("userId", "==", userId).get(),
-    adminDb.collection("guardrailReactions").where("userId", "==", userId).get(),
-    adminDb.collection("tradeFeedbacks").where("userId", "==", userId).get(),
-    adminDb.collection("confirmedTradeLogs").where("userId", "==", userId).get()
+        adminDb.collection("order_context_snapshots").where("userId", "==", userId).get(),
+        adminDb.collection("guardrail_reactions").where("userId", "==", userId).get(),
+        adminDb.collection("trade_feedbacks").where("userId", "==", userId).get(),
+        adminDb.collection("confirmed_trade_logs").where("userId", "==", userId).get()
     ]);
 
-  // 2. 서버 단(JS) 필터링 및 정렬 (복합 인덱스 이슈 회피)
+    console.log(
+        `=== [getMonthlyTradeUnits] userId=${userId}, ` +
+        `snapshots=${snapshotsSnap.docs.length}, reactions=${reactionsSnap.docs.length}, ` +
+        `feedbacks=${feedbacksSnap.docs.length}, tradeLogs=${tradeLogsSnap.docs.length} ===`
+    );
+
+    // 2. 서버 단(JS) 필터링 및 정렬
     const snapshots = snapshotsSnap.docs
-    .map(doc => doc.data())
-    .filter(data => getTimeMs(data.capturedAt) >= thirtyDaysAgoMs)
-    .sort((a, b) => getTimeMs(b.capturedAt) - getTimeMs(a.capturedAt)); // desc 정렬
+        .map(doc => doc.data())
+        .filter(data => getTimeMs(data.capturedAt) >= thirtyDaysAgoMs)
+        .sort((a, b) => getTimeMs(b.capturedAt) - getTimeMs(a.capturedAt));
 
     const reactions = reactionsSnap.docs
-    .map(doc => doc.data())
-    .filter(data => getTimeMs(data.reactedAt) >= thirtyDaysAgoMs);
+        .map(doc => doc.data())
+        .filter(data => getTimeMs(data.reactedAt) >= thirtyDaysAgoMs);
 
     const feedbacks = feedbacksSnap.docs.map(doc => doc.data());
 
     const tradeLogs = tradeLogsSnap.docs
-    .map(doc => doc.data())
-    .filter(data => getTimeMs(data.orderCreatedAt) >= thirtyDaysAgoMs);
+        .map(doc => doc.data())
+        .filter(data => getTimeMs(data.orderCreatedAt) >= thirtyDaysAgoMs);
 
-  // 3. Map을 이용한 애플리케이션 레벨 조인 (Key: attemptId)
-    const tradeUnitsMap = new Map<string, JoinedTradeUnit>();
+    // 3. Map을 이용한 애플리케이션 레벨 조인 (Key: attemptId)
+    const tradeUnitsMap = new Map<string, any>();
 
-  // A. Snapshot을 기준으로 초기 Unit 생성
+    // A. Snapshot을 기준으로 초기 Unit 생성
     snapshots.forEach((data) => {
-    const attemptId = typeof data.attemptId === "string" ? data.attemptId : null;
-    if (attemptId) {
-        tradeUnitsMap.set(attemptId, {
-        attemptId,
-        snapshot: data,
-        reaction: null,
-        feedback: null,
-        trade: null,
-        outcome: null,
-        });
-    }
+        if (data.attemptId) {
+            tradeUnitsMap.set(data.attemptId, {
+                attemptId: data.attemptId,
+                snapshot: data,
+                reaction: null,
+                feedback: null,
+                trade: null,
+                outcome: null,
+            });
+        }
     });
 
-  // B. Reaction 매핑
+    // B. Reaction 매핑
     reactions.forEach((data) => {
-    const attemptId = typeof data.attemptId === "string" ? data.attemptId : null;
-    const unit = attemptId ? tradeUnitsMap.get(attemptId) : undefined;
-    if (unit) {
-        unit.reaction = data;
-    }
+        if (data.attemptId && tradeUnitsMap.has(data.attemptId)) {
+            tradeUnitsMap.get(data.attemptId).reaction = data;
+        }
     });
 
-  // C. Feedback 매핑
+    // C. Feedback 매핑
     feedbacks.forEach((data) => {
-    const attemptId = typeof data.attemptId === "string" ? data.attemptId : null;
-    const unit = attemptId ? tradeUnitsMap.get(attemptId) : undefined;
-    if (unit) {
-        unit.feedback = data;
-    }
+        if (data.attemptId && tradeUnitsMap.has(data.attemptId)) {
+            tradeUnitsMap.get(data.attemptId).feedback = data;
+        }
     });
 
-  // D. Confirmed Trade Log 매핑
+    // D. Confirmed Trade Log 매핑
     tradeLogs.forEach((data) => {
-    const attemptId = typeof data.attemptId === "string" ? data.attemptId : null;
-    const unit = attemptId ? tradeUnitsMap.get(attemptId) : undefined;
-    if (unit) {
-        unit.trade = data;
-        unit.outcome = typeof data.outcomePatch === "object" && data.outcomePatch !== null
-          ? data.outcomePatch as InsightRecord
-          : null; 
-    }
+        if (data.attemptId && tradeUnitsMap.has(data.attemptId)) {
+            const unit = tradeUnitsMap.get(data.attemptId);
+            unit.trade = data;
+            unit.outcome = data.outcomePatch || null;
+        }
     });
 
-  // 4. Map을 배열로 변환
+    // 4. Map을 배열로 변환
     const rawTradeUnits = Array.from(tradeUnitsMap.values());
 
-  // 5. AI에 넘기기 전 최소한의 필드로 압축
+    // 5. AI에 넘기기 전 최소한의 필드로 압축
     const optimizedTradeUnits = rawTradeUnits.map((unit) => {
-    return {
-        attemptId: unit.attemptId,
-        snapshot: {
-        orderMode: unit.snapshot.orderMode,
-        spreadRate: unit.snapshot.spreadRate,
-        shortTermReturn5m: unit.snapshot.shortTermReturn5m,
-        requestedBalanceRatio: unit.snapshot.requestedBalanceRatio,
-        tradePriceAtIntent: unit.snapshot.tradePriceAtIntent, 
-        },
-        reaction: unit.reaction ? {
-        action: unit.reaction.action,
-        reactionTimeMs: unit.reaction.guardrailActionAt 
-            ? getTimeMs(unit.reaction.guardrailActionAt) - getTimeMs(unit.snapshot.capturedAt)
-            : null
-        } : null,
-        trade: unit.trade ? {
-        ordType: unit.trade.ordType,
-        orderCreatedAt: toIsoString(unit.trade.orderCreatedAt)
-        } : null,
-        outcome: unit.outcome ? {
-        state: unit.outcome.state,
-        executedVolume: unit.outcome.executedVolume,
-        paidFee: unit.outcome.paidFee,
-        executedFunds: unit.outcome.executedFunds, 
-        } : null,
-        feedback: unit.feedback ? {
-        feedbackStatus: unit.feedback.feedbackStatus,
-        selfAssessment: unit.feedback.selfAssessment
-        } : null
-    };
+        return {
+            attemptId: unit.attemptId,
+            snapshot: {
+                orderMode: unit.snapshot.orderMode,
+                spreadRate: unit.snapshot.spreadRate,
+                shortTermReturn5m: unit.snapshot.shortTermReturn5m,
+                requestedBalanceRatio: unit.snapshot.requestedBalanceRatio,
+                tradePriceAtIntent: unit.snapshot.tradePriceAtIntent,
+            },
+            reaction: unit.reaction ? {
+                action: unit.reaction.action,
+                reactionTimeMs: unit.reaction.guardrailActionAt
+                    ? getTimeMs(unit.reaction.guardrailActionAt) - getTimeMs(unit.snapshot.capturedAt)
+                    : null
+            } : null,
+            trade: unit.trade ? {
+                ordType: unit.trade.ordType,
+                orderCreatedAt: toIsoString(unit.trade.orderCreatedAt)
+            } : null,
+            outcome: unit.outcome ? {
+                state: unit.outcome.state,
+                executedVolume: unit.outcome.executedVolume,
+                paidFee: unit.outcome.paidFee,
+                executedFunds: unit.outcome.executedFunds,
+            } : null,
+            feedback: unit.feedback ? {
+                feedbackStatus: unit.feedback.feedbackStatus,
+                selfAssessment: unit.feedback.selfAssessment
+            } : null
+        };
     });
 
     return optimizedTradeUnits;
 }
 
-export async function getMonthlyAggregates(userId: string): Promise<MonthlyAggregateRecord[]> {
-  const thirtyDaysAgoMs = Date.now() - 30 * 24 * 60 * 60 * 1000;
-if (!userId || typeof userId !== "string") {
+export async function getMonthlyAggregates(userId: string) {
+    const thirtyDaysAgoMs = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    if (!userId || typeof userId !== "string") {
         userId = "GUEST_USER_NO_ID";
     }
-  // 복합 인덱스를 피하기 위해 userId만 쿼리
-    const aggregatesSnap = await adminDb.collection("userTradeDailyAggregates")
-    .where("userId", "==", userId)
-    .get();
 
-  // JS에서 30일 이내 데이터 필터링 및 내림차순 정렬
+    const aggregatesSnap = await adminDb.collection("userTradeDailyAggregates")
+        .where("userId", "==", userId)
+        .get();
+
     return aggregatesSnap.docs
-    .map(doc => doc.data())
-    .filter(data => getTimeMs(data.aggregatedAt) >= thirtyDaysAgoMs)
-    .sort((a, b) => getTimeMs(b.aggregatedAt) - getTimeMs(a.aggregatedAt));
+        .map(doc => doc.data())
+        .filter(data => getTimeMs(data.aggregatedAt) >= thirtyDaysAgoMs)
+        .sort((a, b) => getTimeMs(b.aggregatedAt) - getTimeMs(a.aggregatedAt));
 }

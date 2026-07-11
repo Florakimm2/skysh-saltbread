@@ -1,4 +1,7 @@
 // backend/modules/behavior/service.ts
+//
+// 행동 이벤트 기록 및 실시간 감정 매매 분석 전용.
+// AI 인사이트 관련 함수는 backend/modules/insight/service.ts에 있다.
 
 import { marketService } from "@/backend/modules/market/service";
 import { analyzeEmotionRisk } from "./analyzer";

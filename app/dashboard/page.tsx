@@ -1,13 +1,15 @@
-import { getDashboardSession } from "@/backend/modules/auth/session";
-import { requestDashboardInsight } from "@/backend/modules/insight/service";
-import DashboardOverview from "@/frontend/dashboard/dashboard-overview";
-import {
-  loadDashboardBehaviorData,
-  loadDashboardTimelineData,
-} from "./load-dashboard-data";
+// app/dashboard/page.tsx
 
-// 유저가 페이지를 열 때마다 매번 새로 FastAPI를 호출하도록 설정
-export const dynamic = 'force-dynamic';
+import { getDashboardSession } from "@/backend/modules/auth/session";
+import {
+  requestDashboardInsight,
+  requestFieldDashboardInsight,
+} from "@/backend/modules/insight/service";
+import DashboardOverview from "@/frontend/dashboard/dashboard-overview";
+import FieldInsightsPage from "@/frontend/dashboard/field-insights-page";
+import { loadDashboardBehaviorData } from "./load-dashboard-data";
+
+export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
   const session = await getDashboardSession();
@@ -16,18 +18,34 @@ export default async function DashboardPage() {
     return null;
   }
 
+  // 1. 행동 데이터 로드 (한 번만)
   const behaviorData = await loadDashboardBehaviorData(session.userId);
-  const timelineData = await loadDashboardTimelineData(session.userId, 5);
-  const insight =
+
+  // 2. 같은 records로 인사이트 + 필드 분석 병렬 호출
+  const [insight, fieldInsight] = await Promise.all([
     behaviorData.status === "ready"
-      ? await requestDashboardInsight(session.userId, behaviorData.records)
-      : { status: "error" as const, sourceCount: 0 };
+      ? requestDashboardInsight(session.userId, behaviorData.records)
+      : { status: "error" as const, sourceCount: 0 },
+    behaviorData.status === "ready"
+      ? requestFieldDashboardInsight(session.userId, behaviorData.records)
+      : {
+          status: "empty" as const,
+          topics: [],
+          aiAnalysis: null,
+          snapshotCount: 0,
+        },
+  ]);
 
   return (
-    <DashboardOverview
-      insight={insight}
-      timeline={timelineData.timeline}
-      isTimelineUnavailable={timelineData.status === "unavailable"}
-    />
+    <>
+      <DashboardOverview
+        insight={insight}
+        trends={behaviorData.records.slice(0, 5)}
+        isDataUnavailable={behaviorData.status === "unavailable"}
+      />
+      <div style={{ marginTop: "40px" }}>
+        <FieldInsightsPage insight={fieldInsight} />
+      </div>
+    </>
   );
 }

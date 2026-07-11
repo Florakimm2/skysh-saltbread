@@ -17,6 +17,16 @@ from app.services.insight_analyzer import (
     AnalyzerUpstreamError,
     InsightAnalyzer,
 )
+# ┌─────────────────────────────────────────────────────────┐
+# │ 추가: 필드 분석기 import                                  │
+# └─────────────────────────────────────────────────────────┘
+from app.services.field_insight_analyzer import (
+    FieldAnalyzeRequest,
+    FieldInsightAnalyzer,
+    FieldInsightResponse,
+    AnalyzerTimeoutError as FieldTimeoutError,
+    AnalyzerUpstreamError as FieldUpstreamError,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -62,6 +72,44 @@ def _analyzer(request: Request) -> Analyzer:
             ) from None
 
         request.app.state.analyzer = analyzer
+        return analyzer
+
+
+# ┌─────────────────────────────────────────────────────────┐
+# │ 추가: 필드 분석기 의존성 함수                               │
+# └─────────────────────────────────────────────────────────┘
+def _field_analyzer(request: Request) -> FieldInsightAnalyzer:
+    analyzer = getattr(request.app.state, "field_analyzer", None)
+    if analyzer is not None:
+        return analyzer
+
+    with request.app.state.analyzer_lock:
+        analyzer = getattr(request.app.state, "field_analyzer", None)
+        if analyzer is not None:
+            return analyzer
+
+        settings = _settings(request)
+        if settings.openai_api_key is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="OPENAI_API_KEY is not configured",
+            )
+
+        try:
+            analyzer = FieldInsightAnalyzer(
+                api_key=settings.openai_api_key,
+                model=settings.openai_model,
+                temperature=settings.openai_temperature,
+                timeout_seconds=settings.openai_timeout_seconds,
+            )
+        except (ImportError, ValueError):
+            logger.exception("Field insight analyzer initialization failed")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Field analysis service is not available",
+            ) from None
+
+        request.app.state.field_analyzer = analyzer
         return analyzer
 
 
@@ -139,4 +187,41 @@ async def analyze_insight(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="The analysis provider returned an invalid response",
+        ) from None
+
+
+# ┌─────────────────────────────────────────────────────────┐
+# │ 추가: 필드별 상세 분석 엔드포인트                            │
+# └─────────────────────────────────────────────────────────┘
+@router.post(
+    "/api/v1/insights/field-analyze",
+    response_model=FieldInsightResponse,
+    responses={
+        401: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+        504: {"model": ErrorResponse},
+    },
+    tags=["insights"],
+    dependencies=[Depends(_verify_service_api_key)],
+)
+async def analyze_field_insight(
+    payload: FieldAnalyzeRequest,
+    analyzer: Annotated[FieldInsightAnalyzer, Depends(_field_analyzer)],
+) -> FieldInsightResponse:
+    try:
+        return await run_in_threadpool(
+            analyzer.analyze,
+            payload.summaries,
+        )
+    except FieldTimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="The field analysis provider timed out",
+        ) from None
+    except FieldUpstreamError:
+        logger.exception("Field upstream analysis failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="The field analysis provider returned an invalid response",
         ) from None

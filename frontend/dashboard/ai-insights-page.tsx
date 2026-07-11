@@ -1,16 +1,19 @@
 // frontend/dashboard/ai-insights-page.tsx
 
 import type { DashboardInsightResult } from "@/backend/modules/insight/types";
+import type { FieldDashboardInsightResult } from "@/backend/modules/insight/service";
 import PageHeader from "./page-header";
 import { SparklesIcon } from "./icons";
 import styles from "./dashboard.module.css";
+import FieldInsightsPage from "./field-insights-page";
 
 export default function AiInsightsPage({
   insight,
+  fieldInsight,
 }: {
   insight: DashboardInsightResult;
+  fieldInsight?: FieldDashboardInsightResult;
 }) {
-// 💡 수정: ready 상태일 때만 데이터를 안전하게 꺼냅니다.
   const rawData = insight.status === "ready" ? insight.parsedData : {};
   const summaryText = insight.status === "ready" ? insight.insight : "";
   const cards = rawData.cards || [];
@@ -20,7 +23,7 @@ export default function AiInsightsPage({
       <PageHeader
         eyebrow="Intelligence"
         title="AI 인사이트"
-        description="최근 30일의 주문과 가드레일 기록을 바탕으로 원칙 준수 흐름을 정리합니다."
+        description="최근 30일의 주문 행동을 바탕으로 발견한 투자 습관입니다."
       />
 
       <section
@@ -53,25 +56,37 @@ export default function AiInsightsPage({
 
               {cards.length > 0 && (
                 <div style={{ marginTop: "24px", display: "flex", flexDirection: "column", gap: "12px" }}>
-                  {cards.map((card: { title?: string; description?: string; severity?: string }, index: number) => (
-                    <div 
-                      key={index} 
-                      style={{ 
-                        padding: "16px", 
-                        borderRadius: "12px", 
-                        backgroundColor: "var(--surface-color, #f8f9fa)", 
-                        border: "1px solid var(--border-color, #e9ecef)" 
+                  {cards.map((card: any, index: number) => (
+                    <div
+                      key={index}
+                      style={{
+                        padding: "16px",
+                        borderRadius: "12px",
+                        backgroundColor: "var(--surface-color, #f8f9fa)",
+                        border: "1px solid var(--border-color, #e9ecef)",
                       }}
                     >
-                      <h3 style={{ 
-                        margin: "0 0 8px 0", 
-                        fontSize: "16px", 
-                        fontWeight: "600",
-                        color: card.severity === "critical" || card.severity === "high" ? "#e03131" : "#1971c2" 
-                      }}>
+                      <h3
+                        style={{
+                          margin: "0 0 8px 0",
+                          fontSize: "16px",
+                          fontWeight: "600",
+                          color:
+                            card.severity === "critical" || card.severity === "high"
+                              ? "#e03131"
+                              : "#1971c2",
+                        }}
+                      >
                         {card.title}
                       </h3>
-                      <p style={{ margin: 0, fontSize: "14px", color: "var(--text-color, #495057)", lineHeight: "1.5" }}>
+                      <p
+                        style={{
+                          margin: 0,
+                          fontSize: "14px",
+                          color: "var(--text-color, #495057)",
+                          lineHeight: "1.5",
+                        }}
+                      >
                         {card.description}
                       </p>
                     </div>
@@ -93,13 +108,20 @@ export default function AiInsightsPage({
               </strong>
               <p>
                 {insight.status === "empty"
-                  ? "새로운 주문과 가드레일 기록이 쌓이면 맞춤형 인사이트를 생성합니다."
+                  ? "새로운 주문 행동이 쌓이면 맞춤형 인사이트를 생성합니다."
                   : "잠시 후 페이지를 새로고침해 다시 확인해 주세요."}
               </p>
             </div>
           </div>
         )}
       </section>
+
+      {/* AI 인사이트 카드 아래에 필드별 상세 분석 배치 */}
+      {fieldInsight && (
+        <div style={{ marginTop: "32px" }}>
+          <FieldInsightsPage insight={fieldInsight} />
+        </div>
+      )}
     </>
   );
 }

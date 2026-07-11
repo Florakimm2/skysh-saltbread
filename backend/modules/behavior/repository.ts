@@ -9,9 +9,18 @@ import type {
   RiskAnalysisDoc,
   RiskAnalysisResult,
 } from "./types";
+import type { OrderContextSnapshotLog } from "@/backend/modules/insight/snapshot-field-aggregator";
 
 const behaviorEventsRef = adminDb.collection("behaviorEvents");
 const riskAnalysesRef = adminDb.collection("riskAnalyses");
+// ┌─────────────────────────────────────────────────────────┐
+// │ 스냅샷 컬렉션: order_context_snapshots (snake_case)      │
+// │                                                         │
+// │ background.js → POST /api/me/logs/order-context-snapshots│
+// │ 가 저장하는 실제 Firestore 컬렉션명.                       │
+// │ 2026-07-11 진단으로 확정됨.                                │
+// └─────────────────────────────────────────────────────────┘
+const snapshotsRef = adminDb.collection("order_context_snapshots");
 
 type ExtraBehaviorEventFields = {
   sessionId?: string;
@@ -74,64 +83,43 @@ function mapBehaviorEvent(
   return {
     id,
     userId: data.userId,
-
     sessionId: data.sessionId,
-
     symbol: data.symbol,
     eventType: data.eventType,
-
     side: data.side ?? undefined,
     orderType: data.orderType ?? undefined,
-
     price: data.price ?? undefined,
     amount: data.amount ?? undefined,
     quantity: data.quantity ?? undefined,
-
     pageUrl: data.pageUrl ?? undefined,
     occurredAt: toIsoString(data.occurredAt),
     createdAt: toIsoString(data.createdAt),
-
     metadata: data.metadata ?? undefined,
   } as ExtendedBehaviorEventDoc;
 }
 
-/**
- * 행동 로그 저장.
- *
- * 기존 함수 시그니처 유지:
- * createBehaviorEvent(userId, input)
- *
- * 이렇게 해야 service.ts의 기존 호출 방식이 깨지지 않는다.
- */
 export async function createBehaviorEvent(
   userId: string,
   input: ExtendedBehaviorEventInput
 ): Promise<ExtendedBehaviorEventDoc> {
   const docRef = behaviorEventsRef.doc();
-
   const occurredAtDate = parseOccurredAt(input.occurredAt);
   const now = Timestamp.now();
 
   const data = removeUndefined({
     id: docRef.id,
     userId,
-
     sessionId: input.sessionId,
-
     symbol: input.symbol,
     eventType: input.eventType,
-
     side: input.side,
     orderType: input.orderType,
-
     price: input.price,
     amount: input.amount,
     quantity: input.quantity,
-
     pageUrl: input.pageUrl,
     occurredAt: Timestamp.fromDate(occurredAtDate),
     createdAt: now,
-
     metadata: input.metadata,
   });
 
@@ -140,44 +128,27 @@ export async function createBehaviorEvent(
   return {
     id: docRef.id,
     userId,
-
     sessionId: input.sessionId,
-
     symbol: input.symbol,
     eventType: input.eventType,
-
     side: input.side,
     orderType: input.orderType,
-
     price: input.price,
     amount: input.amount,
     quantity: input.quantity,
-
     pageUrl: input.pageUrl,
     occurredAt: occurredAtDate.toISOString(),
     createdAt: toIsoString(now),
-
     metadata: input.metadata,
   };
 }
 
-/**
- * analyze API용 최근 행동 로그 조회.
- *
- * 기존 함수 유지 필수.
- * analyzeCurrentRisk 쪽에서 이 함수를 사용할 가능성이 높다.
- */
 export async function findRecentBehaviorEvents(params: {
   userId: string;
   symbol: string;
   minutes: number;
 }): Promise<ExtendedBehaviorEventDoc[]> {
   const sinceMs = Date.now() - params.minutes * 60 * 1000;
-
-  /**
-   * Firestore 복합 인덱스 문제를 피하기 위해
-   * userId 기준 최근 300개를 가져온 뒤 JS에서 symbol/time 필터링.
-   */
   const snapshot = await behaviorEventsRef
     .where("userId", "==", params.userId)
     .orderBy("createdAt", "desc")
@@ -192,16 +163,11 @@ export async function findRecentBehaviorEvents(params: {
     });
 }
 
-/**
- * events route의 GET 테스트용.
- * 최근 저장 로그 확인에 사용.
- */
 export async function findBehaviorEventsByUser(params: {
   userId: string;
   limit?: number;
 }): Promise<ExtendedBehaviorEventDoc[]> {
   const limit = params.limit ?? 20;
-
   const snapshot = await behaviorEventsRef
     .where("userId", "==", params.userId)
     .orderBy("createdAt", "desc")
@@ -211,12 +177,6 @@ export async function findBehaviorEventsByUser(params: {
   return snapshot.docs.map((doc) => mapBehaviorEvent(doc.id, doc.data()));
 }
 
-/**
- * 대시보드 행동 세션 조합용 전체 행동 로그 조회.
- *
- * userId 단일 조건만 Firestore에 전달하고 정렬은 서버에서 수행해
- * 별도 복합 인덱스 없이도 기존 프로젝트에서 바로 동작하게 한다.
- */
 export async function findAllBehaviorEventsByUser(
   userId: string
 ): Promise<ExtendedBehaviorEventDoc[]> {
@@ -231,9 +191,6 @@ export async function findAllBehaviorEventsByUser(
     );
 }
 
-/**
- * 대시보드에 표시할 사용자의 전체 위험 분석 기록 조회.
- */
 export async function findRiskAnalysesByUser(
   userId: string
 ): Promise<RiskAnalysisDoc[]> {
@@ -242,7 +199,6 @@ export async function findRiskAnalysesByUser(
   return snapshot.docs
     .map((doc) => {
       const data = doc.data();
-
       return {
         id: doc.id,
         userId: data.userId,
@@ -265,12 +221,6 @@ export async function findRiskAnalysesByUser(
     );
 }
 
-/**
- * 분석 결과 저장.
- *
- * 기존 함수 유지 필수.
- * analyze route/service에서 사용한다.
- */
 export async function createRiskAnalysis(params: {
   userId: string;
   symbol: string;
@@ -283,14 +233,12 @@ export async function createRiskAnalysis(params: {
     id: docRef.id,
     userId: params.userId,
     symbol: params.symbol,
-
     riskLevel: params.result.riskLevel,
     score: params.result.score,
     cooldownRequired: params.result.cooldownRequired,
     cooldownSeconds: params.result.cooldownSeconds,
     matchedPatterns: params.result.matchedPatterns,
     reasons: params.result.reasons,
-
     createdAt: now,
   };
 
@@ -300,14 +248,88 @@ export async function createRiskAnalysis(params: {
     id: data.id,
     userId: data.userId,
     symbol: data.symbol,
-
     riskLevel: data.riskLevel,
     score: data.score,
     cooldownRequired: data.cooldownRequired,
     cooldownSeconds: data.cooldownSeconds,
     matchedPatterns: data.matchedPatterns,
     reasons: data.reasons,
-
     createdAt: toIsoString(now),
   };
+}
+
+// ┌─────────────────────────────────────────────────────────┐
+// │ 필드 인사이트용 최근 스냅샷 조회                            │
+// │ 컬렉션: order_context_snapshots                         │
+// └─────────────────────────────────────────────────────────┘
+
+function mapDocToSnapshotLog(
+  doc: FirebaseFirestore.QueryDocumentSnapshot
+): OrderContextSnapshotLog {
+  const data = doc.data();
+  return {
+    snapshotId: data.snapshotId ?? doc.id,
+    attemptId: data.attemptId ?? null,
+    snapshotTrigger: data.snapshotTrigger ?? "UNKNOWN",
+    capturedAt: toIsoString(data.capturedAt),
+    market: data.market ?? "UNKNOWN",
+    side: data.side ?? "UNKNOWN",
+    orderMode: data.orderMode ?? "UNKNOWN",
+    entryPoint: data.entryPoint ?? "NORMAL",
+    intentPrice: data.intentPrice ?? null,
+    intentQuantity: data.intentQuantity ?? null,
+    intentAmount: data.intentAmount ?? null,
+    requestedBalanceRatio: data.requestedBalanceRatio ?? null,
+    allocationPresetPercent: data.allocationPresetPercent ?? null,
+    draftDurationMs: data.draftDurationMs ?? null,
+    lastEditToSnapshotMs: data.lastEditToSnapshotMs ?? null,
+    draftEditCount: data.draftEditCount ?? null,
+    amountChangeRate: data.amountChangeRate ?? null,
+    modeChangedToMarket: data.modeChangedToMarket ?? false,
+    orderbookClickToSnapshotMs: data.orderbookClickToSnapshotMs ?? null,
+    orderIntentCount1m: data.orderIntentCount1m ?? 0,
+    actualOrderCreatedCount10m: data.actualOrderCreatedCount10m ?? null,
+    sameSideIntentCount1m: data.sameSideIntentCount1m ?? 0,
+    marketChangeCount5m: data.marketChangeCount5m ?? 0,
+    sideChangeCount3m: data.sideChangeCount3m ?? 0,
+    priceEditCount3m: data.priceEditCount3m ?? 0,
+    quantityEditCount3m: data.quantityEditCount3m ?? 0,
+    amountEditCount3m: data.amountEditCount3m ?? 0,
+    inputRevertCount: data.inputRevertCount ?? 0,
+    priceDirectionChangeCount: data.priceDirectionChangeCount ?? 0,
+    priceChangeRate: data.priceChangeRate ?? null,
+    orderModeChangeCount3m: data.orderModeChangeCount3m ?? 0,
+    draftResetCount3m: data.draftResetCount3m ?? 0,
+    tradePriceAtSnapshot: data.tradePriceAtSnapshot ?? data.tradePriceAtIntent ?? null,
+    shortTermReturn5m: data.shortTermReturn5m ?? null,
+    signedChangeRate: data.signedChangeRate ?? null,
+    spreadRate: data.spreadRate ?? null,
+    marketRiskFlags: Array.isArray(data.marketRiskFlags) ? data.marketRiskFlags : [],
+    pricePositionIn5mRange: data.pricePositionIn5mRange ?? null,
+    volumeSpikeRatio5m: data.volumeSpikeRatio5m ?? null,
+    baseAssetAvgBuyPriceBeforeSnapshot: data.baseAssetAvgBuyPriceBeforeSnapshot ?? null,
+    priceVsAvgBuyRateAtSnapshot: data.priceVsAvgBuyRateAtSnapshot ?? null,
+  } as OrderContextSnapshotLog;
+}
+
+export async function findRecentSnapshots(params: {
+  userId: string;
+  since: Date;
+  limit?: number;
+}): Promise<OrderContextSnapshotLog[]> {
+  const limit = params.limit ?? 500;
+
+  const snapshot = await snapshotsRef
+    .where("userId", "==", params.userId)
+    .get();
+
+  if (snapshot.docs.length === 0) {
+    return [];
+  }
+
+  return snapshot.docs
+    .map(mapDocToSnapshotLog)
+    .filter((log) => new Date(log.capturedAt).getTime() >= params.since.getTime())
+    .sort((a, b) => new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime())
+    .slice(0, limit);
 }

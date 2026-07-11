@@ -7,11 +7,9 @@ import { adminDb } from "@/backend/infrastructure/firebase/firebase-admin";
 import type {
   ConfirmedTradeLogDTO,
   GuardrailReactionDTO,
-  GuardrailRuleSnapshot,
   LogListParams,
   OrderContextSnapshotDTO,
   OrderOutcomePatchDTO,
-  RuleEvaluationSnapshot,
   TradeFeedbackDTO,
 } from "./types";
 
@@ -67,32 +65,6 @@ function toTimestamp(value?: string | null) {
   if (Number.isNaN(date.getTime())) return null;
 
   return Timestamp.fromDate(date);
-}
-
-function getOrderTimeParts(value?: string | null) {
-  if (!value) {
-    return {
-      orderTime: null,
-      orderTimeMinutes: null,
-    };
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return {
-      orderTime: null,
-      orderTimeMinutes: null,
-    };
-  }
-
-  const kst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
-  const hour = kst.getUTCHours();
-  const minute = kst.getUTCMinutes();
-
-  return {
-    orderTime: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`,
-    orderTimeMinutes: hour * 60 + minute,
-  };
 }
 
 function prepareFirestoreData(input: Record<string, unknown>) {
@@ -154,8 +126,6 @@ function snapshotDocToDTO(
     attemptId: data.attemptId ?? null,
     snapshotTrigger: data.snapshotTrigger,
     capturedAt: toIsoString(data.capturedAt),
-    orderTime: data.orderTime ?? null,
-    orderTimeMinutes: data.orderTimeMinutes ?? null,
 
     market: data.market,
     side: data.side,
@@ -192,13 +162,6 @@ function snapshotDocToDTO(
     matchedRuleIdsAtSnapshot: data.matchedRuleIdsAtSnapshot ?? [],
     primaryShownRuleId: data.primaryShownRuleId ?? null,
     shownRuleIds: data.shownRuleIds ?? [],
-    ruleSnapshot:
-      (data.ruleSnapshot as GuardrailRuleSnapshot | undefined) ?? null,
-    ruleSnapshots:
-      (data.ruleSnapshots as GuardrailRuleSnapshot[] | undefined) ?? [],
-    ruleEvaluationSnapshots:
-      (data.ruleEvaluationSnapshots as RuleEvaluationSnapshot[] | undefined) ??
-      [],
 
     tradePriceAtSnapshot: data.tradePriceAtSnapshot ?? null,
     shortTermReturn5m: data.shortTermReturn5m ?? null,
@@ -214,44 +177,6 @@ function snapshotDocToDTO(
 
     createdAt: toIsoString(data.createdAt),
     updatedAt: toIsoString(data.updatedAt),
-  };
-}
-
-async function listAllOwnedDocs<T>(params: {
-  collection: FirebaseFirestore.CollectionReference;
-  userId: string;
-  converter: (id: string, data: FirebaseFirestore.DocumentData) => T;
-}) {
-  const snapshot = await params.collection
-    .where("userId", "==", params.userId)
-    .get();
-
-  return snapshot.docs.map((doc) => params.converter(doc.id, doc.data()));
-}
-
-export async function listGuardrailTimelineSources(userId: string) {
-  const [snapshots, reactions, feedbacks] = await Promise.all([
-    listAllOwnedDocs({
-      collection: snapshotsRef,
-      userId,
-      converter: snapshotDocToDTO,
-    }),
-    listAllOwnedDocs({
-      collection: reactionsRef,
-      userId,
-      converter: reactionDocToDTO,
-    }),
-    listAllOwnedDocs({
-      collection: feedbacksRef,
-      userId,
-      converter: feedbackDocToDTO,
-    }),
-  ]);
-
-  return {
-    snapshots,
-    reactions,
-    feedbacks,
   };
 }
 
@@ -451,9 +376,6 @@ export async function createOrderContextSnapshot(params: {
       : null;
   const snapshotId = requestedSnapshotId || randomUUID();
   const now = new Date().toISOString();
-  const capturedAt =
-    typeof params.input.capturedAt === "string" ? params.input.capturedAt : now;
-  const orderTimeParts = getOrderTimeParts(capturedAt);
   const existing = await snapshotsRef.doc(snapshotId).get();
 
   if (existing.exists) {
@@ -474,10 +396,7 @@ export async function createOrderContextSnapshot(params: {
     snapshotId,
     userId: params.userId,
     ...params.input,
-    capturedAt,
-    orderTime: params.input.orderTime ?? orderTimeParts.orderTime,
-    orderTimeMinutes:
-      params.input.orderTimeMinutes ?? orderTimeParts.orderTimeMinutes,
+    capturedAt: params.input.capturedAt ?? now,
     createdAt: now,
     updatedAt: now,
   });
