@@ -389,7 +389,7 @@ test("통계 API는 저장된 accessToken과 appOrigin으로 호출한다", asyn
     requested.push({ url, options });
     return jsonResponse({
       ok: true,
-      data: "불씨와 함께 7개의 기록을 쌓고 2개의 감정 매도를 막았어요!",
+      data: "불씨와 함께 7개의 기록을 쌓고 2번 원칙을 다시 확인했어요!",
     });
   };
 
@@ -400,7 +400,7 @@ test("통계 API는 저장된 accessToken과 appOrigin으로 호출한다", asyn
   assert.equal(response.ok, true);
   assert.equal(
     response.data,
-    "불씨와 함께 7개의 기록을 쌓고 2개의 감정 매도를 막았어요!",
+    "불씨와 함께 7개의 기록을 쌓고 2번 원칙을 다시 확인했어요!",
   );
   assert.equal(requested[0].url, "http://localhost:3000/api/me/stats");
   assert.equal(

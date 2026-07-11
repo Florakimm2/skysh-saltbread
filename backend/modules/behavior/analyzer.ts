@@ -104,7 +104,7 @@ export function analyzeEmotionRisk(params: {
   }
 
   /**
-   * 2. 심리적 불안 / 금액 반복 수정
+   * 2. 주문 금액 반복 수정
    */
   if (amountInputCount >= RISK_RULES.AMOUNT_REVISION_COUNT) {
     score = addPattern({
@@ -206,6 +206,6 @@ export function analyzeEmotionRisk(params: {
     reasons:
       reasons.length > 0
         ? reasons
-        : ["현재 감정적 주문 패턴은 뚜렷하게 감지되지 않았습니다."],
+        : ["현재 추가로 확인할 가드레일 행동 패턴은 뚜렷하지 않습니다."],
   };
 }

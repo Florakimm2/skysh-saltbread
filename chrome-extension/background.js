@@ -858,6 +858,11 @@ function normalizeOrderContextSnapshotLog(snapshot) {
   const payload = pickDefinedFields(snapshot || {}, [
     "snapshotId",
     "attemptId",
+    "dataSource",
+    "marketSource",
+    "orderSource",
+    "behaviorSource",
+    "personalSource",
     "snapshotTrigger",
     "capturedAt",
     "orderTime",
@@ -1601,6 +1606,51 @@ function createDemoOrderData(context = {}) {
   };
 }
 
+function createUnavailableUpbitOrderData(market) {
+  return {
+    market,
+    recentOrders: [],
+    clientAverageBuyAmount: null,
+    accounts: [],
+    rawClosedOrders: [],
+    rawOpenOrders: [],
+    collected_at: new Date().toISOString(),
+    privateDataAvailable: false,
+    personalDataSource: "unavailable",
+  };
+}
+
+function getDetectionSourceMetadata(pageUrl, personalDataAvailable) {
+  const isDemo = isDemoPageUrl(pageUrl || "");
+
+  if (isDemo) {
+    return {
+      dataSource: "DEMO",
+      marketSource: "DEMO_PAGE",
+      orderSource: "DEMO_PAGE",
+      behaviorSource: "DEMO_INTERACTION",
+      personalSource: "DEMO_PAGE",
+    };
+  }
+
+  return {
+    dataSource: "UPBIT",
+    marketSource: "UPBIT_PUBLIC_API",
+    orderSource: "UPBIT_DOM",
+    behaviorSource: "UPBIT_INTERACTION",
+    personalSource: personalDataAvailable ? "UPBIT_PERSONAL_API" : "UNAVAILABLE",
+  };
+}
+
+function emitBackgroundPipelineTrace(stage, fields = {}) {
+  debugBackgroundOrder("DETECTION_PIPELINE_TRACE", {
+    type: "DETECTION_PIPELINE_TRACE",
+    stage,
+    capturedAt: new Date().toISOString(),
+    ...fields,
+  });
+}
+
 async function refreshMarketSnapshot(market) {
   if (!market) {
     return null;
@@ -1764,10 +1814,14 @@ async function callDetectionApi(
     (isDemo
       ? createDemoOrderData(normalizedContext)
       : orderDataCache[normalizedContext.market] ||
-        createDemoOrderData(normalizedContext));
+        createUnavailableUpbitOrderData(normalizedContext.market));
   const scopedOrderData = scopeOrderDataToMarket(
     orderData,
     normalizedContext.market,
+  );
+  const sourceMetadata = getDetectionSourceMetadata(
+    pageUrl,
+    scopedOrderData?.privateDataAvailable === true,
   );
   const recentOrders = scopedOrderData?.recentOrders || [];
   const lastLoss = recentOrders.find(
@@ -1781,6 +1835,19 @@ async function callDetectionApi(
       normalizedContext.currentOrder.order_request_time,
   );
   const requestBody = {
+    attemptId:
+      normalizedContext.orderContextSnapshot?.attemptId ||
+      normalizedContext.attemptId ||
+      null,
+    dataSource: sourceMetadata.dataSource,
+    marketSource: sourceMetadata.marketSource,
+    orderSource: sourceMetadata.orderSource,
+    behaviorSource: sourceMetadata.behaviorSource,
+    personalSource: sourceMetadata.personalSource,
+    capturedAt:
+      normalizedContext.orderContextSnapshot?.capturedAt ||
+      normalizedContext.currentOrder.order_request_time ||
+      new Date().toISOString(),
     market: normalizedContext.market,
     current_price: normalizedMarketData.current_price,
     market_data: normalizedMarketData.market_data,
@@ -1812,6 +1879,12 @@ async function callDetectionApi(
     requestBody,
     orderContextSnapshot: normalizedContext.orderContextSnapshot || null,
     options,
+  });
+  emitBackgroundPipelineTrace("DETECTION_REQUEST_SENT", {
+    attemptId: requestBody.attemptId,
+    dataSource: sourceMetadata.dataSource,
+    market: requestBody.market,
+    requestBody,
   });
 
   const behaviorEvent = {
@@ -1857,6 +1930,15 @@ async function callDetectionApi(
     normalizedMarketData,
     scopedOrderData,
   );
+  Object.assign(orderContextSnapshot, {
+    dataSource: orderContextSnapshot.dataSource || sourceMetadata.dataSource,
+    marketSource: orderContextSnapshot.marketSource || sourceMetadata.marketSource,
+    orderSource: orderContextSnapshot.orderSource || sourceMetadata.orderSource,
+    behaviorSource:
+      orderContextSnapshot.behaviorSource || sourceMetadata.behaviorSource,
+    personalSource:
+      orderContextSnapshot.personalSource || sourceMetadata.personalSource,
+  });
   const expectedMarket = initialMarketResolution.market || orderContextSnapshot.market;
   const actualMarkets = {
     orderContextMarket: orderContextSnapshot.market || null,
@@ -1896,6 +1978,7 @@ async function callDetectionApi(
     });
   }
   const marketDebugFields = {
+    ...sourceMetadata,
     marketResolutionTrace: initialMarketResolution.trace,
     marketDataSource:
       normalizedMarketData?.source ||
@@ -1912,6 +1995,11 @@ async function callDetectionApi(
   };
 
   if (marketMismatch) {
+    debugBackgroundOrder("MARKET_SNAPSHOT_MISMATCH", {
+      attemptId: orderContextSnapshot.attemptId || null,
+      expectedMarket,
+      actualMarkets,
+    });
     await sendDtoDebugSnapshot(tabId, {
       ...marketDebugFields,
       behavior: normalizedContext.behaviorData || null,
@@ -1955,12 +2043,24 @@ async function callDetectionApi(
       market: normalizedContext.market,
       response: mismatchResult,
     });
+    emitBackgroundPipelineTrace("DETECTION_RESPONSE_RECEIVED", {
+      attemptId: orderContextSnapshot.attemptId || null,
+      dataSource: sourceMetadata.dataSource,
+      market: normalizedContext.market,
+      response: mismatchResult,
+    });
     return mismatchResult;
   }
   const ruleEvaluation = evaluateGuardrailRules(
     rulesState.rules,
     orderContextSnapshot,
   );
+  emitBackgroundPipelineTrace("RULE_EVALUATED", {
+    attemptId: orderContextSnapshot.attemptId || null,
+    dataSource: sourceMetadata.dataSource,
+    market: orderContextSnapshot.market,
+    evaluation: ruleEvaluation,
+  });
   const ruleSnapshots = Array.isArray(ruleEvaluation.matchedRules)
     ? ruleEvaluation.matchedRules
         .map((rule) => createGuardrailRuleSnapshot(rule))
@@ -1997,8 +2097,10 @@ async function callDetectionApi(
       ruleCount: rulesState.rules.length,
       detected: ruleEvaluation.detected,
       matchedRuleIds: ruleEvaluation.matchedRuleIds,
+      matchedRules: ruleEvaluation.matchedRules || [],
       primaryRuleId: ruleEvaluation.primaryRuleId,
       primaryRule: ruleEvaluation.primaryRule,
+      conditionResults: ruleEvaluation.conditionResults || [],
     },
   });
 
@@ -2043,6 +2145,12 @@ async function callDetectionApi(
       market: normalizedContext.market,
       response: ruleResult,
     });
+    emitBackgroundPipelineTrace("DETECTION_RESPONSE_RECEIVED", {
+      attemptId: evaluatedSnapshot.attemptId || null,
+      dataSource: sourceMetadata.dataSource,
+      market: evaluatedSnapshot.market,
+      response: ruleResult,
+    });
     return ruleResult;
   }
 
@@ -2077,6 +2185,12 @@ async function callDetectionApi(
     tabId,
     pageUrl,
     market: normalizedContext.market,
+    response: safeResult,
+  });
+  emitBackgroundPipelineTrace("DETECTION_RESPONSE_RECEIVED", {
+    attemptId: evaluatedSnapshot.attemptId || null,
+    dataSource: sourceMetadata.dataSource,
+    market: evaluatedSnapshot.market,
     response: safeResult,
   });
   return safeResult;
@@ -2297,6 +2411,11 @@ function enrichOrderContextSnapshot(context, marketData, orderData = {}) {
   return {
     snapshotId: base.snapshotId || crypto.randomUUID(),
     attemptId: base.attemptId || null,
+    dataSource: base.dataSource || null,
+    marketSource: base.marketSource || null,
+    orderSource: base.orderSource || null,
+    behaviorSource: base.behaviorSource || null,
+    personalSource: base.personalSource || null,
     snapshotTrigger: base.snapshotTrigger || "ORDER_INTENT_CLICK",
     capturedAt,
     orderTime: base.orderTime ?? orderTimeParts.orderTime,
@@ -2449,6 +2568,11 @@ function createPersonalDebugSnapshot(orderData, orderContextSnapshot, recentOrde
 
   return {
     privateDataAvailable: orderData?.privateDataAvailable ?? null,
+    personalSource: isDemoPersonalData
+      ? "DEMO_PAGE"
+      : orderData?.privateDataAvailable
+        ? "UPBIT_PERSONAL_API"
+        : "UNAVAILABLE",
     personalDataSource: isDemoPersonalData
       ? "demo-data"
       : orderData?.privateDataAvailable

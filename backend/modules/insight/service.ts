@@ -1,6 +1,10 @@
 // backend/modules/insight/service.ts
 import type { BehaviorSessionRecord } from "@/backend/modules/behavior/types";
-import type { InsightRequestInput } from "./types";
+import type {
+  DashboardInsightParsedData,
+  DashboardInsightResult,
+  InsightRequestInput,
+} from "./types";
 import { analyzeInsights } from "./rules";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -30,13 +34,24 @@ function getFastApiInsightUrl() {
   return url;
 }
 
-function extractInsightFromFastApiResponse(rawText: string): any {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function extractInsightFromFastApiResponse(rawText: string): DashboardInsightParsedData {
   const trimmed = rawText.trim();
   if (!trimmed) {
     throw new Error("FastAPI 응답이 비어 있습니다.");
   }
   try {
-    return JSON.parse(trimmed);
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (typeof parsed === "string") {
+      return { summary: parsed, cards: [] };
+    }
+    if (isRecord(parsed)) {
+      return parsed;
+    }
+    return { summary: trimmed, cards: [] };
   } catch {
     return { summary: trimmed, cards: [] };
   }
@@ -63,7 +78,7 @@ async function fetchWithTimeout(
 
 export async function requestInsightFromFastApi(
   input: InsightRequestInput
-): Promise<any> {
+): Promise<{ insight: DashboardInsightParsedData }> {
   const fastApiUrl = getFastApiInsightUrl();
 
   const response = await fetchWithTimeout(fastApiUrl, {
@@ -196,7 +211,7 @@ export async function requestDashboardInsight(
   userId: string,
   records: BehaviorSessionRecord[],
   now = new Date()
-): Promise<any> {
+): Promise<DashboardInsightResult> {
   // 정량 지표(analyzeInsights)와 동일한 30일 창으로 통일
   const since = now.getTime() - RECENT_ANALYSIS_WINDOW_MS;
 
@@ -247,10 +262,13 @@ export async function requestDashboardInsight(
       summaries: combinedSummaries,
     });
     const parsedData = result.insight;
+    const insightSummary = typeof parsedData.summary === "string"
+      ? parsedData.summary
+      : "분석 완료";
 
     return {
       status: "ready",
-      insight: parsedData?.summary || (typeof parsedData === 'string' ? parsedData : "분석 완료"),
+      insight: insightSummary,
       parsedData: parsedData,
       sourceCount: recentRecords.length,
     };

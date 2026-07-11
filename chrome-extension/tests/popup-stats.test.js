@@ -145,12 +145,12 @@ async function createPopupHarness(statsResponse) {
 test("popup stats 성공 시 API data 문자열을 그대로 표시한다", async () => {
   const { elements, sentMessages } = await createPopupHarness({
     ok: true,
-    data: "불씨와 함께 3개의 기록을 쌓고 1개의 감정 매도를 막았어요!",
+    data: "불씨와 함께 3개의 기록을 쌓고 1번 원칙을 다시 확인했어요!",
   });
 
   assert.equal(
     elements["statistics-summary"].textContent,
-    "불씨와 함께 3개의 기록을 쌓고 1개의 감정 매도를 막았어요!",
+    "불씨와 함께 3개의 기록을 쌓고 1번 원칙을 다시 확인했어요!",
   );
   assert.ok(sentMessages.some((message) => message.type === "GET_USER_STATS"));
 });

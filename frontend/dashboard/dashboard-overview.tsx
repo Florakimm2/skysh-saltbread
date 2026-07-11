@@ -37,7 +37,7 @@ function InsightPreview({ insight }: { insight: DashboardInsightResult }) {
             <SparklesIcon />
           </span>
           <strong>최근 7일간 분석할 행동 기록이 없습니다</strong>
-          <p>새로운 주문 행동이 쌓이면 AI 인사이트가 생성됩니다.</p>
+          <p>새로운 주문과 가드레일 기록이 쌓이면 인사이트가 생성됩니다.</p>
         </div>
       </div>
     );
@@ -82,7 +82,7 @@ export default function DashboardOverview({
       <PageHeader
         eyebrow="Overview"
         title="대시보드"
-        description="나의 투자 기록과 AI 분석을 한눈에 확인하세요."
+        description="나의 거래 기록과 가드레일 인사이트를 한눈에 확인하세요."
         showDate
       />
 
@@ -92,11 +92,11 @@ export default function DashboardOverview({
             <div className={styles.welcomeCopy}>
               <p>오늘도 불씨와 함께</p>
               <h2>
-                서두르지 않아도 괜찮아요.
+                정한 원칙을 확인하고,
                 <br />
-                차분한 투자를 이어가 볼까요?
+                기록으로 이어가 볼까요?
               </h2>
-              <span>행동 기록과 맞춤 인사이트를 한곳에서 확인해요.</span>
+              <span>주문 기록과 가드레일 인사이트를 한곳에서 확인해요.</span>
             </div>
             <div className={styles.welcomeVisual} aria-hidden="true">
               <span className={styles.welcomeGlow} />

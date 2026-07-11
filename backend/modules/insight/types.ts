@@ -17,12 +17,23 @@ export interface InsightResult {
   insight: string;
 }
 
+export type DashboardInsightCard = {
+  title?: string;
+  description?: string;
+  severity?: string;
+};
+
+export type DashboardInsightParsedData = {
+  cards?: DashboardInsightCard[];
+  [key: string]: unknown;
+};
+
 export type DashboardInsightResult =
   | {
       status: "ready";
       insight: string;
       sourceCount: number;
-      parsedData: any;
+      parsedData: DashboardInsightParsedData;
     }
   | {
       status: "empty";

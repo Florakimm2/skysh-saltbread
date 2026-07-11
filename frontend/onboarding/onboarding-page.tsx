@@ -591,7 +591,7 @@ export default function OnboardingPage({ userId }: { userId: string }) {
           </header>
 
           <section className={styles.patternHeading}>
-            <p>나를 더 잘 이해하면, 더 좋은 투자가 가능해요.</p>
+            <p>내가 다시 확인하고 싶은 순간을 고르는 단계예요.</p>
             <h1>
               어떤 거래를 가장 <em>후회했나요?</em>
             </h1>
@@ -724,7 +724,7 @@ export default function OnboardingPage({ userId }: { userId: string }) {
                           <small>{pattern.ruleSummary}</small>
                         </span>
                         <i className={styles.riskBadge}>
-                          {pattern.riskLevel === "HIGH" ? "높은 위험" : "주의"}
+                          {pattern.riskLevel === "HIGH" ? "강한 확인" : "확인"}
                         </i>
                         <svg
                           className={styles.chevron}
@@ -765,7 +765,7 @@ export default function OnboardingPage({ userId }: { userId: string }) {
                             <code>
                               {pattern.expressionText.map((line, index) => (
                                 <span key={line}>
-                                  {index > 0 && <b>AND </b>}
+                                  {index > 0 && <b>그리고 </b>}
                                   {line}
                                 </span>
                               ))}
@@ -861,9 +861,9 @@ export default function OnboardingPage({ userId }: { userId: string }) {
             이제 <em>직접 사용</em>해보세요!
           </h1>
           <span>
-            불씨가 당신의 투자 습관을 더 차분하게 지켜드릴게요.
+            불씨가 주문 순간마다 직접 정한 원칙을 함께 확인할게요.
             <br />
-            지금 바로 시작해보세요.
+            이제 기록을 쌓으며 원칙을 지켜나가 보세요.
           </span>
 
           <div className={styles.completeVisual}>

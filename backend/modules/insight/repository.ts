@@ -1,14 +1,70 @@
 import { adminDb } from "@/backend/infrastructure/firebase/firebase-admin";
 import { toIsoString } from "../behavior/repository";
 
+type TimestampLike = {
+  toDate: () => Date;
+};
+
+type InsightRecord = Record<string, unknown>;
+
+type JoinedTradeUnit = {
+  attemptId: string;
+  snapshot: InsightRecord;
+  reaction: InsightRecord | null;
+  feedback: InsightRecord | null;
+  trade: InsightRecord | null;
+  outcome: InsightRecord | null;
+};
+
+export type OptimizedTradeUnit = {
+  attemptId: string;
+  snapshot: {
+    orderMode?: unknown;
+    spreadRate?: unknown;
+    shortTermReturn5m?: unknown;
+    requestedBalanceRatio?: unknown;
+    tradePriceAtIntent?: unknown;
+  };
+  reaction: {
+    action?: unknown;
+    reactionTimeMs: number | null;
+  } | null;
+  trade: {
+    ordType?: unknown;
+    orderCreatedAt: string;
+  } | null;
+  outcome: {
+    state?: unknown;
+    executedVolume?: unknown;
+    paidFee?: unknown;
+    executedFunds?: unknown;
+  } | null;
+  feedback: {
+    feedbackStatus?: unknown;
+    selfAssessment?: unknown;
+  } | null;
+};
+
+export type MonthlyAggregateRecord = InsightRecord;
+
 // Timestamp 또는 ISO 문자열을 ms(숫자)로 안전하게 변환하는 헬퍼 함수
-function getTimeMs(val: any): number {
+function getTimeMs(val: unknown): number {
     if (!val) return 0;
-    if (typeof val.toDate === "function") return val.toDate().getTime();
-    return new Date(val).getTime();
+    if (
+      typeof val === "object" &&
+      val !== null &&
+      "toDate" in val &&
+      typeof (val as TimestampLike).toDate === "function"
+    ) {
+      return (val as TimestampLike).toDate().getTime();
+    }
+    if (val instanceof Date || typeof val === "string" || typeof val === "number") {
+      return new Date(val).getTime();
+    }
+    return 0;
 }
 
-export async function getMonthlyTradeUnits(userId: string) {
+export async function getMonthlyTradeUnits(userId: string): Promise<OptimizedTradeUnit[]> {
 // 1. 여기서 확실하게 체크합니다!
 // 1. 확실한 방어막! (글자가 아닌 이상한 데이터 덩어리가 들어와도 무조건 막아냄)
     if (!userId || typeof userId !== "string") {
@@ -49,13 +105,14 @@ export async function getMonthlyTradeUnits(userId: string) {
     .filter(data => getTimeMs(data.orderCreatedAt) >= thirtyDaysAgoMs);
 
   // 3. Map을 이용한 애플리케이션 레벨 조인 (Key: attemptId)
-    const tradeUnitsMap = new Map<string, any>();
+    const tradeUnitsMap = new Map<string, JoinedTradeUnit>();
 
   // A. Snapshot을 기준으로 초기 Unit 생성
     snapshots.forEach((data) => {
-    if (data.attemptId) {
-        tradeUnitsMap.set(data.attemptId, {
-        attemptId: data.attemptId,
+    const attemptId = typeof data.attemptId === "string" ? data.attemptId : null;
+    if (attemptId) {
+        tradeUnitsMap.set(attemptId, {
+        attemptId,
         snapshot: data,
         reaction: null,
         feedback: null,
@@ -67,24 +124,31 @@ export async function getMonthlyTradeUnits(userId: string) {
 
   // B. Reaction 매핑
     reactions.forEach((data) => {
-    if (data.attemptId && tradeUnitsMap.has(data.attemptId)) {
-        tradeUnitsMap.get(data.attemptId).reaction = data;
+    const attemptId = typeof data.attemptId === "string" ? data.attemptId : null;
+    const unit = attemptId ? tradeUnitsMap.get(attemptId) : undefined;
+    if (unit) {
+        unit.reaction = data;
     }
     });
 
   // C. Feedback 매핑
     feedbacks.forEach((data) => {
-    if (data.attemptId && tradeUnitsMap.has(data.attemptId)) {
-        tradeUnitsMap.get(data.attemptId).feedback = data;
+    const attemptId = typeof data.attemptId === "string" ? data.attemptId : null;
+    const unit = attemptId ? tradeUnitsMap.get(attemptId) : undefined;
+    if (unit) {
+        unit.feedback = data;
     }
     });
 
   // D. Confirmed Trade Log 매핑
     tradeLogs.forEach((data) => {
-    if (data.attemptId && tradeUnitsMap.has(data.attemptId)) {
-        const unit = tradeUnitsMap.get(data.attemptId);
+    const attemptId = typeof data.attemptId === "string" ? data.attemptId : null;
+    const unit = attemptId ? tradeUnitsMap.get(attemptId) : undefined;
+    if (unit) {
         unit.trade = data;
-        unit.outcome = data.outcomePatch || null; 
+        unit.outcome = typeof data.outcomePatch === "object" && data.outcomePatch !== null
+          ? data.outcomePatch as InsightRecord
+          : null; 
     }
     });
 
@@ -128,7 +192,7 @@ export async function getMonthlyTradeUnits(userId: string) {
     return optimizedTradeUnits;
 }
 
-export async function getMonthlyAggregates(userId: string) {
+export async function getMonthlyAggregates(userId: string): Promise<MonthlyAggregateRecord[]> {
   const thirtyDaysAgoMs = Date.now() - 30 * 24 * 60 * 60 * 1000;
 if (!userId || typeof userId !== "string") {
         userId = "GUEST_USER_NO_ID";
