@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
+  RiskLevel,
   RuleCondition,
   RuleConditionGroup,
   RuleExpression,
@@ -9,8 +10,14 @@ import type {
   RuleOperator,
   RuleFieldDefinition,
   UserGuardrailRuleDTO,
+  VisualMode,
 } from "@/backend/modules/guardrail/types";
 import { RULE_FIELD_CATALOG } from "@/backend/modules/guardrail/catalog";
+import FlameMascot, { type FlameMode } from "@/frontend/auth/flame-mascot";
+import {
+  buildConditionSentence,
+  buildExpressionPreview,
+} from "./rule-expression-format";
 import PageHeader from "./page-header";
 import { GuardrailIcon, UserIcon } from "./icons";
 import styles from "./dashboard.module.css";
@@ -26,6 +33,11 @@ type DraftRule = Omit<
   "ruleId" | "userId" | "requiresPrivateApi" | "schemaVersion" | "createdAt" | "updatedAt"
 > & {
   ruleId?: string;
+};
+
+type StatusMessage = {
+  type: "success" | "error";
+  message: string;
 };
 
 const SUPPORTED_FIELDS = Object.fromEntries(
@@ -47,6 +59,76 @@ const OPERATOR_LABELS: Record<RuleOperator, string> = {
   NOT_IN: "포함하지 않을 때",
   IS_NULL: "값이 없을 때",
   IS_NOT_NULL: "값이 있을 때",
+};
+
+const TIME_OPERATOR_LABELS: Partial<Record<RuleOperator, string>> = {
+  GT: "해당 시간 이후",
+  GTE: "해당 시간 이상",
+  LT: "해당 시간 이전",
+  LTE: "해당 시간 이하",
+  EQ: "해당 시간과 같음",
+};
+
+const RISK_LEVEL_META: Record<
+  RiskLevel,
+  {
+    label: string;
+    description: string;
+  }
+> = {
+  LOW: {
+    label: "낮은 위험",
+    description: "참고 수준의 가벼운 알림",
+  },
+  MEDIUM: {
+    label: "주의 필요",
+    description: "주문 전에 한 번 더 확인할 필요가 있는 상황",
+  },
+  HIGH: {
+    label: "높은 위험",
+    description: "충동적인 주문 가능성이 높아 강하게 확인할 상황",
+  },
+};
+
+const VISUAL_MODE_META: Record<
+  VisualMode,
+  {
+    label: string;
+    animationMode: FlameMode;
+    keywords: string[];
+    description: string;
+  }
+> = {
+  CURIOUS: {
+    label: "확인",
+    animationMode: "curious",
+    keywords: ["확인", "관찰", "기본 점검"],
+    description: "일반적인 확인이 필요한 주문 상황에 사용합니다.",
+  },
+  SURPRISED: {
+    label: "급변",
+    animationMode: "surprised",
+    keywords: ["급등", "급락", "갑작스러운 변화"],
+    description: "가격이나 거래량이 짧은 시간 안에 크게 변한 상황에 사용합니다.",
+  },
+  FAST_BURN: {
+    label: "반복",
+    animationMode: "fastBurn",
+    keywords: ["반복 주문", "빠른 주문", "짧은 시간"],
+    description: "짧은 시간 안에 주문이나 입력 수정이 반복되는 상황에 사용합니다.",
+  },
+  SCARED: {
+    label: "위험",
+    animationMode: "scared",
+    keywords: ["공포 매도", "큰 손실", "높은 위험"],
+    description: "급락이나 손실 구간에서 급하게 주문할 가능성이 큰 상황에 사용합니다.",
+  },
+  SAD: {
+    label: "손실",
+    animationMode: "sad",
+    keywords: ["손실", "평균 매수가", "후회"],
+    description: "평균 매수가 대비 손실이나 좋지 않은 체결 경험과 관련된 상황에 사용합니다.",
+  },
 };
 
 const CATEGORY_LABELS: Record<RuleFieldDefinition["category"], string> = {
@@ -74,10 +156,19 @@ const FIELD_ICON_LABELS: Partial<Record<RuleFieldDefinition["semanticType"], str
   BOOLEAN: "여부",
   FLAG_SET: "경보",
   ALLOCATION_PRESET: "버튼",
+  TIME_OF_DAY: "시간",
 };
 
 function getFieldIconLabel(field: RuleFieldDefinition) {
   return FIELD_ICON_LABELS[field.semanticType] || "조건";
+}
+
+function getOperatorLabel(field: RuleFieldDefinition, operator: RuleOperator) {
+  if (field.semanticType === "TIME_OF_DAY") {
+    return TIME_OPERATOR_LABELS[operator] ?? OPERATOR_LABELS[operator];
+  }
+
+  return OPERATOR_LABELS[operator];
 }
 
 function FieldSemanticIcon({ semanticType }: { semanticType: RuleFieldDefinition["semanticType"] }) {
@@ -129,6 +220,7 @@ function FieldSemanticIcon({ semanticType }: { semanticType: RuleFieldDefinition
         </svg>
       );
     case "DURATION_MS":
+    case "TIME_OF_DAY":
       return (
         <svg {...commonProps}>
           <circle cx="12" cy="13" r="7" />
@@ -277,18 +369,22 @@ function toDraft(rule: UserGuardrailRuleDTO): DraftRule {
   };
 }
 
-function serializeRule(draft: DraftRule) {
-  return {
+function serializeRule(
+  draft: DraftRule,
+  options: { includePriority?: boolean } = {},
+) {
+  const body = {
     name: draft.name,
     description: draft.description || null,
     isEnabled: draft.isEnabled,
-    priority: draft.priority,
     riskLevel: draft.riskLevel,
     visualMode: draft.visualMode,
     expression: draft.expression,
     warningTitle: draft.warningTitle,
     warningMessage: draft.warningMessage,
   };
+
+  return options.includePriority ? { ...body, priority: draft.priority } : body;
 }
 
 function cloneExpression<T extends RuleExpression>(expression: T): T {
@@ -422,6 +518,25 @@ function createConditionForField(
   };
 }
 
+class ApiRequestError extends Error {
+  code?: string;
+  status: number;
+  errors?: Array<{ path: string; message: string }>;
+
+  constructor(params: {
+    message: string;
+    code?: string;
+    status: number;
+    errors?: Array<{ path: string; message: string }>;
+  }) {
+    super(params.message);
+    this.name = "ApiRequestError";
+    this.code = params.code;
+    this.status = params.status;
+    this.errors = params.errors;
+  }
+}
+
 async function apiRequest<T>(path: string, options: RequestInit = {}) {
   const response = await fetch(path, {
     ...options,
@@ -434,14 +549,29 @@ async function apiRequest<T>(path: string, options: RequestInit = {}) {
   const data = await response.json().catch(() => null);
 
   if (!response.ok || data?.ok === false) {
-    throw new Error(data?.message || "요청을 처리하지 못했습니다.");
+    throw new ApiRequestError({
+      status: response.status,
+      code: data?.code,
+      message: data?.message || "요청을 처리하지 못했습니다.",
+      errors: data?.errors,
+    });
   }
 
   return data?.data as T;
 }
 
+function getApiErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
+}
+
 function formatStoredValue(field: RuleFieldDefinition, value: unknown) {
   if (value === null || value === undefined || value === "") return "";
+
+  if (field.input.storageUnit === "minutes" && typeof value === "number") {
+    const hour = Math.floor(value / 60);
+    const minute = value % 60;
+    return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  }
 
   if (field.input.storageUnit === "ratio" && typeof value === "number") {
     return String(Number((value * 100).toFixed(8)));
@@ -456,6 +586,12 @@ function formatStoredValue(field: RuleFieldDefinition, value: unknown) {
 
 function parseInputValue(field: RuleFieldDefinition, rawValue: string) {
   const trimmed = rawValue.trim().replaceAll(",", "");
+
+  if (field.input.storageUnit === "minutes") {
+    const match = trimmed.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+    if (!match) return NaN;
+    return Number(match[1]) * 60 + Number(match[2]);
+  }
 
   if (field.input.storageUnit === "ratio") {
     const numeric = Number(trimmed);
@@ -485,7 +621,9 @@ function validateLiteralValue(field: RuleFieldDefinition, value: unknown) {
 
   if (field.valueType === "NUMBER") {
     if (typeof value !== "number" || !Number.isFinite(value)) {
-      return `${field.label}에는 숫자만 입력할 수 있어요.`;
+      return field.input.storageUnit === "minutes"
+        ? `${field.label}을 24시간 형식으로 입력해 주세요.`
+        : `${field.label}에는 숫자만 입력할 수 있어요.`;
     }
     if (field.input.min !== undefined && value < field.input.min) {
       if (field.input.storageUnit === "ratio") {
@@ -506,6 +644,10 @@ function validateLiteralValue(field: RuleFieldDefinition, value: unknown) {
       return field.semanticType === "COUNT"
         ? "횟수에는 0 이상의 정수만 입력할 수 있어요."
         : "시간은 밀리초 단위 정수로 저장되어야 해요.";
+    }
+
+    if (field.semanticType === "TIME_OF_DAY" && !Number.isInteger(value)) {
+      return "시간은 00:00부터 23:59 사이로 입력해 주세요.";
     }
   }
 
@@ -714,6 +856,17 @@ function TypeAwareValueInput({
     );
   }
 
+  if (field.input.control === "TIME") {
+    return (
+      <input
+        type="time"
+        step={60}
+        value={formatStoredValue(field, literalValue)}
+        onChange={(event) => onChange(parseInputValue(field, event.target.value))}
+      />
+    );
+  }
+
   const unit =
     field.input.displayUnit && condition.operator !== "EQ"
       ? field.input.displayUnit
@@ -737,65 +890,6 @@ function TypeAwareValueInput({
       {unit ? <span>{unit}</span> : null}
     </div>
   );
-}
-
-function describeValue(field: RuleFieldDefinition, operand?: RuleOperand) {
-  if (!operand) return "";
-
-  if (operand.operandType === "FIELD") {
-    const rightField = SUPPORTED_FIELDS[operand.field] || SYSTEM_FIELDS[operand.field];
-    return rightField?.label || operand.field;
-  }
-
-  const value = operand.value;
-
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => {
-        const option = field.input.options?.find(
-          (candidate) => String(candidate.value) === String(item),
-        );
-        return option?.label || item;
-      })
-      .join(", ");
-  }
-
-  const option = field.input.options?.find(
-    (candidate) => String(candidate.value) === String(value),
-  );
-
-  if (option) return option.label;
-
-  if (field.input.storageUnit === "ratio" && typeof value === "number") {
-    return `${Number((value * 100).toFixed(4))}%`;
-  }
-
-  if (field.input.storageUnit === "ms" && typeof value === "number") {
-    return `${Number((value / 1000).toFixed(2))}초`;
-  }
-
-  return `${value ?? ""}${field.input.displayUnit || ""}`;
-}
-
-function buildConditionSentence(condition: RuleCondition) {
-  const field =
-    SUPPORTED_FIELDS[condition.leftField] ||
-    SYSTEM_FIELDS[condition.leftField] ||
-    SUPPORTED_FIELDS.side;
-
-  if (condition.operator === "IS_NULL") {
-    return `${field.label}에 확인 가능한 값이 없을 때`;
-  }
-
-  if (condition.operator === "IS_NOT_NULL") {
-    return `${field.label}에 확인 가능한 값이 있을 때`;
-  }
-
-  const operand = "rightOperand" in condition ? condition.rightOperand : undefined;
-  return `${field.label}이 ${OPERATOR_LABELS[condition.operator]} ${describeValue(
-    field,
-    operand,
-  )}일 때`;
 }
 
 function collectExpressionErrors(expression: RuleExpression): string[] {
@@ -857,13 +951,36 @@ function expressionUsesPrivateApi(expression: RuleExpression): boolean {
   return Boolean(leftField?.requiresPrivateApi || rightField?.requiresPrivateApi);
 }
 
-function buildExpressionPreview(expression: RuleExpression): string {
-  if (expression.nodeType === "CONDITION") {
-    return buildConditionSentence(expression);
-  }
+function RuleListCardContent({ rule }: { rule: UserGuardrailRuleDTO }) {
+  return (
+    <>
+      <strong>{rule.name}</strong>
+      <span>
+        {rule.isEnabled ? "사용 중" : "꺼짐"} ·{" "}
+        {RISK_LEVEL_META[rule.riskLevel].label}
+      </span>
+      {rule.requiresPrivateApi ? (
+        <em>개인 API 연결 후 전체 조건 판정 가능</em>
+      ) : null}
+      <small>{buildExpressionPreview(rule.expression)}</small>
+    </>
+  );
+}
 
-  const joiner = expression.operator === "OR" ? ",\n또는 " : ",\n그리고 ";
-  return expression.children.map(buildExpressionPreview).join(joiner);
+function ChevronUpIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="m6 15 6-6 6 6" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
 }
 
 function ConditionEditor({
@@ -1027,7 +1144,7 @@ function ConditionEditor({
         >
           {operators.map((operator) => (
             <option key={operator} value={operator}>
-              {OPERATOR_LABELS[operator]}
+              {getOperatorLabel(field, operator)}
             </option>
           ))}
         </select>
@@ -1187,12 +1304,28 @@ export default function MyPage({
   );
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
-  const [message, setMessage] = useState("");
+  const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
+  const [profileStatus, setProfileStatus] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
+  const [ruleStatus, setRuleStatus] = useState<StatusMessage | null>(null);
+  const [orderStatus, setOrderStatus] = useState<StatusMessage | null>(null);
+  const [isProfileSaving, setIsProfileSaving] = useState(false);
+  const [isRuleSaving, setIsRuleSaving] = useState(false);
+  const [isOrderSaving, setIsOrderSaving] = useState(false);
+  const [isOrderAnimating, setIsOrderAnimating] = useState(false);
   const [jsonText, setJsonText] = useState("");
+  const [visualPickerOpen, setVisualPickerOpen] = useState(false);
+  const [savedOrderRuleIds, setSavedOrderRuleIds] = useState(
+    initialRules.map((rule) => rule.ruleId),
+  );
   const [fieldPicker, setFieldPicker] = useState<{
     path: number[];
     target: "left" | "right";
   } | null>(null);
+  const rulesRef = useRef(rules);
+  const ruleItemRefs = useRef(new Map<string, HTMLElement>());
   const [fieldSearch, setFieldSearch] = useState("");
   const [fieldCategory, setFieldCategory] = useState<RuleFieldDefinition["category"] | "ALL">("ALL");
   const selectedRule = useMemo(
@@ -1218,17 +1351,53 @@ export default function MyPage({
     fieldPicker?.target === "right" && fieldPickerNode?.nodeType === "CONDITION"
       ? SUPPORTED_FIELDS[fieldPickerNode.leftField]?.comparisonGroup
       : null;
+  const wantsPasswordChange = Boolean(
+    currentPassword || newPassword || newPasswordConfirm,
+  );
+  const isProfileDirty =
+    displayName.trim() !== (profile.displayName ?? "") || wantsPasswordChange;
+  const isDraftDirty = useMemo(() => {
+    if (!draft.ruleId) return true;
+    const savedRule = rules.find((rule) => rule.ruleId === draft.ruleId);
+    if (!savedRule) return true;
+    return (
+      JSON.stringify(serializeRule(draft)) !==
+      JSON.stringify(serializeRule(toDraft(savedRule)))
+    );
+  }, [draft, rules]);
+  const orderDirty = useMemo(
+    () =>
+      rules.map((rule) => rule.ruleId).join("\u001f") !==
+      savedOrderRuleIds.join("\u001f"),
+    [rules, savedOrderRuleIds],
+  );
+
+  useEffect(() => {
+    rulesRef.current = rules;
+  }, [rules]);
+
+  useEffect(() => {
+    if (ruleStatus?.type !== "success") return;
+    const timeoutId = window.setTimeout(() => setRuleStatus(null), 4000);
+    return () => window.clearTimeout(timeoutId);
+  }, [ruleStatus]);
+
+  useEffect(() => {
+    if (orderStatus?.type !== "success") return;
+    const timeoutId = window.setTimeout(() => setOrderStatus(null), 4000);
+    return () => window.clearTimeout(timeoutId);
+  }, [orderStatus]);
 
   function selectRule(rule: UserGuardrailRuleDTO) {
     setSelectedRuleId(rule.ruleId);
     setDraft(toDraft(rule));
-    setMessage("");
+    setRuleStatus(null);
   }
 
   function createNewRule() {
     setSelectedRuleId(null);
     setDraft(createDraftRule(rules.length + 1));
-    setMessage("");
+    setRuleStatus(null);
   }
 
   function updateDraft(patch: Partial<DraftRule>) {
@@ -1309,18 +1478,211 @@ export default function MyPage({
     setFieldPicker(null);
   }
 
+  function withNormalizedPriorities(nextRules: UserGuardrailRuleDTO[]) {
+    return nextRules.map((rule, index) => ({
+      ...rule,
+      priority: index + 1,
+    }));
+  }
+
+  function setRuleItemRef(ruleId: string, node: HTMLElement | null) {
+    if (node) {
+      ruleItemRefs.current.set(ruleId, node);
+      return;
+    }
+    ruleItemRefs.current.delete(ruleId);
+  }
+
+  function syncDraftPriority(nextRules: UserGuardrailRuleDTO[]) {
+    setDraft((current) => {
+      if (!current.ruleId) return current;
+      const nextRule = nextRules.find((rule) => rule.ruleId === current.ruleId);
+      return nextRule ? { ...current, priority: nextRule.priority } : current;
+    });
+  }
+
+  function applyLocalRuleOrder(nextRules: UserGuardrailRuleDTO[]) {
+    const normalizedRules = withNormalizedPriorities(nextRules);
+    rulesRef.current = normalizedRules;
+    setRules(normalizedRules);
+    syncDraftPriority(normalizedRules);
+    setOrderStatus(null);
+  }
+
+  async function persistRulePriorities(nextRules: UserGuardrailRuleDTO[]) {
+    return apiRequest<UserGuardrailRuleDTO[]>("/api/me/guardrail-rules/reorder", {
+      method: "POST",
+      body: JSON.stringify({
+        ruleIds: nextRules.map((rule) => rule.ruleId),
+      }),
+    });
+  }
+
+  function prefersReducedMotion() {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  function captureRuleRects() {
+    return new Map(
+      Array.from(ruleItemRefs.current.entries()).map(([ruleId, node]) => [
+        ruleId,
+        node.getBoundingClientRect(),
+      ]),
+    );
+  }
+
+  function animateRuleSwap(previousRects: Map<string, DOMRect>) {
+    if (prefersReducedMotion()) {
+      setIsOrderAnimating(false);
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      const animations = Array.from(ruleItemRefs.current.entries()).flatMap(
+        ([ruleId, node]) => {
+          const previousRect = previousRects.get(ruleId);
+          if (!previousRect) return [];
+          const nextRect = node.getBoundingClientRect();
+          const deltaY = previousRect.top - nextRect.top;
+          if (Math.abs(deltaY) < 1) return [];
+
+          return [
+            node.animate(
+              [
+                { transform: `translate3d(0, ${deltaY}px, 0)` },
+                { transform: "translate3d(0, 0, 0)" },
+              ],
+              {
+                duration: 220,
+                easing: "cubic-bezier(0.2, 0, 0, 1)",
+              },
+            ),
+          ];
+        },
+      );
+
+      if (animations.length === 0) {
+        setIsOrderAnimating(false);
+        return;
+      }
+
+      void Promise.allSettled(animations.map((animation) => animation.finished))
+        .then(() => setIsOrderAnimating(false));
+    });
+  }
+
+  function moveRuleByOffset(ruleId: string, offset: number) {
+    if (isOrderSaving || isOrderAnimating) return;
+
+    const currentRules = rulesRef.current;
+    const currentIndex = currentRules.findIndex((rule) => rule.ruleId === ruleId);
+    const targetIndex = currentIndex + offset;
+    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= currentRules.length) {
+      return;
+    }
+
+    const nextRules = [...currentRules];
+    [nextRules[currentIndex], nextRules[targetIndex]] = [
+      nextRules[targetIndex],
+      nextRules[currentIndex],
+    ];
+    const previousRects = captureRuleRects();
+    setIsOrderAnimating(true);
+    applyLocalRuleOrder(nextRules);
+    animateRuleSwap(previousRects);
+  }
+
+  function restoreSavedRuleOrder() {
+    const currentRules = rulesRef.current;
+    const savedIndexById = new Map(
+      savedOrderRuleIds.map((ruleId, index) => [ruleId, index]),
+    );
+    const restoredRules = [...currentRules].sort((left, right) => {
+      const leftIndex = savedIndexById.get(left.ruleId) ?? Number.MAX_SAFE_INTEGER;
+      const rightIndex = savedIndexById.get(right.ruleId) ?? Number.MAX_SAFE_INTEGER;
+      return leftIndex - rightIndex || left.priority - right.priority;
+    });
+    applyLocalRuleOrder(restoredRules);
+    setOrderStatus(null);
+  }
+
+  async function saveRuleOrder() {
+    if (!orderDirty || isOrderSaving || isOrderAnimating) return;
+
+    const normalizedRules = withNormalizedPriorities(rulesRef.current);
+    setIsOrderSaving(true);
+    setOrderStatus(null);
+
+    try {
+      const savedRules = await persistRulePriorities(normalizedRules);
+      const nextRules = withNormalizedPriorities(savedRules);
+      applyLocalRuleOrder(nextRules);
+      setSavedOrderRuleIds(nextRules.map((rule) => rule.ruleId));
+      setOrderStatus({
+        type: "success",
+        message: "규칙 순서가 저장되었습니다.",
+      });
+    } catch (error) {
+      setOrderStatus({
+        type: "error",
+        message: getApiErrorMessage(error, "규칙 순서를 저장하지 못했습니다."),
+      });
+    } finally {
+      setIsOrderSaving(false);
+    }
+  }
+
+  function handleRuleCardClick(rule: UserGuardrailRuleDTO) {
+    selectRule(rule);
+  }
+
   async function saveProfile() {
-    setMessage("");
+    setProfileStatus(null);
     const body: Record<string, string> = {};
+    const changingPassword = wantsPasswordChange;
 
     if (displayName.trim() !== (profile.displayName ?? "")) {
       body.displayName = displayName.trim();
     }
 
-    if (currentPassword || newPassword) {
+    if (changingPassword) {
+      if (!currentPassword) {
+        setProfileStatus({
+          type: "error",
+          message: "현재 비밀번호를 입력해 주세요.",
+        });
+        return;
+      }
+
+      if (newPassword.length < 8) {
+        setProfileStatus({
+          type: "error",
+          message: "새 비밀번호는 8자 이상이어야 합니다.",
+        });
+        return;
+      }
+
+      if (newPassword !== newPasswordConfirm) {
+        setProfileStatus({
+          type: "error",
+          message: "새 비밀번호가 일치하지 않습니다.",
+        });
+        return;
+      }
+
       body.currentPassword = currentPassword;
       body.newPassword = newPassword;
     }
+
+    if (Object.keys(body).length === 0) {
+      setProfileStatus({
+        type: "error",
+        message: "변경된 계정 정보가 없습니다.",
+      });
+      return;
+    }
+
+    setIsProfileSaving(true);
 
     try {
       const nextProfile = await apiRequest<Profile>("/api/me/profile", {
@@ -1331,23 +1693,50 @@ export default function MyPage({
       setDisplayName(nextProfile.displayName ?? "");
       setCurrentPassword("");
       setNewPassword("");
-      setMessage("프로필을 저장했습니다.");
+      setNewPasswordConfirm("");
+      setProfileStatus({
+        type: "success",
+        message:
+          changingPassword && body.displayName
+            ? "계정 정보와 비밀번호가 저장되었습니다."
+            : changingPassword
+              ? "비밀번호가 변경되었습니다."
+              : "계정 정보가 저장되었습니다.",
+      });
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "프로필 저장 실패");
+      const message =
+        changingPassword &&
+        error instanceof ApiRequestError &&
+        (error.status === 401 ||
+          error.message.includes("비밀번호가 올바르지 않습니다") ||
+          error.message.includes("이메일 또는 비밀번호가 올바르지 않습니다"))
+          ? "현재 비밀번호가 올바르지 않습니다."
+          : getApiErrorMessage(error, "계정 정보를 저장하지 못했습니다.");
+      setProfileStatus({
+        type: "error",
+        message,
+      });
+    } finally {
+      setIsProfileSaving(false);
     }
   }
 
   async function saveRule() {
-    setMessage("");
+    setRuleStatus(null);
 
     try {
       if (expressionErrors.length > 0) {
-        setMessage(expressionErrors[0]);
+        setRuleStatus({
+          type: "error",
+          message: expressionErrors[0],
+        });
         return;
       }
 
-      const body = serializeRule(draft);
-      const savedRule = draft.ruleId
+      const isExistingRule = Boolean(draft.ruleId);
+      const body = serializeRule(draft, { includePriority: !isExistingRule });
+      setIsRuleSaving(true);
+      const savedRule = isExistingRule
         ? await apiRequest<UserGuardrailRuleDTO>(
             `/api/me/guardrail-rules/${draft.ruleId}`,
             {
@@ -1360,20 +1749,45 @@ export default function MyPage({
             body: JSON.stringify(body),
           });
 
-      setRules((current) => {
-        const exists = current.some((rule) => rule.ruleId === savedRule.ruleId);
-        const next = exists
-          ? current.map((rule) =>
-              rule.ruleId === savedRule.ruleId ? savedRule : rule,
+      const currentRules = rulesRef.current;
+      const existingRule = currentRules.find(
+        (rule) => rule.ruleId === savedRule.ruleId,
+      );
+      const localSavedRule = {
+        ...savedRule,
+        priority: existingRule?.priority ?? currentRules.length + 1,
+      };
+      const nextRules = withNormalizedPriorities(
+        existingRule
+          ? currentRules.map((rule) =>
+              rule.ruleId === savedRule.ruleId ? localSavedRule : rule,
             )
-          : [...current, savedRule];
-        return [...next].sort((left, right) => left.priority - right.priority);
-      });
+          : [...currentRules, localSavedRule],
+      );
+
+      rulesRef.current = nextRules;
+      setRules(nextRules);
+      if (!existingRule) {
+        setSavedOrderRuleIds((current) => [...current, savedRule.ruleId]);
+      }
       setSelectedRuleId(savedRule.ruleId);
-      setDraft(toDraft(savedRule));
-      setMessage("규칙을 저장했습니다.");
+      setDraft(
+        toDraft(
+          nextRules.find((rule) => rule.ruleId === savedRule.ruleId) ??
+            localSavedRule,
+        ),
+      );
+      setRuleStatus({
+        type: "success",
+        message: "규칙이 저장되었습니다.",
+      });
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "규칙 저장 실패");
+      setRuleStatus({
+        type: "error",
+        message: getApiErrorMessage(error, "규칙 저장 실패"),
+      });
+    } finally {
+      setIsRuleSaving(false);
     }
   }
 
@@ -1385,13 +1799,26 @@ export default function MyPage({
       await apiRequest<null>(`/api/me/guardrail-rules/${draft.ruleId}`, {
         method: "DELETE",
       });
-      const nextRules = rules.filter((rule) => rule.ruleId !== draft.ruleId);
+      const deletedRuleId = draft.ruleId;
+      const nextRules = withNormalizedPriorities(
+        rulesRef.current.filter((rule) => rule.ruleId !== deletedRuleId),
+      );
+      rulesRef.current = nextRules;
       setRules(nextRules);
+      setSavedOrderRuleIds((current) =>
+        current.filter((ruleId) => ruleId !== deletedRuleId),
+      );
       setSelectedRuleId(nextRules[0]?.ruleId ?? null);
       setDraft(nextRules[0] ? toDraft(nextRules[0]) : createDraftRule(1));
-      setMessage("규칙을 삭제했습니다.");
-    } catch {
-      setMessage("규칙 삭제에 실패했습니다.");
+      setRuleStatus({
+        type: "success",
+        message: "규칙을 삭제했습니다.",
+      });
+    } catch (error) {
+      setRuleStatus({
+        type: "error",
+        message: getApiErrorMessage(error, "규칙 삭제에 실패했습니다."),
+      });
     }
   }
 
@@ -1416,9 +1843,15 @@ export default function MyPage({
         warningMessage: parsed.warningMessage ?? current.warningMessage,
         expression,
       }));
-      setMessage("JSON을 편집기에 불러왔습니다.");
+      setRuleStatus({
+        type: "success",
+        message: "JSON을 편집기에 불러왔습니다.",
+      });
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "JSON import 실패");
+      setRuleStatus({
+        type: "error",
+        message: getApiErrorMessage(error, "JSON import 실패"),
+      });
     }
   }
 
@@ -1478,9 +1911,37 @@ export default function MyPage({
                 onChange={(event) => setNewPassword(event.target.value)}
               />
             </label>
-            <button type="button" onClick={saveProfile}>
-              프로필 저장
+            <label>
+              <span>새 비밀번호 확인</span>
+              <input
+                type="password"
+                value={newPasswordConfirm}
+                autoComplete="new-password"
+                onChange={(event) => setNewPasswordConfirm(event.target.value)}
+              />
+            </label>
+            <button
+              type="button"
+              onClick={saveProfile}
+              disabled={!isProfileDirty || isProfileSaving}
+            >
+              {isProfileSaving ? "저장 중" : "저장"}
             </button>
+            {profileStatus ? (
+              <p
+                className={`${styles.inlineStatus} ${
+                  profileStatus.type === "success"
+                    ? styles.inlineStatusSuccess
+                    : styles.inlineStatusError
+                }`}
+                role={profileStatus.type === "error" ? "alert" : "status"}
+              >
+                <span aria-hidden="true">
+                  {profileStatus.type === "success" ? "✓" : "!"}
+                </span>
+                {profileStatus.message}
+              </p>
+            ) : null}
           </div>
         </section>
 
@@ -1502,27 +1963,94 @@ export default function MyPage({
               {rules.length === 0 ? (
                 <p>아직 저장된 규칙이 없습니다.</p>
               ) : (
-                rules.map((rule) => (
-                  <button
+                rules.map((rule, index) => {
+                  const isFirst = index === 0;
+                  const isLast = index === rules.length - 1;
+                  const disableMoveButtons = isOrderSaving || isOrderAnimating;
+
+                  return (
+                  <article
                     key={rule.ruleId}
-                    type="button"
-                    className={
+                    ref={(node) => setRuleItemRef(rule.ruleId, node)}
+                    aria-current={
+                      selectedRule?.ruleId === rule.ruleId ? "true" : undefined
+                    }
+                    className={`${styles.ruleListItem} ${
                       selectedRule?.ruleId === rule.ruleId
                         ? styles.ruleListItemActive
                         : ""
-                    }
-                    onClick={() => selectRule(rule)}
+                    } ${!rule.isEnabled ? styles.ruleListItemDisabled : ""}`}
                   >
-                    <strong>{rule.name}</strong>
-                    <span>
-                      {rule.isEnabled ? "사용 중" : "꺼짐"} ·{" "}
-                      {rule.requiresPrivateApi
-                        ? "개인 API 연결 후 전체 조건 판정 가능"
-                        : rule.riskLevel}
+                    <button
+                      type="button"
+                      className={styles.ruleListButton}
+                      onClick={() => handleRuleCardClick(rule)}
+                    >
+                      <RuleListCardContent rule={rule} />
+                    </button>
+                    <span className={styles.ruleMoveActions}>
+                      <button
+                        type="button"
+                        aria-label="규칙 위로 이동"
+                        disabled={isFirst || disableMoveButtons}
+                        onClick={() => moveRuleByOffset(rule.ruleId, -1)}
+                      >
+                        <ChevronUpIcon />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="규칙 아래로 이동"
+                        disabled={isLast || disableMoveButtons}
+                        onClick={() => moveRuleByOffset(rule.ruleId, 1)}
+                      >
+                        <ChevronDownIcon />
+                      </button>
                     </span>
-                  </button>
-                ))
+                  </article>
+                  );
+                })
               )}
+              {orderDirty ? (
+                <div className={styles.ruleOrderPrompt}>
+                  <strong>규칙 순서가 변경되었습니다.</strong>
+                  <p>
+                    {isOrderSaving
+                      ? "순서를 저장하는 중입니다."
+                      : "이 순서를 저장할까요?"}
+                  </p>
+                  <div className={styles.ruleOrderActions}>
+                    <button
+                      type="button"
+                      className={styles.ruleOrderPrimaryButton}
+                      onClick={saveRuleOrder}
+                      disabled={isOrderSaving || isOrderAnimating}
+                    >
+                      {isOrderSaving ? "저장 중" : "순서 저장"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={restoreSavedRuleOrder}
+                      disabled={isOrderSaving || isOrderAnimating}
+                    >
+                      변경 취소
+                    </button>
+                  </div>
+                </div>
+              ) : orderStatus ? (
+                <p
+                  className={`${styles.inlineStatus} ${
+                    orderStatus.type === "success"
+                      ? styles.inlineStatusSuccess
+                      : styles.inlineStatusError
+                  } ${styles.ruleOrderStatus}`}
+                  role={orderStatus.type === "error" ? "alert" : "status"}
+                >
+                  <span aria-hidden="true">
+                    {orderStatus.type === "success" ? "✓" : "!"}
+                  </span>
+                  {orderStatus.message}
+                </p>
+              ) : null}
             </aside>
 
             <div className={styles.ruleEditor}>
@@ -1535,51 +2063,6 @@ export default function MyPage({
                   />
                 </label>
                 <label>
-                  <span>우선순위</span>
-                  <input
-                    type="number"
-                    min={0}
-                    value={draft.priority}
-                    onChange={(event) =>
-                      updateDraft({ priority: Number(event.target.value) || 0 })
-                    }
-                  />
-                </label>
-                <label>
-                  <span>위험도</span>
-                  <select
-                    value={draft.riskLevel}
-                    onChange={(event) =>
-                      updateDraft({
-                        riskLevel: event.target.value as DraftRule["riskLevel"],
-                      })
-                    }
-                  >
-                    <option value="LOW">LOW</option>
-                    <option value="MEDIUM">MEDIUM</option>
-                    <option value="HIGH">HIGH</option>
-                  </select>
-                </label>
-                <label>
-                  <span>불꽃 모드</span>
-                  <select
-                    value={draft.visualMode}
-                    onChange={(event) =>
-                      updateDraft({
-                        visualMode: event.target.value as DraftRule["visualMode"],
-                      })
-                    }
-                  >
-                    {["CURIOUS", "SURPRISED", "FAST_BURN", "SCARED", "SAD"].map(
-                      (mode) => (
-                        <option key={mode} value={mode}>
-                          {mode}
-                        </option>
-                      ),
-                    )}
-                  </select>
-                </label>
-                <label>
                   <span>규칙 설명</span>
                   <input
                     value={draft.description ?? ""}
@@ -1588,16 +2071,64 @@ export default function MyPage({
                     }
                   />
                 </label>
-                <label className={styles.ruleToggle}>
-                  <input
-                    type="checkbox"
-                    checked={draft.isEnabled}
-                    onChange={(event) =>
-                      updateDraft({ isEnabled: event.target.checked })
-                    }
-                  />
+                <div className={styles.ruleMetaSection}>
+                  <span>위험도</span>
+                  <div className={styles.riskChoiceGrid}>
+                    {(Object.keys(RISK_LEVEL_META) as RiskLevel[]).map((riskLevel) => (
+                      <button
+                        key={riskLevel}
+                        type="button"
+                        className={
+                          draft.riskLevel === riskLevel ? styles.riskChoiceSelected : ""
+                        }
+                        data-risk-level={riskLevel}
+                        onClick={() => updateDraft({ riskLevel })}
+                      >
+                        <strong>{RISK_LEVEL_META[riskLevel].label}</strong>
+                        <small>{RISK_LEVEL_META[riskLevel].description}</small>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className={styles.ruleMetaSection}>
+                  <span>불꽃 모드</span>
+                  <button
+                    type="button"
+                    className={styles.visualModeSummary}
+                    onClick={() => setVisualPickerOpen(true)}
+                  >
+                    <span className={styles.visualModePreview} aria-hidden="true">
+                      <FlameMascot
+                        mode={VISUAL_MODE_META[draft.visualMode].animationMode}
+                        size="100%"
+                        speed={draft.visualMode === "FAST_BURN" ? "fast" : "slow"}
+                      />
+                    </span>
+                    <span className={styles.visualModeSummaryCopy}>
+                      <strong>{VISUAL_MODE_META[draft.visualMode].label}</strong>
+                      <span className={styles.visualModeSummaryKeywords}>
+                        {VISUAL_MODE_META[draft.visualMode].keywords.join(" · ")}
+                      </span>
+                      <small>{VISUAL_MODE_META[draft.visualMode].description}</small>
+                    </span>
+                  </button>
+                </div>
+                <div className={styles.ruleMetaSection}>
                   <span>규칙 활성화</span>
-                </label>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={draft.isEnabled}
+                    aria-label="규칙 활성화 상태"
+                    className={`${styles.ruleSwitch} ${
+                      draft.isEnabled ? styles.ruleSwitchOn : ""
+                    }`}
+                    onClick={() => updateDraft({ isEnabled: !draft.isEnabled })}
+                  >
+                    <span aria-hidden="true" />
+                    <strong>{draft.isEnabled ? "사용 중" : "사용 안 함"}</strong>
+                  </button>
+                </div>
               </div>
 
               <div className={styles.warningEditor}>
@@ -1638,7 +2169,7 @@ export default function MyPage({
 
               <div className={styles.naturalPreview}>
                 <strong>규칙 미리보기</strong>
-                <p>{buildExpressionPreview(draft.expression)} 알려줘.</p>
+                <p>{buildExpressionPreview(draft.expression)}</p>
                 {usesPrivateApi ? (
                   <small>
                     이 규칙은 내 평균 매수가 또는 실제 주문 내역을 사용해요.
@@ -1665,7 +2196,13 @@ export default function MyPage({
                   <button
                     type="button"
                     onClick={() =>
-                      setJsonText(JSON.stringify(serializeRule(draft), null, 2))
+                      setJsonText(
+                        JSON.stringify(
+                          serializeRule(draft, { includePriority: true }),
+                          null,
+                          2,
+                        ),
+                      )
                     }
                   >
                     JSON export
@@ -1673,16 +2210,43 @@ export default function MyPage({
                 </div>
               </div>
 
+              {ruleStatus ? (
+                <div className={styles.ruleEditorStatusWrap}>
+                  <p
+                    className={`${styles.inlineStatus} ${
+                      ruleStatus.type === "success"
+                        ? styles.inlineStatusSuccess
+                        : styles.inlineStatusError
+                    } ${styles.ruleEditorStatus}`}
+                    role={ruleStatus.type === "error" ? "alert" : "status"}
+                  >
+                    <span aria-hidden="true">
+                      {ruleStatus.type === "success" ? "✓" : "!"}
+                    </span>
+                    {ruleStatus.message}
+                  </p>
+                </div>
+              ) : null}
+
               <div className={styles.ruleEditorActions}>
                 <button
                   type="button"
                   onClick={saveRule}
-                  disabled={expressionErrors.length > 0}
+                  disabled={
+                    expressionErrors.length > 0 ||
+                    isRuleSaving ||
+                    !isDraftDirty
+                  }
                 >
-                  규칙 저장
+                  {isRuleSaving ? "저장 중" : "규칙 저장"}
                 </button>
                 {draft.ruleId ? (
-                  <button type="button" onClick={deleteRule}>
+                  <button
+                    type="button"
+                    className={styles.ruleDeleteButton}
+                    onClick={deleteRule}
+                    disabled={isRuleSaving}
+                  >
                     삭제
                   </button>
                 ) : null}
@@ -1690,13 +2254,58 @@ export default function MyPage({
             </div>
           </div>
         </section>
-
-        {message ? (
-          <p className={styles.myPageMessage} role="status">
-            {message}
-          </p>
-        ) : null}
       </div>
+
+      {visualPickerOpen ? (
+        <div className={styles.fieldPickerBackdrop} role="dialog" aria-modal="true">
+          <div className={`${styles.fieldPicker} ${styles.visualModePicker}`}>
+            <header>
+              <div>
+                <span>불꽃 모드</span>
+                <strong>어떤 불꽃으로 알려줄까요?</strong>
+                <p>확장 프로그램에서 실제로 사용하는 애니메이션과 표시명을 기준으로 선택합니다.</p>
+              </div>
+              <button type="button" onClick={() => setVisualPickerOpen(false)}>
+                닫기
+              </button>
+            </header>
+            <div className={styles.visualModeGrid}>
+              {(Object.keys(VISUAL_MODE_META) as VisualMode[]).map((visualMode) => {
+                const meta = VISUAL_MODE_META[visualMode];
+                const isSelected = draft.visualMode === visualMode;
+
+                return (
+                  <button
+                    key={visualMode}
+                    type="button"
+                    className={isSelected ? styles.visualModeCardSelected : ""}
+                    onClick={() => {
+                      updateDraft({ visualMode });
+                      setVisualPickerOpen(false);
+                    }}
+                  >
+                    <span className={styles.visualModeCardFlame} aria-hidden="true">
+                      <FlameMascot
+                        mode={meta.animationMode}
+                        size="100%"
+                        speed={visualMode === "FAST_BURN" ? "fast" : "slow"}
+                      />
+                    </span>
+                    <span className={styles.visualModeCardCopy}>
+                      <strong>
+                        {meta.label}
+                        {isSelected ? <span aria-hidden="true"> ✓</span> : null}
+                      </strong>
+                      <span>{meta.keywords.join(" · ")}</span>
+                      <p>{meta.description}</p>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {fieldPicker ? (
         <div className={styles.fieldPickerBackdrop} role="dialog" aria-modal="true">

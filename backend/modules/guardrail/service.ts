@@ -11,10 +11,12 @@ import {
   getUserProfile,
   listUserRules,
   patchOwnedRule,
+  reorderOwnedRules,
 } from "./repository";
 import type {
   UserGuardrailRuleCreateRequest,
   UserGuardrailRulePatchRequest,
+  UserGuardrailRuleReorderRequest,
 } from "./types";
 
 async function getRequiredUserProfile(userId: string) {
@@ -157,6 +159,28 @@ export async function patchGuardrailRule(params: {
   }
 
   return updated;
+}
+
+export async function reorderGuardrailRules(params: {
+  userId: string;
+  input: UserGuardrailRuleReorderRequest;
+}) {
+  await assertConsentReady(params.userId);
+
+  const reordered = await reorderOwnedRules({
+    userId: params.userId,
+    ruleIds: params.input.ruleIds,
+  });
+
+  if (!reordered) {
+    throw new ApiError(
+      400,
+      "INVALID_RULE_ORDER",
+      "저장할 규칙 순서가 현재 규칙 목록과 일치하지 않습니다.",
+    );
+  }
+
+  return reordered;
 }
 
 export async function deleteGuardrailRule(params: {

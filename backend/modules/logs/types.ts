@@ -1,5 +1,13 @@
 // backend/modules/logs/types.ts
 
+import type {
+  RiskLevel,
+  RuleExpression,
+  RuleOperator,
+  UserGuardrailRuleDTO,
+  VisualMode,
+} from "@/backend/modules/guardrail/types";
+
 export type SnapshotTrigger = "GUARDRAIL_SHOWN" | "ORDER_INTENT_CLICK";
 
 export type OrderSide = "BUY" | "SELL" | "UNKNOWN";
@@ -42,6 +50,41 @@ export type AllocationPresetPercent =
   | "CUSTOM"
   | null;
 
+export type RuleEvaluationDataCategory =
+  | "ORDER"
+  | "BEHAVIOR"
+  | "MARKET"
+  | "ACCOUNT";
+
+export interface RuleEvaluationConditionSnapshot {
+  leftField: string;
+  operator: RuleOperator;
+  expectedValue: unknown;
+  actualValue: unknown;
+  matched: boolean;
+  dataCategory: RuleEvaluationDataCategory;
+}
+
+export interface GuardrailRuleSnapshot {
+  ruleId: string;
+  name: string;
+  description?: string | null;
+  priority?: number;
+  visualMode: VisualMode;
+  riskLevel: RiskLevel;
+  expression: RuleExpression;
+  warningTitle?: string;
+  warningMessage?: string;
+}
+
+export interface RuleEvaluationSnapshot
+  extends Omit<GuardrailRuleSnapshot, "name"> {
+  name?: string;
+  ruleVersion?: string;
+  ruleName: string;
+  conditions: RuleEvaluationConditionSnapshot[];
+}
+
 export interface OrderContextSnapshotDTO {
   snapshotId: string;
   userId: string;
@@ -49,6 +92,8 @@ export interface OrderContextSnapshotDTO {
   attemptId: string | null;
   snapshotTrigger: SnapshotTrigger;
   capturedAt: string;
+  orderTime: string | null;
+  orderTimeMinutes: number | null;
 
   market: string;
   side: OrderSide;
@@ -85,6 +130,9 @@ export interface OrderContextSnapshotDTO {
   matchedRuleIdsAtSnapshot: string[];
   primaryShownRuleId: string | null;
   shownRuleIds: string[];
+  ruleSnapshot: GuardrailRuleSnapshot | null;
+  ruleSnapshots: GuardrailRuleSnapshot[];
+  ruleEvaluationSnapshots: RuleEvaluationSnapshot[];
 
   tradePriceAtSnapshot: string | null;
   shortTermReturn5m: number | null;
@@ -164,6 +212,68 @@ export interface OrderOutcomePatchDTO {
   paidFee: string | null;
   remainingVolume: string | null;
   outcomeObservedAt: string;
+}
+
+export type RuleHistorySource =
+  | "EVALUATION_SNAPSHOT"
+  | "MISSING_RULE";
+
+export interface RuleConditionResultDTO {
+  leftField: string;
+  fieldLabel: string;
+  operator: RuleOperator;
+  operatorLabel: string;
+  expectedValue: unknown;
+  actualValue: unknown;
+  matched: boolean | null;
+  dataCategory: RuleEvaluationDataCategory;
+  dataCategoryLabel: string;
+  unavailableReason: string | null;
+}
+
+export type EnrichedRuleData = Pick<
+  UserGuardrailRuleDTO,
+  | "ruleId"
+  | "name"
+  | "description"
+  | "riskLevel"
+  | "visualMode"
+  | "warningTitle"
+  | "warningMessage"
+  | "expression"
+  | "schemaVersion"
+  | "updatedAt"
+> & {
+  ruleVersion?: string;
+  historySource: RuleHistorySource;
+  historyNotice: string;
+  conditionResults: RuleConditionResultDTO[];
+};
+
+export type GuardrailTimelineItem =
+  | {
+      type: "WARNING";
+      id: string;
+      occurredAt: string;
+      snapshot: OrderContextSnapshotDTO;
+      rule?: EnrichedRuleData;
+      shownRules: EnrichedRuleData[];
+      reaction?: GuardrailReactionDTO | null;
+    }
+  | {
+      type: "FEEDBACK";
+      id: string;
+      occurredAt: string;
+      feedback: TradeFeedbackDTO;
+      relatedSnapshot?: OrderContextSnapshotDTO | null;
+    };
+
+export interface GuardrailTimelineResponse {
+  items: GuardrailTimelineItem[];
+  nextCursor: string | null;
+  totalCount: number;
+  warningCount: number;
+  feedbackCount: number;
 }
 
 export type LogListParams = {

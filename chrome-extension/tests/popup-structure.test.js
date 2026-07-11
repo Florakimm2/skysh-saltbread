@@ -62,6 +62,13 @@ test("Upbit 연동 카드는 접근 가능한 접힘 상태로 시작한다", ()
     popupHtml,
     /id="api-key-details" class="integration-card__details" hidden/,
   );
+  assert.match(
+    popupHtml,
+    /id="api-guide-link"[\s\S]*?target="_blank"[\s\S]*?rel="noopener noreferrer"[\s\S]*?연결 가이드 보기/,
+  );
+  assert.match(popupScript, /const UPBIT_API_GUIDE_URL =/);
+  assert.match(popupScript, /apiGuideLink\.addEventListener\("click"/);
+  assert.match(popupScript, /apiGuideLink\.addEventListener\("keydown"/);
 });
 
 test("사이드바 표시 조건은 거래 화면과 온보딩 완료를 요구한다", () => {

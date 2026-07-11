@@ -144,6 +144,53 @@
   stroke-width: 1.7;
 }
 
+.investmentNotice {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 14px;
+  width: min(1180px, 100%);
+  margin: -6px auto 20px;
+  padding: 15px 18px;
+  border: 1px solid #ffd1bd;
+  border-radius: 14px;
+  background: #fff7f1;
+  color: #68463b;
+}
+
+.investmentNotice > span {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 12px;
+  background: #ffede4;
+  color: var(--orange);
+}
+
+.investmentNotice svg {
+  width: 21px;
+  height: 21px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.investmentNotice p {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.65;
+}
+
+.investmentNotice strong {
+  display: block;
+  margin-bottom: 3px;
+  color: #43302a;
+  font-size: 13px;
+}
+
 .consentGrid {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(330px, 0.82fr);
@@ -323,6 +370,30 @@
   color: #687078;
   font-size: 11px;
   line-height: 1.65;
+}
+
+.consentDetail section + section {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #f2ded4;
+}
+
+.consentDetail strong {
+  display: block;
+  margin-bottom: 6px;
+  color: #51413b;
+  font-size: 11px;
+}
+
+.consentDetail ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 16px;
+}
+
+.consentDetail li {
+  padding-left: 2px;
 }
 
 .privacyPanel {
@@ -1222,6 +1293,16 @@
 
   .privacyPanel {
     display: block;
+  }
+
+  .investmentNotice {
+    grid-template-columns: 1fr;
+    margin-top: -18px;
+  }
+
+  .investmentNotice > span {
+    width: 36px;
+    height: 36px;
   }
 
   .privacyVisual {

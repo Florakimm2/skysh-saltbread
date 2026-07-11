@@ -50,6 +50,10 @@ export const patchUserGuardrailRuleSchema = z
     message: "수정할 필드가 최소 1개 이상 필요합니다.",
   });
 
+export const reorderUserGuardrailRulesSchema = z.object({
+  ruleIds: z.array(z.string().min(1)).min(1),
+});
+
 export const completeOnboardingSchema = z.object({
   personalDataConsentVersion: z.string().min(1),
   initialRules: z.array(createUserGuardrailRuleSchema).default([]),
@@ -61,6 +65,10 @@ export type CreateUserGuardrailRuleInput = z.infer<
 
 export type PatchUserGuardrailRuleInput = z.infer<
   typeof patchUserGuardrailRuleSchema
+>;
+
+export type ReorderUserGuardrailRulesInput = z.infer<
+  typeof reorderUserGuardrailRulesSchema
 >;
 
 export type CompleteOnboardingInput = z.infer<typeof completeOnboardingSchema>;

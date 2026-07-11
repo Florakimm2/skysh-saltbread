@@ -33,6 +33,8 @@ export interface DetectEmotionTradeRequest {
     order_amount: number;
     realized_loss_pct_1h: number | null;
     order_request_time: string;
+    order_time?: string | null;
+    order_time_minutes?: number | null;
     order_cancel_time: string | null;
   };
 
@@ -54,6 +56,8 @@ export interface DetectEmotionTradeRequest {
     order_amount: number | null;
     realized_loss_pct_1h: number | null;
     order_request_time: string;
+    order_time?: string | null;
+    order_time_minutes?: number | null;
     order_cancel_time: string | null;
   }>;
 }

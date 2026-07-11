@@ -1,22 +1,22 @@
-import type { BehaviorSessionRecord } from "@/backend/modules/behavior/types";
+import type { GuardrailTimelineResponse } from "@/backend/modules/logs/types";
 import PageHeader from "./page-header";
-import { EmptyBoxIcon, TrendIcon } from "./icons";
-import TrendRecordList from "./trend-record-list";
+import { TrendIcon } from "./icons";
+import GuardrailTimeline from "./guardrail-history/GuardrailTimeline";
 import styles from "./dashboard.module.css";
 
 export default function PastTrendsPage({
-  trends,
+  timeline,
   isDataUnavailable = false,
 }: {
-  trends: BehaviorSessionRecord[];
+  timeline: GuardrailTimelineResponse | null;
   isDataUnavailable?: boolean;
 }) {
   return (
     <>
       <PageHeader
         eyebrow="History"
-        title="행동 기록"
-        description="Extension에서 수집한 주문 행동을 세션별로 확인하세요."
+        title="가드레일 기록"
+        description="거래 중 발생한 경고와 거래 후 남긴 피드백을 시간순으로 확인하세요."
       />
 
       <section
@@ -29,33 +29,23 @@ export default function PastTrendsPage({
               <TrendIcon />
             </span>
             <h2 className={styles.panelTitle} id="history-panel-title">
-              전체 행동 기록
+              전체 가드레일 기록
             </h2>
           </div>
-          <span className={styles.panelMeta}>총 {trends.length}건</span>
+          <span className={styles.panelMeta}>
+            총 {timeline ? timeline.warningCount + timeline.feedbackCount : 0}건
+          </span>
         </header>
 
-        {trends.length > 0 ? (
-          <TrendRecordList records={trends} scrollable />
-        ) : (
-          <div className={styles.historyEmpty}>
-            <div className={styles.emptyStateInner}>
-              <span className={styles.emptyGlyph}>
-                <EmptyBoxIcon />
-              </span>
-              <strong>
-                {isDataUnavailable
-                  ? "행동 기록을 불러오지 못했습니다"
-                  : "아직 쌓인 행동 기록이 없습니다"}
-              </strong>
-              <p>
-                {isDataUnavailable
-                  ? "데이터 사용량이 복구된 뒤 다시 확인해 주세요."
-                  : "주문 화면에서 행동이 수집되면 여기에 표시됩니다."}
-              </p>
-            </div>
-          </div>
-        )}
+        <div className={styles.historyTimelineBody}>
+          <GuardrailTimeline
+            enablePagination
+            initialData={isDataUnavailable ? null : timeline}
+            limit={20}
+            showFilters
+            showStats
+          />
+        </div>
       </section>
     </>
   );

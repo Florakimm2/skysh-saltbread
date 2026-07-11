@@ -31,6 +31,80 @@ const nullableNumber = z.number().finite().nullable();
 const nonNegativeInt = z.number().int().min(0);
 
 const ratioNullable = z.number().finite().nullable();
+const orderTimeSchema = z
+  .string()
+  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, {
+    message: "orderTime은 HH:mm 형식이어야 합니다.",
+  })
+  .nullable();
+const orderTimeMinutesSchema = z.number().int().min(0).max(1439).nullable();
+
+function getOrderTimeParts(value?: string | null) {
+  if (!value) {
+    return {
+      orderTime: null,
+      orderTimeMinutes: null,
+    };
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return {
+      orderTime: null,
+      orderTimeMinutes: null,
+    };
+  }
+
+  const kst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+  const hour = kst.getUTCHours();
+  const minute = kst.getUTCMinutes();
+
+  return {
+    orderTime: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`,
+    orderTimeMinutes: hour * 60 + minute,
+  };
+}
+
+const ruleEvaluationConditionSnapshotSchema = z.object({
+  leftField: z.string().min(1),
+  operator: z.enum([
+    "IS_NULL",
+    "IS_NOT_NULL",
+    "EQ",
+    "NEQ",
+    "GT",
+    "GTE",
+    "LT",
+    "LTE",
+    "IN",
+    "NOT_IN",
+  ]),
+  expectedValue: z.unknown(),
+  actualValue: z.unknown(),
+  matched: z.boolean(),
+  dataCategory: z.enum(["ORDER", "BEHAVIOR", "MARKET", "ACCOUNT"]),
+});
+
+const guardrailRuleSnapshotSchema = z.object({
+  ruleId: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string().nullable().optional(),
+  priority: z.number().int().min(0).optional(),
+  visualMode: z.enum(["CURIOUS", "SURPRISED", "FAST_BURN", "SCARED", "SAD"]),
+  riskLevel: z.enum(["LOW", "MEDIUM", "HIGH"]),
+  expression: z.unknown(),
+  warningTitle: z.string().min(1).optional(),
+  warningMessage: z.string().min(1).optional(),
+});
+
+const ruleEvaluationSnapshotSchema = guardrailRuleSnapshotSchema
+  .omit({ name: true })
+  .extend({
+  name: z.string().min(1).optional(),
+  ruleVersion: z.string().min(1).optional(),
+  ruleName: z.string().min(1),
+  conditions: z.array(ruleEvaluationConditionSnapshotSchema),
+});
 
 export const snapshotTriggerSchema = z.enum([
   "GUARDRAIL_SHOWN",
@@ -65,6 +139,8 @@ const orderContextSnapshotBaseSchema = z.object({
   attemptId: z.string().min(1).nullable().optional(),
   snapshotTrigger: snapshotTriggerSchema,
   capturedAt: dateTimeString.optional(),
+  orderTime: orderTimeSchema.optional(),
+  orderTimeMinutes: orderTimeMinutesSchema.optional(),
 
   market: marketSchema,
   side: orderSideSchema,
@@ -103,6 +179,9 @@ const orderContextSnapshotBaseSchema = z.object({
   matchedRuleIdsAtSnapshot: z.array(z.string()).optional(),
   primaryShownRuleId: z.string().nullable().optional(),
   shownRuleIds: z.array(z.string()).optional(),
+  ruleSnapshot: guardrailRuleSnapshotSchema.nullable().optional(),
+  ruleSnapshots: z.array(guardrailRuleSnapshotSchema).optional(),
+  ruleEvaluationSnapshots: z.array(ruleEvaluationSnapshotSchema).optional(),
 
   tradePriceAtSnapshot: nullableDecimalString.optional(),
   shortTermReturn5m: ratioNullable.optional(),
@@ -150,6 +229,12 @@ export const createOrderContextSnapshotSchema = orderContextSnapshotBaseSchema
 
     attemptId: data.attemptId ?? null,
     entryPoint: data.entryPoint ?? "UNKNOWN",
+    orderTime:
+      data.orderTime ??
+      getOrderTimeParts(data.capturedAt).orderTime,
+    orderTimeMinutes:
+      data.orderTimeMinutes ??
+      getOrderTimeParts(data.capturedAt).orderTimeMinutes,
 
     intentPrice: data.intentPrice ?? null,
     intentQuantity: data.intentQuantity ?? null,
@@ -181,6 +266,9 @@ export const createOrderContextSnapshotSchema = orderContextSnapshotBaseSchema
     matchedRuleIdsAtSnapshot: data.matchedRuleIdsAtSnapshot ?? [],
     primaryShownRuleId: data.primaryShownRuleId ?? null,
     shownRuleIds: data.shownRuleIds ?? [],
+    ruleSnapshot: data.ruleSnapshot ?? null,
+    ruleSnapshots: data.ruleSnapshots ?? [],
+    ruleEvaluationSnapshots: data.ruleEvaluationSnapshots ?? [],
 
     tradePriceAtSnapshot: data.tradePriceAtSnapshot ?? null,
     shortTermReturn5m: data.shortTermReturn5m ?? null,

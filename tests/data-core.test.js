@@ -5,14 +5,27 @@ const {
   buildBehaviorSnapshot,
   calculateAverageBuyAmount,
   calculateMarketData,
+  createGuardrailRuleSnapshot,
   detectOrderActionSide,
   evaluateGuardrailRules,
   evaluateRuleExpression,
+  getOrderTimeParts,
   mapUpbitOrder,
   parseMarket,
   resolveVisualMode,
   RULE_FIELD_CATALOG,
 } = require("../chrome-extension/data-core.js");
+
+test("capturedAt에서 KST 주문 시간을 파생한다", () => {
+  assert.deepEqual(getOrderTimeParts("2026-07-08T00:00:00.000Z"), {
+    orderTime: "09:00",
+    orderTimeMinutes: 540,
+  });
+  assert.deepEqual(getOrderTimeParts("invalid"), {
+    orderTime: null,
+    orderTimeMinutes: null,
+  });
+});
 
 test("매수하기와 매도하기를 주문 액션으로 구분한다", () => {
   assert.equal(detectOrderActionSide("매수하기"), "BUY");
@@ -250,6 +263,96 @@ test("사용자 규칙은 우선순위와 비활성 규칙을 반영한다", () 
   assert.deepEqual(result.matchedRuleIds, ["top", "medium"]);
   assert.equal(result.primaryRuleId, "top");
   assert.equal(result.visualMode, "FAST_BURN");
+});
+
+test("주문하는 시간 조건은 분 단위 숫자로 비교한다", () => {
+  const morning = {
+    nodeType: "CONDITION",
+    leftField: "orderTimeMinutes",
+    operator: "GTE",
+    rightOperand: { operandType: "LITERAL", value: 540 },
+  };
+  const beforeEvening = {
+    nodeType: "CONDITION",
+    leftField: "orderTimeMinutes",
+    operator: "LT",
+    rightOperand: { operandType: "LITERAL", value: 1080 },
+  };
+  const lateNightRange = {
+    nodeType: "GROUP",
+    operator: "OR",
+    children: [
+      {
+        nodeType: "CONDITION",
+        leftField: "orderTimeMinutes",
+        operator: "GTE",
+        rightOperand: { operandType: "LITERAL", value: 1380 },
+      },
+      {
+        nodeType: "CONDITION",
+        leftField: "orderTimeMinutes",
+        operator: "LTE",
+        rightOperand: { operandType: "LITERAL", value: 120 },
+      },
+    ],
+  };
+
+  assert.equal(evaluateRuleExpression(morning, { orderTimeMinutes: 540 }), true);
+  assert.equal(evaluateRuleExpression(morning, { orderTimeMinutes: 539 }), false);
+  assert.equal(
+    evaluateRuleExpression(beforeEvening, { orderTimeMinutes: 1079 }),
+    true,
+  );
+  assert.equal(
+    evaluateRuleExpression(beforeEvening, { orderTimeMinutes: 1080 }),
+    false,
+  );
+  assert.equal(
+    evaluateRuleExpression(lateNightRange, { orderTimeMinutes: 1410 }),
+    true,
+  );
+  assert.equal(
+    evaluateRuleExpression(lateNightRange, { orderTimeMinutes: 90 }),
+    true,
+  );
+  assert.equal(
+    evaluateRuleExpression(lateNightRange, { orderTimeMinutes: 720 }),
+    false,
+  );
+  assert.equal(evaluateRuleExpression(morning, {}), false);
+});
+
+test("가드레일 규칙 snapshot은 경고 당시 표시와 조건 정보를 포함한다", () => {
+  const expression = {
+    nodeType: "CONDITION",
+    leftField: "orderMode",
+    operator: "EQ",
+    rightOperand: { operandType: "LITERAL", value: "MARKET" },
+  };
+  const snapshot = createGuardrailRuleSnapshot({
+    ruleId: "market-buy-warning",
+    name: "시장가 매수 확인",
+    description: "시장가 주문 전 확인",
+    priority: 3,
+    riskLevel: "HIGH",
+    visualMode: "FAST_BURN",
+    expression,
+    warningTitle: "시장가 주문이에요",
+    warningMessage: "가격 변동을 한 번 더 확인해 주세요.",
+    isEnabled: true,
+  });
+
+  assert.deepEqual(snapshot, {
+    ruleId: "market-buy-warning",
+    name: "시장가 매수 확인",
+    description: "시장가 주문 전 확인",
+    priority: 3,
+    riskLevel: "HIGH",
+    visualMode: "FAST_BURN",
+    expression,
+    warningTitle: "시장가 주문이에요",
+    warningMessage: "가격 변동을 한 번 더 확인해 주세요.",
+  });
 });
 
 test("snapshot 기반 시장·개인·행동 규칙 6종을 평가한다", () => {
