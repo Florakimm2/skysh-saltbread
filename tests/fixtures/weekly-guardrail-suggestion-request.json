@@ -1,0 +1,199 @@
+{
+  "analysis_date": "2026-W28",
+  "week_key": "2026-W28",
+  "period_start": "2026-07-05T15:00:00.000Z",
+  "period_end": "2026-07-12T14:59:59.999Z",
+  "timezone": "Asia/Seoul",
+  "source_window": {
+    "from_at": "2026-04-13T15:00:00.000Z",
+    "to_at": "2026-07-12T15:00:00.000Z"
+  },
+  "snapshots": [
+    {
+      "record_id": "snapshot_weekly_0",
+      "snapshot_id": "snapshot_weekly_0",
+      "attempt_id": "attempt_weekly_0",
+      "captured_at": "2026-07-06T01:00:00.000Z",
+      "matched_rule_ids_at_snapshot": [],
+      "primary_shown_rule_id": null,
+      "shown_rule_ids": [],
+      "market": "KRW-BTC",
+      "side": "BUY",
+      "order_mode": "LIMIT",
+      "snapshot_trigger": "ORDER_INTENT_CLICK",
+      "entry_point": "NORMAL",
+      "allocation_preset_percent": "CUSTOM",
+      "mode_changed_to_market": false,
+      "requested_balance_ratio": 0.1,
+      "order_intent_count_1m": 1,
+      "same_side_intent_count_1m": 1,
+      "signed_change_rate": 0.01
+    },
+    {
+      "record_id": "snapshot_weekly_1",
+      "snapshot_id": "snapshot_weekly_1",
+      "attempt_id": "attempt_weekly_1",
+      "captured_at": "2026-07-06T02:00:00.000Z",
+      "matched_rule_ids_at_snapshot": [],
+      "primary_shown_rule_id": null,
+      "shown_rule_ids": [],
+      "market": "KRW-BTC",
+      "side": "BUY",
+      "order_mode": "LIMIT",
+      "snapshot_trigger": "ORDER_INTENT_CLICK",
+      "entry_point": "NORMAL",
+      "allocation_preset_percent": "CUSTOM",
+      "mode_changed_to_market": false,
+      "requested_balance_ratio": 0.1,
+      "order_intent_count_1m": 1,
+      "same_side_intent_count_1m": 1
+    },
+    {
+      "record_id": "snapshot_weekly_2",
+      "snapshot_id": "snapshot_weekly_2",
+      "attempt_id": "attempt_weekly_2",
+      "captured_at": "2026-07-07T03:00:00.000Z",
+      "matched_rule_ids_at_snapshot": [],
+      "primary_shown_rule_id": null,
+      "shown_rule_ids": [],
+      "market": "KRW-BTC",
+      "side": "BUY",
+      "order_mode": "LIMIT",
+      "snapshot_trigger": "ORDER_INTENT_CLICK",
+      "entry_point": "NORMAL",
+      "allocation_preset_percent": "CUSTOM",
+      "mode_changed_to_market": false,
+      "requested_balance_ratio": 0.1,
+      "order_intent_count_1m": 1,
+      "same_side_intent_count_1m": 1
+    },
+    {
+      "record_id": "snapshot_weekly_3",
+      "snapshot_id": "snapshot_weekly_3",
+      "attempt_id": "attempt_weekly_3",
+      "captured_at": "2026-07-08T04:00:00.000Z",
+      "matched_rule_ids_at_snapshot": [],
+      "primary_shown_rule_id": null,
+      "shown_rule_ids": [],
+      "market": "KRW-BTC",
+      "side": "BUY",
+      "order_mode": "LIMIT",
+      "snapshot_trigger": "ORDER_INTENT_CLICK",
+      "entry_point": "NORMAL",
+      "allocation_preset_percent": "CUSTOM",
+      "mode_changed_to_market": false,
+      "requested_balance_ratio": 0.1,
+      "order_intent_count_1m": 1,
+      "same_side_intent_count_1m": 1
+    },
+    {
+      "record_id": "snapshot_weekly_4",
+      "snapshot_id": "snapshot_weekly_4",
+      "attempt_id": "attempt_weekly_4",
+      "captured_at": "2026-07-09T05:00:00.000Z",
+      "matched_rule_ids_at_snapshot": [],
+      "primary_shown_rule_id": null,
+      "shown_rule_ids": [],
+      "market": "KRW-BTC",
+      "side": "BUY",
+      "order_mode": "LIMIT",
+      "snapshot_trigger": "ORDER_INTENT_CLICK",
+      "entry_point": "NORMAL",
+      "allocation_preset_percent": "CUSTOM",
+      "mode_changed_to_market": false,
+      "requested_balance_ratio": 0.1,
+      "order_intent_count_1m": 1,
+      "same_side_intent_count_1m": 1
+    },
+    {
+      "record_id": "snapshot_weekly_5",
+      "snapshot_id": "snapshot_weekly_5",
+      "attempt_id": "attempt_weekly_5",
+      "captured_at": "2026-07-10T06:00:00.000Z",
+      "matched_rule_ids_at_snapshot": [],
+      "primary_shown_rule_id": null,
+      "shown_rule_ids": [],
+      "market": "KRW-BTC",
+      "side": "BUY",
+      "order_mode": "LIMIT",
+      "snapshot_trigger": "ORDER_INTENT_CLICK",
+      "entry_point": "NORMAL",
+      "allocation_preset_percent": "CUSTOM",
+      "mode_changed_to_market": false,
+      "requested_balance_ratio": 0.1,
+      "order_intent_count_1m": 1,
+      "same_side_intent_count_1m": 1
+    }
+  ],
+  "reactions": [],
+  "feedbacks": [
+    {
+      "record_id": "feedback_weekly_0",
+      "attempt_id": "attempt_weekly_0",
+      "feedback_status": "ANSWERED",
+      "self_assessment": "PLANNED",
+      "responded_at": "2026-07-06T10:00:00.000Z"
+    },
+    {
+      "record_id": "feedback_weekly_1",
+      "attempt_id": "attempt_weekly_1",
+      "feedback_status": "ANSWERED",
+      "self_assessment": "PLANNED",
+      "responded_at": "2026-07-06T11:00:00.000Z"
+    },
+    {
+      "record_id": "feedback_weekly_2",
+      "attempt_id": "attempt_weekly_2",
+      "feedback_status": "ANSWERED",
+      "self_assessment": "PLANNED",
+      "responded_at": "2026-07-07T12:00:00.000Z"
+    },
+    {
+      "record_id": "feedback_weekly_3",
+      "attempt_id": "attempt_weekly_3",
+      "feedback_status": "ANSWERED",
+      "self_assessment": "EMOTIONAL",
+      "responded_at": "2026-07-08T13:00:00.000Z"
+    },
+    {
+      "record_id": "feedback_weekly_4",
+      "attempt_id": "attempt_weekly_4",
+      "feedback_status": "ANSWERED",
+      "self_assessment": "EMOTIONAL",
+      "responded_at": "2026-07-09T14:00:00.000Z"
+    },
+    {
+      "record_id": "feedback_weekly_5",
+      "attempt_id": "attempt_weekly_5",
+      "feedback_status": "ANSWERED",
+      "self_assessment": "EMOTIONAL",
+      "responded_at": "2026-07-10T15:00:00.000Z"
+    }
+  ],
+  "confirmed_trades": [],
+  "current_rules": [],
+  "field_catalog": {
+    "signedChangeRate": {
+      "key": "signedChangeRate",
+      "value_type": "NUMBER",
+      "nullable": true,
+      "rule_eligible": true,
+      "requires_private_api": false,
+      "supported_operators": ["EQ", "NEQ", "GT", "GTE", "LT", "LTE", "IS_NULL", "IS_NOT_NULL"],
+      "comparison_group": "RATE",
+      "input": {
+        "control": "PERCENT"
+      }
+    }
+  },
+  "options": {
+    "max_history_days": 90,
+    "max_records": 1000,
+    "min_total_labeled_samples": 20,
+    "min_regretted_samples": 5,
+    "min_cluster_samples": 5,
+    "max_new_suggestions": 1,
+    "max_modification_suggestions": 1,
+    "random_state": 42
+  }
+}

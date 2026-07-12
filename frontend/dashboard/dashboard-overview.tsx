@@ -1,11 +1,11 @@
 import Link from "next/link";
 import type {
-  DailyInsightEligibility,
-  DailyInsightReport,
-} from "@/backend/modules/insight/daily-types";
+  WeeklyInsightReport,
+  WeeklyInsightStatusResponse,
+} from "@/backend/modules/insight/weekly-types";
 import type { GuardrailTimelineResponse } from "@/backend/modules/logs/types";
 import FlameMascot from "@/frontend/auth/flame-mascot";
-import { buildLatestInsightCardViewModel } from "./latest-insight-card-view-model";
+import { formatKrw, formatPercent } from "./daily-insight-view-model";
 import PageHeader from "./page-header";
 import {
   NoteIcon,
@@ -16,94 +16,102 @@ import styles from "./dashboard.module.css";
 
 function InsightPreview({
   report,
-  todayStatus,
+  status,
 }: {
-  report: DailyInsightReport | null;
-  todayStatus: DailyInsightEligibility;
+  report: WeeklyInsightReport | null;
+  status: WeeklyInsightStatusResponse;
 }) {
+  const isClosed = status.periodState === "CLOSED";
   if (!report) {
     return (
       <article className={styles.insightPreview}>
         <div className={styles.insightPreviewContent}>
           <section className={styles.insightSummaryBlock}>
             <h3>
-              오늘의 기록으로 AI 인사이트를 만들 수 있어요
+              {isClosed ? "지난주 기록이 준비됐어요" : "이번 주 AI 인사이트"}
             </h3>
             <p>
-              생성하기 버튼을 누르면 현재 저장된 주문 시도, 가드레일, 피드백 {todayStatus.answeredFeedbackCount}건으로 새 리포트를 만들어요.
+              한 주 동안 쌓인 주문 시도와 가드레일 기록을 확인해 보세요.
             </p>
           </section>
         </div>
         <Link
           className={styles.insightDetailLink}
-          href="/dashboard/ai-insights?focus=today"
+          href={`/dashboard/ai-insights?week=${encodeURIComponent(status.weekKey)}&focus=generate`}
         >
-          AI 인사이트에서 생성하기 →
+          주간 리포트 생성하기 →
         </Link>
       </article>
     );
   }
 
-  const viewModel = buildLatestInsightCardViewModel(report);
+  const primaryCard = report.overview?.cards?.[0] || null;
+  const virtualMetric = report.metrics?.twentyFourHourVirtualOrderResult;
+  const metricLabel =
+    virtualMetric?.status === "AVAILABLE"
+      ? `${virtualMetric.sampleCount}건 · ${formatKrw(virtualMetric.netValue)}`
+      : "비교 가능한 24시간 가격 효과가 아직 없어요.";
 
   return (
     <article className={styles.insightPreview}>
       <div className={styles.insightPreviewTop}>
         <div>
-          <span className={styles.insightEyebrow}>최근 AI 인사이트</span>
-          <time dateTime={report.date}>{viewModel.dateLabel}</time>
+          <span className={styles.insightEyebrow}>
+            {report.periodState === "CLOSED" ? "지난주 AI 인사이트" : "이번 주 AI 인사이트"}
+          </span>
+          <time dateTime={report.periodStart}>
+            {report.periodStart.slice(5, 10).replace("-", ".")} ~ {report.periodEnd.slice(5, 10).replace("-", ".")}
+          </time>
         </div>
-        {viewModel.flameLabel ? (
-          <span className={styles.insightStatusBadge}>{viewModel.flameLabel}</span>
-        ) : null}
+        <span className={styles.insightStatusBadge}>
+          {report.periodState === "CLOSED" ? "최종" : "진행 중"}
+        </span>
       </div>
 
       <div className={styles.insightPreviewBody}>
         <div className={styles.insightMascot} aria-hidden="true">
-          <FlameMascot
-            label=""
-            mode={viewModel.flameMode}
-            size="clamp(70px, 8vw, 96px)"
-            speed="slow"
-          />
+            <FlameMascot
+              label=""
+              mode="default"
+              size="clamp(70px, 8vw, 96px)"
+              speed="slow"
+            />
         </div>
 
         <div className={styles.insightPreviewContent}>
           <section className={styles.insightSummaryBlock}>
-            <h3>오늘 기록에서 발견한 패턴</h3>
-            <p>{viewModel.summary}</p>
+            <h3>이번 주 기록에서 발견한 패턴</h3>
+            <p>{report.overview?.summary || "저장된 주간 리포트를 확인해 보세요."}</p>
           </section>
 
-          {viewModel.oneLineAdvice ? (
+          {report.fieldAnalysis?.oneLineAdvice ? (
             <section className={styles.insightAdviceBox}>
-              <span>다음 주문에서 확인할 것</span>
-              <p>{viewModel.oneLineAdvice}</p>
+              <span>다음 주에 확인할 원칙</span>
+              <p>{report.fieldAnalysis.oneLineAdvice}</p>
             </section>
           ) : null}
 
           <div className={styles.insightHighlightGrid}>
-            {viewModel.primaryCard ? (
+            {primaryCard ? (
               <section className={styles.insightMiniCard}>
-                <span>{viewModel.primaryCard.severityLabel}</span>
-                <strong>{viewModel.primaryCard.label}</strong>
-                <p>{viewModel.primaryCard.description}</p>
+                <span>핵심 패턴</span>
+                <strong>{primaryCard.title}</strong>
+                <p>{primaryCard.description}</p>
               </section>
             ) : null}
 
-            {viewModel.primaryMetric ? (
-              <section className={styles.insightMiniCard}>
-                <span>{viewModel.primaryMetric.label}</span>
-                <strong>{viewModel.primaryMetric.value}</strong>
-                {viewModel.primaryMetric.description ? (
-                  <p>{viewModel.primaryMetric.description}</p>
-                ) : null}
-              </section>
-            ) : null}
+            <section className={styles.insightMiniCard}>
+              <span>24시간 가상 주문 결과</span>
+              <strong>{metricLabel}</strong>
+              {virtualMetric?.items?.[0]?.returnRate != null ? (
+                <p>{formatPercent(virtualMetric.items[0].returnRate)}</p>
+              ) : null}
+            </section>
           </div>
         </div>
       </div>
 
-      <Link className={styles.insightDetailLink} href={`/dashboard/ai-insights?report=${report.date}`}>
+      <Link className={styles.insightDetailLink} href={`/dashboard/ai-insights?week=${report.weekKey}`}>
         전체 보기 →
       </Link>
     </article>
@@ -116,8 +124,8 @@ export default function DashboardOverview({
   isTimelineUnavailable = false,
 }: {
   insight: {
-    report: DailyInsightReport | null;
-    todayStatus: DailyInsightEligibility;
+    report: WeeklyInsightReport | null;
+    status: WeeklyInsightStatusResponse;
   };
   timeline: GuardrailTimelineResponse | null;
   isTimelineUnavailable?: boolean;
@@ -165,18 +173,20 @@ export default function DashboardOverview({
                   <SparklesIcon />
                 </span>
                 <h2 className={styles.panelTitle} id="insight-panel-title">
-                  AI 인사이트
+                  {insight.status.periodState === "CLOSED"
+                    ? "지난주 AI 인사이트"
+                    : "이번 주 AI 인사이트"}
                 </h2>
               </div>
               <span className={styles.panelMeta}>
                 {insight.report
-                  ? buildLatestInsightCardViewModel(insight.report).shortDateLabel
-                  : "오늘 기록"}
+                  ? `${insight.report.sourceCounts.activeDays}일 활동`
+                  : `피드백 ${insight.status.answeredFeedbackCount}/${insight.status.requiredFeedbackCount}`}
               </span>
             </header>
             <InsightPreview
               report={insight.report}
-              todayStatus={insight.todayStatus}
+              status={insight.status}
             />
           </section>
         </div>

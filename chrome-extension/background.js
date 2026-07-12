@@ -776,7 +776,7 @@ async function fetchUserStats() {
   });
 }
 
-async function fetchDailyInsightStatus() {
+async function fetchWeeklyInsightStatus() {
   const auth = await getValidBackendAuth();
 
   if (!auth?.accessToken) {
@@ -785,7 +785,7 @@ async function fetchDailyInsightStatus() {
     throw error;
   }
 
-  return fetchJson(`${getAuthApiBase(auth)}/api/insights/daily/status`, {
+  return fetchJson(`${getAuthApiBase(auth)}/api/insights/weekly/status`, {
     method: "GET",
     headers: createBackendHeaders(auth),
   });
@@ -2717,8 +2717,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === "GET_DAILY_INSIGHT_STATUS") {
-    fetchDailyInsightStatus()
+  if (message?.type === "GET_WEEKLY_INSIGHT_STATUS") {
+    fetchWeeklyInsightStatus()
       .then((result) => sendResponse({ ok: true, data: result?.data || null }))
       .catch((error) =>
         sendResponse({

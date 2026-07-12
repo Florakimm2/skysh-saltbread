@@ -48,16 +48,23 @@ import type {
     symbol: string;
     unit?: 1 | 3 | 5 | 10 | 15 | 30 | 60 | 240;
     count?: number;
+    to?: string;
   }): Promise<UpbitMinuteCandleResponse[]> {
     validateMarket(params.symbol);
   
     const unit = params.unit ?? 1;
     const count = params.count ?? 16;
   
+    const searchParams = new URLSearchParams({
+      market: params.symbol,
+      count: String(count),
+    });
+    if (params.to) {
+      searchParams.set("to", params.to);
+    }
+
     return upbitFetch<UpbitMinuteCandleResponse[]>(
-      `/v1/candles/minutes/${unit}?market=${encodeURIComponent(
-        params.symbol
-      )}&count=${count}`
+      `/v1/candles/minutes/${unit}?${searchParams.toString()}`
     );
   }
   

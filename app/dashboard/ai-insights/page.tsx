@@ -1,8 +1,8 @@
 import { getDashboardSession } from "@/backend/modules/auth/session";
 import {
-  getDailyInsightStatus,
-  listDailyInsights,
-} from "@/backend/modules/insight/daily-service";
+  getWeeklyInsightStatus,
+  listWeeklyInsights,
+} from "@/backend/modules/insight/weekly-service";
 import AiInsightsPage from "@/frontend/dashboard/ai-insights-page";
 
 export const dynamic = 'force-dynamic';
@@ -14,10 +14,10 @@ export default async function AiInsightRoutePage() {
     return null;
   }
 
-  const [reports, todayStatus] = await Promise.all([
-    listDailyInsights({ userId: session.userId, limit: 20 }),
-    getDailyInsightStatus({ userId: session.userId }),
+  const [reports, weeklyStatus] = await Promise.all([
+    listWeeklyInsights({ userId: session.userId, limit: 20 }),
+    getWeeklyInsightStatus({ userId: session.userId }),
   ]);
 
-  return <AiInsightsPage reports={reports} todayStatus={todayStatus} />;
+  return <AiInsightsPage reports={reports} weeklyStatus={weeklyStatus} />;
 }

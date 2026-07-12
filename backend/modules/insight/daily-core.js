@@ -1914,6 +1914,7 @@ module.exports = {
   sanitizeOverviewWithAvailability,
   sanitizeUserFacingText,
   selectReportByDate,
+  stableJson,
   toIsoString,
   toTimeMs,
 };

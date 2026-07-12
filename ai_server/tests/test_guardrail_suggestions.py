@@ -252,6 +252,70 @@ class GuardrailSuggestionTests(unittest.TestCase):
         self.assertEqual(source_summary.get("labeledSampleCount") or source_summary["labeled_sample_count"], 6)
         self.assertEqual(source_summary.get("guardrailTriggerCount") or source_summary["guardrail_trigger_count"], 0)
 
+    def test_weekly_contract_fixture_returns_insufficient_data_not_422(self) -> None:
+        fixture_path = (
+            Path(__file__).resolve().parents[2]
+            / "tests"
+            / "fixtures"
+            / "weekly-guardrail-suggestion-request.json"
+        )
+        payload = json.loads(fixture_path.read_text())
+        client = TestClient(
+            create_app(
+                Settings(openai_api_key=None, service_api_key="secret"),
+                guardrail_suggestion_analyzer=GuardrailSuggestionAnalyzer(),
+            )
+        )
+
+        response = client.post(
+            "/api/v1/insights/guardrail-suggestions/analyze",
+            json=payload,
+            headers={"X-API-Key": "secret"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["status"], "INSUFFICIENT_DATA")
+        self.assertEqual(body["newAnalysis"]["status"], "INSUFFICIENT_DATA")
+        self.assertEqual(body["modificationAnalysis"]["status"], "INSUFFICIENT_DATA")
+        self.assertEqual(body["modificationAnalysis"]["reasonCode"], "no_shown_guardrail_records")
+        source_summary = body.get("sourceSummary") or body["source_summary"]
+        self.assertEqual(source_summary.get("labeledSampleCount") or source_summary["labeled_sample_count"], 6)
+        self.assertEqual(source_summary.get("guardrailTriggerCount") or source_summary["guardrail_trigger_count"], 0)
+
+    def test_zero_guardrail_records_do_not_block_new_guardrail_analysis(self) -> None:
+        start = datetime(2026, 7, 1, tzinfo=timezone.utc)
+        snapshots = []
+        feedbacks = []
+        for index in range(30):
+            is_regretted = index >= 18
+            clustered = 18 <= index < 26
+            snapshots.append(
+                base_snapshot(
+                    index,
+                    start + timedelta(minutes=index),
+                    side="BUY" if clustered else ("BUY" if is_regretted else "SELL"),
+                    orderMode="MARKET" if clustered else "LIMIT",
+                    shortTermReturn5m=0.065 + index * 0.0001 if clustered else 0.004 + index * 0.0001,
+                    draftDurationMs=1800 + index * 5 if clustered else 22000 + index * 20,
+                    sameSideIntentCount1m=4 if clustered else 1,
+                    shownRuleIds=[],
+                    primaryShownRuleId=None,
+                )
+            )
+            feedbacks.append(feedback(index, "EMOTIONAL" if is_regretted else "PLANNED"))
+
+        response = GuardrailSuggestionAnalyzer().analyze(make_request(snapshots, feedbacks))
+
+        self.assertEqual(response.status, "AVAILABLE")
+        self.assertIsNotNone(response.new_guardrail)
+        self.assertIsNone(response.modification)
+        self.assertIsNotNone(response.new_analysis)
+        self.assertIsNotNone(response.modification_analysis)
+        self.assertEqual(response.new_analysis.status, "AVAILABLE")
+        self.assertEqual(response.modification_analysis.status, "INSUFFICIENT_DATA")
+        self.assertEqual(response.modification_analysis.reason_code, "no_shown_guardrail_records")
+
     def test_full_frontend_catalog_shape_is_rejected_with_validation_path(self) -> None:
         fixture_path = (
             Path(__file__).resolve().parents[2]

@@ -24,6 +24,7 @@ from app.analysis.guardrail.schemas import (
     GuardrailSuggestionAnalysisResponse,
     NewGuardrailSuggestion,
     SourceSummary,
+    SuggestionAnalysisResult,
     SuggestionExplanation,
 )
 
@@ -213,6 +214,26 @@ class GuardrailSuggestionAnalyzer:
             current_rule_count=len(request.current_rules),
         )
 
+    def _active_days(self, request: GuardrailSuggestionAnalysisRequest) -> int:
+        return len({snapshot.captured_at.date().isoformat() for snapshot in request.snapshots})
+
+    def _analysis_result(
+        self,
+        *,
+        status: str,
+        reason_code: str | None,
+        evidence_count: int = 0,
+        active_days: int = 0,
+        evaluation_mode: str | None = None,
+    ) -> SuggestionAnalysisResult:
+        return SuggestionAnalysisResult(
+            status=status,
+            reasonCode=reason_code,
+            evidenceCount=evidence_count,
+            activeDays=active_days,
+            evaluationMode=evaluation_mode,
+        )
+
     def analyze(
         self,
         request: GuardrailSuggestionAnalysisRequest,
@@ -232,56 +253,63 @@ class GuardrailSuggestionAnalyzer:
                 regretted_count=regretted_count,
                 planned_count=planned_count,
             )
-
-            if source_summary.guardrail_trigger_count == 0:
-                diagnostics.rejection_reasons.append("no_shown_guardrail_records")
-                diagnostics.analysis_duration_ms = int((time.perf_counter() - started) * 1000)
-                logger.info(
-                    "Guardrail suggestion analysis completed",
-                    extra={
-                        "http_status": 200,
-                        "analysis_status": "INSUFFICIENT_DATA",
-                        "error_stage": None,
-                        "error_code": None,
-                        "input_sample_count": source_summary.input_sample_count,
-                        "labeled_sample_count": source_summary.labeled_sample_count,
-                        "regretted_sample_count": source_summary.regretted_sample_count,
-                        "shown_guardrail_count": source_summary.guardrail_trigger_count,
-                        "used_feature_count": 0,
-                        "dropped_feature_count": 0,
-                        "analysis_duration_ms": diagnostics.analysis_duration_ms,
-                    },
-                )
-                return GuardrailSuggestionAnalysisResponse(
-                    status="INSUFFICIENT_DATA",
-                    algorithmVersion=ALGORITHM_VERSION,
-                    sourceSummary=source_summary,
-                    newGuardrail=None,
-                    modification=None,
-                    diagnostics=diagnostics,
-                )
+            active_days = self._active_days(request)
 
             if len(labels) < request.options.min_total_labeled_samples:
                 diagnostics.rejection_reasons.append("insufficient_total_labeled_samples")
                 diagnostics.analysis_duration_ms = int((time.perf_counter() - started) * 1000)
+                reason = "insufficient_total_labeled_samples"
                 return GuardrailSuggestionAnalysisResponse(
                     status="INSUFFICIENT_DATA",
                     algorithmVersion=ALGORITHM_VERSION,
                     sourceSummary=source_summary,
                     newGuardrail=None,
                     modification=None,
+                    newAnalysis=self._analysis_result(
+                        status="INSUFFICIENT_DATA",
+                        reason_code=reason,
+                        evidence_count=len(labels),
+                        active_days=active_days,
+                    ),
+                    modificationAnalysis=self._analysis_result(
+                        status="INSUFFICIENT_DATA",
+                        reason_code=(
+                            "no_shown_guardrail_records"
+                            if source_summary.guardrail_trigger_count == 0
+                            else reason
+                        ),
+                        evidence_count=source_summary.guardrail_trigger_count,
+                        active_days=active_days,
+                    ),
                     diagnostics=diagnostics,
                 )
 
             if regretted_count < request.options.min_regretted_samples:
                 diagnostics.rejection_reasons.append("insufficient_regretted_samples")
                 diagnostics.analysis_duration_ms = int((time.perf_counter() - started) * 1000)
+                reason = "insufficient_regretted_samples"
                 return GuardrailSuggestionAnalysisResponse(
                     status="INSUFFICIENT_DATA",
                     algorithmVersion=ALGORITHM_VERSION,
                     sourceSummary=source_summary,
                     newGuardrail=None,
                     modification=None,
+                    newAnalysis=self._analysis_result(
+                        status="INSUFFICIENT_DATA",
+                        reason_code=reason,
+                        evidence_count=regretted_count,
+                        active_days=active_days,
+                    ),
+                    modificationAnalysis=self._analysis_result(
+                        status="INSUFFICIENT_DATA",
+                        reason_code=(
+                            "no_shown_guardrail_records"
+                            if source_summary.guardrail_trigger_count == 0
+                            else reason
+                        ),
+                        evidence_count=source_summary.guardrail_trigger_count,
+                        active_days=active_days,
+                    ),
                     diagnostics=diagnostics,
                 )
 
@@ -295,12 +323,29 @@ class GuardrailSuggestionAnalyzer:
             if features.matrix.shape[1] == 0 or not features.used_feature_names:
                 diagnostics.rejection_reasons.append("insufficient_valid_features")
                 diagnostics.analysis_duration_ms = int((time.perf_counter() - started) * 1000)
+                reason = "insufficient_valid_features"
                 return GuardrailSuggestionAnalysisResponse(
                     status="INSUFFICIENT_DATA",
                     algorithmVersion=ALGORITHM_VERSION,
                     sourceSummary=source_summary,
                     newGuardrail=None,
                     modification=None,
+                    newAnalysis=self._analysis_result(
+                        status="INSUFFICIENT_DATA",
+                        reason_code=reason,
+                        evidence_count=len(labels),
+                        active_days=active_days,
+                    ),
+                    modificationAnalysis=self._analysis_result(
+                        status="INSUFFICIENT_DATA",
+                        reason_code=(
+                            "no_shown_guardrail_records"
+                            if source_summary.guardrail_trigger_count == 0
+                            else reason
+                        ),
+                        evidence_count=source_summary.guardrail_trigger_count,
+                        active_days=active_days,
+                    ),
                     diagnostics=diagnostics,
                 )
 
@@ -330,14 +375,29 @@ class GuardrailSuggestionAnalyzer:
             diagnostics.candidate_count_before_filtering += new_before
             diagnostics.candidate_count_after_filtering += new_after
 
-            modification_candidate, mod_rejections, mod_before, mod_after = generate_modification_candidate(
-                records=labeled_records,
-                all_records_matrix=features.matrix,
-                current_rules=request.current_rules,
-                field_catalog=request.field_catalog,
-                source_window=request.source_window,
-            )
-            diagnostics.rejection_reasons.extend(mod_rejections)
+            modification_candidate = None
+            modification_reason_code = None
+            if source_summary.guardrail_trigger_count == 0:
+                modification_reason_code = "no_shown_guardrail_records"
+                diagnostics.rejection_reasons.append(modification_reason_code)
+                mod_before = 0
+                mod_after = 0
+            elif not request.current_rules:
+                modification_reason_code = "no_current_rules"
+                diagnostics.rejection_reasons.append(modification_reason_code)
+                mod_before = 0
+                mod_after = 0
+            else:
+                modification_candidate, mod_rejections, mod_before, mod_after = generate_modification_candidate(
+                    records=labeled_records,
+                    all_records_matrix=features.matrix,
+                    current_rules=request.current_rules,
+                    field_catalog=request.field_catalog,
+                    source_window=request.source_window,
+                )
+                diagnostics.rejection_reasons.extend(mod_rejections)
+                if mod_rejections and not modification_candidate:
+                    modification_reason_code = mod_rejections[0]
             diagnostics.candidate_count_before_filtering += mod_before
             diagnostics.candidate_count_after_filtering += mod_after
 
@@ -353,6 +413,24 @@ class GuardrailSuggestionAnalyzer:
                     sourceSummary=source_summary,
                     newGuardrail=None,
                     modification=None,
+                    newAnalysis=self._analysis_result(
+                        status="NO_SUGGESTION",
+                        reason_code="all_clusters_noise",
+                        evidence_count=len(labels),
+                        active_days=active_days,
+                        evaluation_mode="IN_SAMPLE",
+                    ),
+                    modificationAnalysis=self._analysis_result(
+                        status="INSUFFICIENT_DATA"
+                        if modification_reason_code in {"no_shown_guardrail_records", "no_current_rules"}
+                        else "NO_SUGGESTION",
+                        reason_code=modification_reason_code or "all_clusters_noise",
+                        evidence_count=source_summary.guardrail_trigger_count,
+                        active_days=active_days,
+                        evaluation_mode=None
+                        if modification_reason_code in {"no_shown_guardrail_records", "no_current_rules"}
+                        else "IN_SAMPLE",
+                    ),
                     diagnostics=diagnostics,
                 )
 
@@ -449,6 +527,26 @@ class GuardrailSuggestionAnalyzer:
 
             diagnostics.explanation_status = "COMPLETED" if explanation_ok else "FALLBACK"
             status = "AVAILABLE" if new_suggestion or modification_suggestion else "NO_SUGGESTION"
+            new_analysis = self._analysis_result(
+                status="AVAILABLE" if new_suggestion else "NO_SUGGESTION",
+                reason_code=None if new_suggestion else "no_valid_new_candidate",
+                evidence_count=new_suggestion.evidence_count if new_suggestion else len(labels),
+                active_days=active_days,
+                evaluation_mode="IN_SAMPLE" if new_suggestion else None,
+            )
+            modification_analysis = self._analysis_result(
+                status="AVAILABLE"
+                if modification_suggestion
+                else (
+                    "INSUFFICIENT_DATA"
+                    if modification_reason_code in {"no_shown_guardrail_records", "no_current_rules"}
+                    else "NO_SUGGESTION"
+                ),
+                reason_code=None if modification_suggestion else modification_reason_code or "no_valid_modification_candidate",
+                evidence_count=modification_suggestion.evidence_count if modification_suggestion else source_summary.guardrail_trigger_count,
+                active_days=active_days,
+                evaluation_mode="IN_SAMPLE" if modification_suggestion else None,
+            )
             diagnostics.analysis_duration_ms = int((time.perf_counter() - started) * 1000)
             logger.info(
                 "Guardrail suggestion analysis completed",
@@ -472,6 +570,8 @@ class GuardrailSuggestionAnalyzer:
                 sourceSummary=source_summary,
                 newGuardrail=new_suggestion,
                 modification=modification_suggestion,
+                newAnalysis=new_analysis,
+                modificationAnalysis=modification_analysis,
                 diagnostics=diagnostics,
             )
         except Exception:
@@ -494,5 +594,17 @@ class GuardrailSuggestionAnalyzer:
                 sourceSummary=source_summary,
                 newGuardrail=None,
                 modification=None,
+                newAnalysis=self._analysis_result(
+                    status="ERROR",
+                    reason_code="INTERNAL_ANALYSIS_ERROR",
+                    evidence_count=0,
+                    active_days=self._active_days(request),
+                ),
+                modificationAnalysis=self._analysis_result(
+                    status="ERROR",
+                    reason_code="INTERNAL_ANALYSIS_ERROR",
+                    evidence_count=0,
+                    active_days=self._active_days(request),
+                ),
                 diagnostics=diagnostics,
             )

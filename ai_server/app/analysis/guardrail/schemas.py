@@ -223,6 +223,9 @@ class GuardrailRuleInput(StrictBaseModel):
 
 class GuardrailSuggestionAnalysisRequest(StrictBaseModel):
     analysis_date: str
+    week_key: str | None = None
+    period_start: datetime | None = None
+    period_end: datetime | None = None
     timezone: str
     source_window: SourceWindow
     snapshots: list[SnapshotFeatureRecord] = Field(default_factory=list)
@@ -340,6 +343,17 @@ class GuardrailModificationSuggestion(StrictBaseModel):
     source_window: SourceWindow = Field(alias="sourceWindow")
 
 
+class SuggestionAnalysisResult(StrictBaseModel):
+    status: Literal["AVAILABLE", "INSUFFICIENT_DATA", "NO_SUGGESTION", "ERROR"]
+    reason_code: str | None = Field(default=None, alias="reasonCode")
+    evidence_count: int = Field(default=0, alias="evidenceCount")
+    active_days: int = Field(default=0, alias="activeDays")
+    evaluation_mode: Literal["IN_SAMPLE", "TEMPORAL_HOLDOUT"] | None = Field(
+        default=None,
+        alias="evaluationMode",
+    )
+
+
 class GuardrailSuggestionAnalysisResponse(StrictBaseModel):
     status: Literal["AVAILABLE", "INSUFFICIENT_DATA", "NO_SUGGESTION", "ERROR"]
     algorithm_version: str = Field(alias="algorithmVersion")
@@ -348,4 +362,9 @@ class GuardrailSuggestionAnalysisResponse(StrictBaseModel):
     source_summary: SourceSummary = Field(alias="sourceSummary")
     new_guardrail: NewGuardrailSuggestion | None = Field(default=None, alias="newGuardrail")
     modification: GuardrailModificationSuggestion | None = None
+    new_analysis: SuggestionAnalysisResult | None = Field(default=None, alias="newAnalysis")
+    modification_analysis: SuggestionAnalysisResult | None = Field(
+        default=None,
+        alias="modificationAnalysis",
+    )
     diagnostics: AnalysisDiagnostics

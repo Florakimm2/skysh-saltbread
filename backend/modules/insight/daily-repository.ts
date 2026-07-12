@@ -28,13 +28,13 @@ function getReportRef(userId: string, date: string) {
   return adminDb.collection("users").doc(userId).collection("dailyInsights").doc(date);
 }
 
-function cleanUndefined<T extends Record<string, unknown>>(value: T): T {
+export function cleanUndefined<T extends Record<string, unknown>>(value: T): T {
   return Object.fromEntries(
     Object.entries(value).filter(([, entry]) => entry !== undefined),
   ) as T;
 }
 
-function snapshotDocToDTO(
+export function snapshotDocToDTO(
   id: string,
   data: FirebaseFirestore.DocumentData,
 ): OrderContextSnapshotDTO {
@@ -94,7 +94,7 @@ function snapshotDocToDTO(
   };
 }
 
-function reactionDocToDTO(
+export function reactionDocToDTO(
   id: string,
   data: FirebaseFirestore.DocumentData,
 ): GuardrailReactionDTO {
@@ -110,7 +110,7 @@ function reactionDocToDTO(
   };
 }
 
-function feedbackDocToDTO(
+export function feedbackDocToDTO(
   id: string,
   data: FirebaseFirestore.DocumentData,
 ): TradeFeedbackDTO {
@@ -128,7 +128,7 @@ function feedbackDocToDTO(
   };
 }
 
-function tradeDocToDTO(
+export function tradeDocToDTO(
   id: string,
   data: FirebaseFirestore.DocumentData,
 ): ConfirmedTradeLogDTO {
@@ -156,7 +156,7 @@ function tradeDocToDTO(
   };
 }
 
-function ruleDocToDTO(
+export function ruleDocToDTO(
   id: string,
   data: FirebaseFirestore.DocumentData,
 ): UserGuardrailRuleDTO {
@@ -179,7 +179,7 @@ function ruleDocToDTO(
   };
 }
 
-async function listOwnedDocs<T>(params: {
+export async function listOwnedDocs<T>(params: {
   collection: FirebaseFirestore.CollectionReference;
   userId: string;
   converter: (id: string, data: FirebaseFirestore.DocumentData) => T;

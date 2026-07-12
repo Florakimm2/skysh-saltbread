@@ -3,19 +3,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type {
-  DailyInsightEligibility,
-  DailyInsightReport,
-  DailyTimelineEvent,
-  OrderFlowViewModel,
-} from "@/backend/modules/insight/daily-types";
-import DailyInsightActions from "./daily-insight-actions";
+  WeeklyInsightReport,
+  WeeklyInsightStatusResponse,
+} from "@/backend/modules/insight/weekly-types";
+import WeeklyInsightActions from "./weekly-insight-actions";
 import { buildExpressionPreview } from "./rule-expression-format";
 import {
-  buildFlowSteps,
-  buildOrderFlowViewModels,
-  buildReportListItem,
-  buildVirtualPnlViewModel,
-  formatDateKorean,
   formatKrw,
   formatPercent,
   formatTimeKorean,
@@ -27,129 +20,61 @@ import PageHeader from "./page-header";
 import { SparklesIcon } from "./icons";
 import styles from "./dashboard.module.css";
 
-type VirtualPnlView = {
-  available: boolean;
-  title: string;
-  message: string;
-  summaryRows: Array<[string, string]>;
-  items: Array<{
-    key: string;
-    title: string;
-    time: string;
-    rows: Array<[string, string]>;
-    note: string;
-    sellNotice?: string | null;
-  }>;
-};
+const WEEKDAY_LABELS = ["월", "화", "수", "목", "금", "토", "일"];
 
-type FlowView = {
-  visibleFlows: OrderFlowViewModel[];
-  hiddenFlows: OrderFlowViewModel[];
-  unlinkedEvents: DailyTimelineEvent[];
-};
-
-function normalizeCounts(report: DailyInsightReport) {
-  return {
-    feedbacks: report.sourceCounts?.answeredFeedbacks ?? 0,
-    attempts: report.sourceCounts?.attempts ?? 0,
-    guardrails:
-      report.sourceCounts?.guardrails ??
-      report.sourceCounts?.guardrailSnapshots ??
-      0,
-  };
+function formatPeriod(report: WeeklyInsightReport) {
+  const start = new Date(report.periodStart);
+  const end = new Date(report.periodEnd);
+  const kstStart = new Date(start.getTime() + 9 * 60 * 60 * 1000);
+  const kstEnd = new Date(end.getTime() + 9 * 60 * 60 * 1000);
+  return `${kstStart.getUTCMonth() + 1}월 ${kstStart.getUTCDate()}일 ~ ${kstEnd.getUTCMonth() + 1}월 ${kstEnd.getUTCDate()}일`;
 }
 
-function countLabel(report: DailyInsightReport) {
-  const counts = normalizeCounts(report);
-  return `피드백 ${counts.feedbacks} · 주문 시도 ${counts.attempts} · 가드레일 ${counts.guardrails}`;
-}
-
-function statusLabel(status: DailyInsightReport["status"]) {
-  if (status === "PARTIAL") return "일부 완료";
-  if (status === "FAILED") return "생성 실패";
-  return "완료";
-}
-
-function reportSortTime(report: DailyInsightReport) {
-  return new Date(report.generatedAt || report.updatedAt || report.createdAt || 0).getTime();
-}
-
-function sortReportsByTime(reports: DailyInsightReport[]) {
-  const unique = new Map<string, DailyInsightReport>();
+function sortWeeklyReports(reports: WeeklyInsightReport[]) {
+  const byWeek = new Map<string, WeeklyInsightReport>();
   for (const report of reports) {
-    if (!["COMPLETED", "PARTIAL", "FAILED"].includes(report.status)) continue;
-    const key = report.reportId || `${report.date}:${report.generatedAt || report.updatedAt}`;
-    const current = unique.get(key);
-    const currentTime = current ? reportSortTime(current) : 0;
-    const nextTime = reportSortTime(report);
-    if (!current || nextTime >= currentTime) {
-      unique.set(key, report);
+    const current = byWeek.get(report.weekKey);
+    if (!current || report.reportVersion >= current.reportVersion) {
+      byWeek.set(report.weekKey, report);
     }
   }
-  return [...unique.values()].sort((a, b) => reportSortTime(b) - reportSortTime(a));
-}
-
-function metricSections(report: DailyInsightReport) {
-  const virtual = buildVirtualPnlViewModel(report.metrics?.cancelledOrderVirtualPnl);
-  return {
-    virtual: virtual as VirtualPnlView,
-    waiting: report.metrics?.waitingPriceEffect,
-    reduced: report.metrics?.reducedExposure,
-    comparison: report.metrics?.feedbackPnlComparison,
-  };
-}
-
-function reportSummary(report: DailyInsightReport) {
-  return (
-    report.overview?.summary ||
-    report.fieldAnalysis?.oneLineAdvice ||
-    "저장된 주문 기록을 기준으로 생성한 리포트입니다."
+  return [...byWeek.values()].sort(
+    (left, right) =>
+      new Date(right.periodStart).getTime() - new Date(left.periodStart).getTime(),
   );
 }
 
-function ReportDetailModal({
+function reportSummary(report: WeeklyInsightReport) {
+  return (
+    report.overview?.summary ||
+    report.fieldAnalysis?.oneLineAdvice ||
+    "저장된 주간 주문 기록을 기준으로 생성한 리포트입니다."
+  );
+}
+
+function statusBadge(report: WeeklyInsightReport) {
+  if (report.reportStatus === "FAILED") return "생성 실패";
+  if (report.reportStatus === "PARTIAL") return "일부 완료";
+  return report.periodState === "CLOSED" ? "최종" : "진행 중";
+}
+
+function ReportModal({
   report,
   onClose,
 }: {
-  report: DailyInsightReport;
+  report: WeeklyInsightReport;
   onClose: () => void;
 }) {
   const router = useRouter();
-  const titleId = `daily-report-${report.date}`;
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
-  const [suggestionAction, setSuggestionAction] = useState<{
-    id: string;
-    state: "accepting" | "dismissing" | "done" | "error";
-    message: string;
-  } | null>(null);
-  const metrics = metricSections(report);
-  const firstWaitingItem = metrics.waiting?.items?.[0] as
-    | { priceEffectRate?: number }
-    | undefined;
-  const flowSource: FlowView = report.orderFlows?.length
-    ? {
-        visibleFlows: report.orderFlows.slice(0, 5),
-        hiddenFlows: report.orderFlows.slice(5),
-        unlinkedEvents: [],
-      }
-    : (buildOrderFlowViewModels(report) as FlowView);
-  const suggestions = report.suggestions || {
-    newGuardrail: null,
-    modification: null,
-    newGuardrails: [],
-    guardrailModifications: [],
-  };
-  const newGuardrails = suggestions.newGuardrail
-    ? [suggestions.newGuardrail]
-    : suggestions.newGuardrails || [];
-  const modifications =
-    suggestions.modification
-      ? [suggestions.modification]
-      : suggestions.modifications || suggestions.guardrailModifications || [];
-  const defaultOpenTopicKey = (report.fieldAnalysis?.topics || []).find(
-    (topic) => topic.severity !== "unavailable",
-  )?.topic_key;
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const titleId = `weekly-report-${report.weekKey}`;
+  const virtual = report.metrics.twentyFourHourVirtualOrderResult;
+  const suggestions = [
+    report.suggestions.newGuardrail,
+    report.suggestions.modification,
+  ].filter(Boolean);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -186,9 +111,25 @@ function ReportDetailModal({
     };
   }, [onClose]);
 
-  function renderFlow(flow: OrderFlowViewModel) {
-    const steps = buildFlowSteps(flow);
-    const tradeAvailability = flow.trade?.availability || "NOT_CONFIRMED";
+  async function handleSuggestionAction(suggestionId: string, action: "accept" | "dismiss") {
+    setActionMessage(action === "accept" ? "가드레일을 적용하고 있어요." : "제안을 닫고 있어요.");
+    try {
+      const response = await fetch(
+        `/api/insights/weekly/${encodeURIComponent(report.weekKey)}/suggestions/${suggestionId}/${action}`,
+        { method: "POST" },
+      );
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "제안 처리에 실패했습니다.");
+      }
+      setActionMessage(action === "accept" ? "가드레일이 적용됐어요." : "제안을 닫았어요.");
+      router.refresh();
+    } catch (error) {
+      setActionMessage(error instanceof Error ? error.message : "제안 처리에 실패했습니다.");
+    }
+  }
+
+  function renderFlow(flow: WeeklyInsightReport["orderFlows"][number]) {
     return (
       <article className={styles.orderFlowCard} key={flow.flowId}>
         <header>
@@ -196,97 +137,21 @@ function ReportDetailModal({
             {formatTimeKorean(flow.startedAt)} · {getMarketLabel(flow.market)}{" "}
             {getSideLabel(flow.side)}
           </strong>
-          <span>{tradeAvailability === "CONFIRMED" ? "실제 주문 확인" : "실제 주문 데이터 미확인"}</span>
+          <span>{flow.linkConfidence === "EXACT" ? "정확 연결" : flow.linkConfidence === "INFERRED" ? "추론 연결" : "연결 불확실"}</span>
         </header>
         <ol>
-          {steps.map((step: string) => (
-            <li key={step}>{step}</li>
+          {(flow.events || []).map((event) => (
+            <li key={event.id}>{event.title} · {event.description}</li>
           ))}
         </ol>
         {flow.guardrail.ruleNames.length > 0 ? (
           <p>표시된 가드레일: {flow.guardrail.ruleNames.join(", ")}</p>
         ) : null}
-        {tradeAvailability !== "CONFIRMED" ? (
+        {flow.trade.availability !== "CONFIRMED" ? (
           <p>실제 주문 데이터가 없어 체결 여부는 확인할 수 없어요.</p>
         ) : null}
       </article>
     );
-  }
-
-  async function handleSuggestionAction(
-    suggestionId: string,
-    action: "accept" | "dismiss",
-  ) {
-    setSuggestionAction({
-      id: suggestionId,
-      state: action === "accept" ? "accepting" : "dismissing",
-      message: action === "accept" ? "가드레일을 적용하고 있어요." : "제안을 닫고 있어요.",
-    });
-    try {
-      const response = await fetch(
-        `/api/insights/daily/${encodeURIComponent(report.reportId || report.date)}/suggestions/${suggestionId}/${action}`,
-        { method: "POST" },
-      );
-      const payload = await response.json().catch(() => null);
-      if (!response.ok || payload?.ok === false) {
-        throw new Error(payload?.message || "제안 처리에 실패했습니다.");
-      }
-      setSuggestionAction({
-        id: suggestionId,
-        state: "done",
-        message:
-          action === "accept"
-            ? "가드레일이 적용됐어요."
-            : "제안을 닫았어요.",
-      });
-      router.refresh();
-    } catch (error) {
-      setSuggestionAction({
-        id: suggestionId,
-        state: "error",
-        message:
-          error instanceof Error
-            ? error.message
-            : "제안 처리에 실패했습니다.",
-      });
-    }
-  }
-
-  function renderSimulationRows(simulation?: {
-    triggerCount?: number;
-    support?: number;
-    precision: number | null;
-    recall: number | null;
-    plannedTriggerRate?: number | null;
-    falsePositiveRate?: number | null;
-  }) {
-    if (!simulation) return null;
-    return (
-      <dl className={styles.metricRows}>
-        <div>
-          <dt>경고 조건 일치</dt>
-          <dd>{simulation.triggerCount ?? simulation.support ?? 0}건</dd>
-        </div>
-        <div>
-          <dt>후회 거래 감지율</dt>
-          <dd>{formatPercent(simulation.recall ?? 0).replace("+", "")}</dd>
-        </div>
-        <div>
-          <dt>계획적 거래 경고율</dt>
-          <dd>
-            {formatPercent(
-              simulation.plannedTriggerRate ??
-                simulation.falsePositiveRate ??
-                0,
-            ).replace("+", "")}
-          </dd>
-        </div>
-      </dl>
-    );
-  }
-
-  function actionMessage(suggestionId: string) {
-    return suggestionAction?.id === suggestionId ? suggestionAction.message : null;
   }
 
   return (
@@ -305,15 +170,17 @@ function ReportDetailModal({
       >
         <header className={styles.dailyReportModalHeader}>
           <div>
-            <h2 id={titleId}>{formatDateKorean(report.date)} 일간 리포트</h2>
-            <p>{countLabel(report)}</p>
+            <h2 id={titleId}>{formatPeriod(report)} 주간 리포트</h2>
+            <p>
+              활동 {report.sourceCounts.activeDays}일 · 피드백 {report.sourceCounts.answeredFeedbacks} · 주문 시도 {report.sourceCounts.orderAttempts} · 가드레일 {report.sourceCounts.shownGuardrails}
+            </p>
           </div>
           <button
             className={styles.modalCloseButton}
             type="button"
             ref={closeButtonRef}
             onClick={onClose}
-            aria-label="리포트 닫기"
+            aria-label="주간 리포트 닫기"
           >
             ×
           </button>
@@ -321,100 +188,69 @@ function ReportDetailModal({
 
         <div className={styles.dailyReportModalBody}>
           <section className={styles.reportSection}>
-            <h3>오늘의 기록 요약</h3>
+            <h3>1. 이번 주 기록 요약</h3>
             <p>{reportSummary(report)}</p>
           </section>
 
           <section className={styles.reportSection}>
-            <h3>가드레일이 주문에 미친 정량 변화</h3>
-            {metrics.virtual.available ? (
-              <>
-                <div className={styles.metricSummary}>
-                  <dl className={styles.metricRows}>
-                  {metrics.virtual.summaryRows.map(([label, value]) => (
-                      <div key={label}>
-                        <dt>{label}</dt>
-                        <dd>{value}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                </div>
-                <div className={styles.metricItemList}>
-                  {metrics.virtual.items.map((item) => (
-                    <article className={styles.metricItem} key={item.key}>
-                      <header>
-                        <strong>{item.title}</strong>
-                        <span>{item.time}</span>
-                      </header>
-                      <dl className={styles.metricRows}>
-                        {item.rows.map(([label, value]) => (
-                          <div key={label}>
-                            <dt>{label}</dt>
-                            <dd>{value}</dd>
-                          </div>
-                        ))}
-                      </dl>
-                      <p>{item.note}</p>
-                      {item.sellNotice ? <p>{item.sellNotice}</p> : null}
-                    </article>
-                  ))}
-                </div>
-              </>
+            <h3>2. 일별 기록 변화</h3>
+            <div className={styles.metricItemList}>
+              {report.dailyBreakdown.map((day, index) => (
+                <article className={styles.metricItem} key={day.date}>
+                  <header>
+                    <strong>{WEEKDAY_LABELS[index]} · {day.date}</strong>
+                    <span>{day.active ? "활동" : "기록 없음"}</span>
+                  </header>
+                  <p>
+                    주문 시도 {day.orderAttemptCount} · 가드레일 {day.shownGuardrailCount} · 피드백 {day.plannedFeedbackCount + day.regrettedFeedbackCount}
+                  </p>
+                </article>
+              ))}
+            </div>
+          </section>
+
+          <section className={styles.reportSection}>
+            <h3>3. 가드레일이 주문에 미친 정량 변화</h3>
+            {virtual.status === "AVAILABLE" ? (
+              <div className={styles.metricSummary}>
+                <strong>24시간 가상 주문 결과</strong>
+                <p>비교 주문 {virtual.sampleCount}건 · 순 가상 가격 변화 {formatKrw(virtual.netValue)}</p>
+                {virtual.notMaturedCount > 0 ? (
+                  <p>24시간 비교 시점이 아직 지나지 않은 주문 {virtual.notMaturedCount}건</p>
+                ) : null}
+              </div>
             ) : (
               <div className={styles.neutralEmpty}>
-                <strong>{metrics.virtual.title}</strong>
-                <p>{metrics.virtual.message}</p>
+                <strong>24시간 비교 가능한 주문이 아직 부족해요.</strong>
+                <p>{virtual.notMaturedCount > 0 ? `24시간 비교 시점이 아직 지나지 않은 주문 ${virtual.notMaturedCount}건` : "현재 ticker 가격을 과거 24시간 가격 대신 사용하지 않았어요."}</p>
               </div>
             )}
-            {metrics.waiting?.status === "AVAILABLE" ? (
-              <div className={styles.metricSummary}>
-                <strong>경고 후 기다린 체결 가격 효과</strong>
-                <p>
-                  비교 주문 {metrics.waiting.sampleCount}건
-                  {typeof firstWaitingItem?.priceEffectRate === "number"
-                    ? ` · ${formatPercent(firstWaitingItem.priceEffectRate)}`
-                    : ""}
-                </p>
-              </div>
-            ) : null}
-            {metrics.reduced?.status === "AVAILABLE" ? (
-              <div className={styles.metricSummary}>
-                <strong>줄인 주문 금액</strong>
-                <p>{formatKrw(metrics.reduced.totalReducedExposureAmount)}</p>
-              </div>
-            ) : null}
-          </section>
-
-          <section className={styles.reportSection}>
-            <h3>주문 시도 → 경고 → 반응 → 피드백 흐름</h3>
-            <div className={styles.orderFlowList}>
-              {flowSource.visibleFlows.map(renderFlow)}
+            <div className={styles.metricItemList}>
+              {virtual.items.slice(0, 5).map((item) => (
+                <article className={styles.metricItem} key={item.snapshotId}>
+                  <header>
+                    <strong>{getMarketLabel(item.market)} {getSideLabel(item.side)}</strong>
+                    <span>{formatTimeKorean(item.capturedAt)}</span>
+                  </header>
+                  <dl className={styles.metricRows}>
+                    <div><dt>가상 가격 변화</dt><dd>{formatKrw(item.value)}</dd></div>
+                    <div><dt>24시간 수익률</dt><dd>{formatPercent(item.returnRate)}</dd></div>
+                  </dl>
+                  <p>{item.note}</p>
+                </article>
+              ))}
             </div>
-            {flowSource.hiddenFlows.length > 0 ? (
-              <details className={styles.reportDetails}>
-                <summary>나머지 흐름 {flowSource.hiddenFlows.length}개 보기</summary>
-                <div className={styles.orderFlowList}>
-                  {flowSource.hiddenFlows.map(renderFlow)}
-                </div>
-              </details>
-            ) : null}
-            {flowSource.unlinkedEvents.length > 0 ? (
-              <details className={styles.reportDetails}>
-                <summary>연결되지 않은 기록 보기</summary>
-                <ul className={styles.rawEventList}>
-                  {flowSource.unlinkedEvents.map((event: { id: string; title: string; description: string }) => (
-                    <li key={event.id}>
-                      <strong>{event.title}</strong>
-                      <span>{event.description}</span>
-                    </li>
-                  ))}
-                </ul>
-              </details>
-            ) : null}
           </section>
 
           <section className={styles.reportSection}>
-            <h3>AI가 기록에서 발견한 패턴</h3>
+            <h3>4. 주간 주문 흐름</h3>
+            <div className={styles.orderFlowList}>
+              {report.orderFlows.map(renderFlow)}
+            </div>
+          </section>
+
+          <section className={styles.reportSection}>
+            <h3>5. AI가 발견한 주간 패턴</h3>
             <div className={styles.aiCardGrid}>
               {(report.overview?.cards || []).map((card) => (
                 <article className={styles.patternCard} key={`${card.title}:${card.severity}`}>
@@ -427,13 +263,13 @@ function ReportDetailModal({
           </section>
 
           <section className={styles.reportSection}>
-            <h3>분야별 상세 분석</h3>
+            <h3>6. 분야별 상세 분석</h3>
             <div className={styles.fieldTopicList}>
-              {(report.fieldAnalysis?.topics || []).map((topic) => (
+              {(report.fieldAnalysis?.topics || []).map((topic, index) => (
                 <details
                   className={styles.fieldTopic}
                   key={topic.topic_key}
-                  open={topic.topic_key === defaultOpenTopicKey}
+                  open={index === 0 && topic.severity !== "unavailable"}
                 >
                   <summary>
                     {topic.topic_label}
@@ -446,143 +282,70 @@ function ReportDetailModal({
             </div>
           </section>
 
-          {report.suggestionStatus !== "NOT_IMPLEMENTED" ? (
-            <section className={styles.reportSection}>
-              <h3>내 기록에 맞는 가드레일 제안</h3>
-              {report.suggestionStatus === "INSUFFICIENT_DATA" ? (
-                <div className={styles.neutralEmpty}>
-                  <strong>가드레일을 제안하기에 기록이 아직 부족해요.</strong>
-                  <p>비슷한 주문 상황과 피드백이 더 쌓이면 새 규칙이나 기존 규칙 조정을 제안할 수 있어요.</p>
-                </div>
-              ) : report.suggestionStatus === "ERROR" ? (
-                <div className={styles.neutralEmpty}>
-                  <strong>가드레일 제안 분석을 완료하지 못했어요.</strong>
-                  <p>기존 일간 리포트는 그대로 확인할 수 있어요.</p>
-                </div>
-              ) : newGuardrails.length === 0 && modifications.length === 0 ? (
-                <div className={styles.neutralEmpty}>
-                  <strong>이번 기록에서는 신뢰할 만한 새 가드레일 제안을 찾지 못했어요.</strong>
-                  <p>기존 가드레일과 최근 기록의 차이가 충분히 크지 않았어요.</p>
-                </div>
-              ) : (
-                <div className={styles.suggestionList}>
-                  {newGuardrails.map((suggestion) => (
-                    <article className={styles.suggestionCard} key={suggestion.suggestionId}>
-                      <span>새로운 가드레일 제안</span>
-                      <strong>{suggestion.title}</strong>
-                      <p>{suggestion.rationale}</p>
-                      <div className={styles.suggestionDetailGrid}>
-                        <div>
-                          <b>제안 조건</b>
-                          <p>{buildExpressionPreview(suggestion.proposedRule.expression)}</p>
-                        </div>
-                        <div>
-                          <b>근거</b>
-                          <p>
-                            유사 기록 {suggestion.evidenceCount}건 · 신뢰도{" "}
-                            {formatPercent(suggestion.confidence).replace("+", "")}
-                          </p>
-                        </div>
-                        <div>
-                          <b>과거 기록 시뮬레이션</b>
-                          {renderSimulationRows(suggestion.simulation)}
-                        </div>
-                      </div>
-                      <details className={styles.reportDetails}>
-                        <summary>규칙 자세히 보기</summary>
-                        <p>{suggestion.explanation?.expectedChange}</p>
-                        <p>{suggestion.explanation?.caution}</p>
-                      </details>
-                      <div className={styles.suggestionActions}>
-                        <button
-                          className={styles.primaryButton}
-                          type="button"
-                          onClick={() => handleSuggestionAction(suggestion.suggestionId, "accept")}
-                          disabled={suggestion.status !== "PENDING" || suggestionAction?.state === "accepting"}
-                        >
-                          {suggestion.status === "ACCEPTED" ? "추가됨" : "이 가드레일 추가"}
-                        </button>
-                        <button
-                          className={styles.secondaryButton}
-                          type="button"
-                          onClick={() => handleSuggestionAction(suggestion.suggestionId, "dismiss")}
-                          disabled={suggestion.status !== "PENDING" || suggestionAction?.state === "dismissing"}
-                        >
-                          제안 닫기
-                        </button>
-                      </div>
-                      {actionMessage(suggestion.suggestionId) ? (
-                        <p>{actionMessage(suggestion.suggestionId)}</p>
-                      ) : null}
-                    </article>
-                  ))}
-                  {modifications.map((suggestion) => (
-                    <article className={styles.suggestionCard} key={suggestion.suggestionId}>
-                      <span>기존 가드레일 조정 제안</span>
-                      <strong>{suggestion.title}</strong>
-                      <p>{suggestion.rationale}</p>
-                      <div className={styles.suggestionDetailGrid}>
-                        <div>
-                          <b>변경 내용</b>
-                          {(suggestion.diff || []).map((item) => (
-                            <p key={item.path}>
-                              현재 {String(item.before)} → 제안 {String(item.after)}
-                            </p>
-                          ))}
-                        </div>
-                        <div>
-                          <b>예상 변화</b>
-                          <p>{suggestion.explanation?.expectedChange}</p>
-                        </div>
-                        <div>
-                          <b>과거 기록 시뮬레이션</b>
-                          {renderSimulationRows(suggestion.proposedSimulation)}
-                        </div>
-                      </div>
-                      <details className={styles.reportDetails}>
-                        <summary>변경 내용 보기</summary>
+          <section className={styles.reportSection}>
+            <h3>7. 내 기록에 맞는 가드레일 제안</h3>
+            {suggestions.length === 0 ? (
+              <div className={styles.neutralEmpty}>
+                <strong>이번 주 리포트에 바로 적용할 제안은 없어요.</strong>
+                <p>
+                  신규 제안 {report.suggestionAnalysis.newGuardrail.status} · 기존 규칙 수정 {report.suggestionAnalysis.modification.status}
+                </p>
+              </div>
+            ) : (
+              <div className={styles.suggestionList}>
+                {suggestions.map((suggestion) => suggestion ? (
+                  <article className={styles.suggestionCard} key={suggestion.suggestionId}>
+                    <span>{suggestion.type === "NEW_GUARDRAIL" ? "새로운 가드레일 제안" : "기존 가드레일 조정 제안"}</span>
+                    <strong>{suggestion.title}</strong>
+                    <p>{suggestion.rationale}</p>
+                    <div className={styles.suggestionDetailGrid}>
+                      <div>
+                        <b>제안 조건</b>
                         <p>{buildExpressionPreview(suggestion.proposedRule.expression)}</p>
-                        {(suggestion.diff || []).map((item) => (
-                          <p key={item.path}>{item.reason}</p>
-                        ))}
-                      </details>
-                      <div className={styles.suggestionActions}>
-                        <button
-                          className={styles.primaryButton}
-                          type="button"
-                          onClick={() => handleSuggestionAction(suggestion.suggestionId, "accept")}
-                          disabled={suggestion.status !== "PENDING" || suggestionAction?.state === "accepting"}
-                        >
-                          {suggestion.status === "ACCEPTED" ? "수정됨" : "이렇게 수정"}
-                        </button>
-                        <button
-                          className={styles.secondaryButton}
-                          type="button"
-                          onClick={() => handleSuggestionAction(suggestion.suggestionId, "dismiss")}
-                          disabled={suggestion.status !== "PENDING" || suggestionAction?.state === "dismissing"}
-                        >
-                          제안 닫기
-                        </button>
                       </div>
-                      {actionMessage(suggestion.suggestionId) ? (
-                        <p>{actionMessage(suggestion.suggestionId)}</p>
-                      ) : null}
-                    </article>
-                  ))}
-                </div>
-              )}
-            </section>
-          ) : null}
+                      <div>
+                        <b>근거</b>
+                        <p>표본 {suggestion.evidenceCount}건 · 평가 방식 {suggestion.evaluationMode || "IN_SAMPLE"}</p>
+                      </div>
+                      <div>
+                        <b>주의</b>
+                        <p>같은 과거 기록에서 찾고 평가한 참고 결과예요. 새로운 주문에서도 같은 결과가 보장되지는 않아요.</p>
+                      </div>
+                    </div>
+                    <div className={styles.suggestionActions}>
+                      <button
+                        className={styles.primaryButton}
+                        type="button"
+                        onClick={() => handleSuggestionAction(suggestion.suggestionId, "accept")}
+                        disabled={suggestion.status !== "PENDING"}
+                      >
+                        {suggestion.type === "NEW_GUARDRAIL" ? "이 가드레일 추가" : "이렇게 수정"}
+                      </button>
+                      <button
+                        className={styles.secondaryButton}
+                        type="button"
+                        onClick={() => handleSuggestionAction(suggestion.suggestionId, "dismiss")}
+                        disabled={suggestion.status !== "PENDING"}
+                      >
+                        제안 닫기
+                      </button>
+                    </div>
+                  </article>
+                ) : null)}
+              </div>
+            )}
+            {actionMessage ? <p>{actionMessage}</p> : null}
+          </section>
 
           <section className={styles.reportSection}>
-            <h3>계산 방식과 주의 문구</h3>
+            <h3>8. 계산 방식과 주의 사항</h3>
             <details className={styles.reportCalculation}>
               <summary>자세히 보기</summary>
               <ul>
-                <li>{report.metrics?.cancelledOrderVirtualPnl?.disclaimer}</li>
-                <li>{report.metrics?.waitingPriceEffect?.disclaimer}</li>
-                <li>{report.metrics?.reducedExposure?.disclaimer}</li>
-                <li>{report.metrics?.feedbackPnlComparison?.disclaimer}</li>
+                <li>{report.metrics.twentyFourHourVirtualOrderResult.disclaimer}</li>
+                <li>{String(report.metrics.waitingPriceEffect.disclaimer || "")}</li>
+                <li>{String(report.metrics.reducedExposure.disclaimer || "")}</li>
+                <li>{String(report.metrics.feedbackPnlComparison.disclaimer || "")}</li>
               </ul>
             </details>
           </section>
@@ -594,163 +357,138 @@ function ReportDetailModal({
 
 export default function AiInsightsPage({
   reports,
-  todayStatus,
+  weeklyStatus,
 }: {
-  reports: DailyInsightReport[];
-  todayStatus: DailyInsightEligibility;
+  reports: WeeklyInsightReport[];
+  weeklyStatus: WeeklyInsightStatusResponse;
 }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const todayRef = useRef<HTMLElement | null>(null);
+  const generateRef = useRef<HTMLElement | null>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
-  const [generatedReport, setGeneratedReport] = useState<DailyInsightReport | null>(null);
+  const [generatedReport, setGeneratedReport] = useState<WeeklyInsightReport | null>(null);
   const displayReports = useMemo(
-    () => sortReportsByTime(generatedReport ? [generatedReport, ...reports] : reports),
+    () => sortWeeklyReports(generatedReport ? [generatedReport, ...reports] : reports),
     [generatedReport, reports],
   );
-  const selectedReportId = searchParams.get("report");
-  const selectedReport = selectedReportId
-    ? displayReports.find(
-        (item) =>
-          (item.reportId || item.date) === selectedReportId ||
-          item.date === selectedReportId,
-      ) || null
+  const selectedWeekKey = searchParams.get("week");
+  const selectedReport = selectedWeekKey
+    ? displayReports.find((report) => report.weekKey === selectedWeekKey) || null
     : null;
-  const queryError = selectedReportId && !selectedReport
-    ? "해당 저장 리포트를 찾을 수 없어요."
-    : null;
-  const todayReport = displayReports.find((report) => report.date === todayStatus.date) || null;
+  const targetReport =
+    displayReports.find((report) => report.weekKey === weeklyStatus.weekKey) || null;
 
   function replaceQuery(next: URLSearchParams) {
     const query = next.toString();
     router.push(query ? `${pathname}?${query}` : pathname, { scroll: false });
   }
 
-  function openReport(report: DailyInsightReport, trigger?: HTMLElement | null) {
+  function openReport(report: WeeklyInsightReport, trigger?: HTMLElement | null) {
     restoreFocusRef.current = trigger || (document.activeElement as HTMLElement | null);
     const next = new URLSearchParams(searchParams.toString());
-    next.set("report", report.reportId || report.date);
-    next.delete("focus");
-    replaceQuery(next);
-  }
-
-  function handleGeneratedReport(report: DailyInsightReport) {
-    setGeneratedReport(report);
-    const next = new URLSearchParams(searchParams.toString());
-    next.set("report", report.reportId || report.date);
+    next.set("week", report.weekKey);
     next.delete("focus");
     replaceQuery(next);
   }
 
   function closeReport() {
     const next = new URLSearchParams(searchParams.toString());
-    next.delete("report");
+    next.delete("week");
     replaceQuery(next);
     requestAnimationFrame(() => restoreFocusRef.current?.focus?.());
   }
 
+  function handleGenerated(report: WeeklyInsightReport) {
+    setGeneratedReport(report);
+    const next = new URLSearchParams(searchParams.toString());
+    next.set("week", report.weekKey);
+    next.delete("focus");
+    replaceQuery(next);
+  }
+
   useEffect(() => {
-    if (searchParams.get("focus") === "today") {
-      todayRef.current?.scrollIntoView({ block: "center" });
-      todayRef.current?.classList.add(styles.focusPulse);
+    if (searchParams.get("focus") === "generate") {
+      generateRef.current?.scrollIntoView({ block: "center" });
+      generateRef.current?.classList.add(styles.focusPulse);
       const timerId = window.setTimeout(() => {
-        todayRef.current?.classList.remove(styles.focusPulse);
+        generateRef.current?.classList.remove(styles.focusPulse);
       }, 1400);
       return () => window.clearTimeout(timerId);
     }
     return undefined;
   }, [searchParams]);
 
-  useEffect(() => {
-    const reportId = searchParams.get("report");
-    if (!reportId) return;
-    const report = displayReports.find(
-      (item) => (item.reportId || item.date) === reportId || item.date === reportId,
-    );
-    if (report) return;
-    const next = new URLSearchParams(searchParams.toString());
-    next.delete("report");
-    router.replace(next.toString() ? `${pathname}?${next.toString()}` : pathname, { scroll: false });
-  }, [displayReports, pathname, router, searchParams]);
-
   return (
     <>
       <PageHeader
         eyebrow="Intelligence"
         title="AI 인사이트"
-        description="버튼을 누를 때마다 현재 저장된 기록으로 새 AI 인사이트를 만들고, 저장된 리포트는 최신 생성순으로 확인하세요."
+        description="한 주 동안 쌓인 주문 시도, 가드레일, 피드백을 모아 반복된 행동과 가격 효과를 확인해요."
       />
 
       <section
         className={`${styles.panel} ${styles.aiDetailPanel} ${styles.aiGeneratePanel}`}
-        aria-labelledby="daily-insight-cta-title"
-        ref={todayRef}
+        aria-labelledby="weekly-insight-cta-title"
+        ref={generateRef}
       >
         <header className={styles.panelHeader}>
           <div className={styles.panelTitleGroup}>
             <span className={styles.panelIcon}>
               <SparklesIcon />
             </span>
-            <h2 className={styles.panelTitle} id="daily-insight-cta-title">
-              오늘의 일간 리포트
+            <h2 className={styles.panelTitle} id="weekly-insight-cta-title">
+              {weeklyStatus.periodState === "CLOSED" ? "지난주 주간 리포트" : "이번 주 주간 리포트"}
             </h2>
           </div>
           <span className={styles.panelMeta}>
-            피드백 {todayStatus.answeredFeedbackCount}건
+            피드백 {weeklyStatus.answeredFeedbackCount}/{weeklyStatus.requiredFeedbackCount}
           </span>
         </header>
-        <DailyInsightActions
-          status={todayStatus}
-          todayReport={todayReport}
-          onGenerated={handleGeneratedReport}
+        <WeeklyInsightActions
+          status={weeklyStatus}
+          report={targetReport}
+          onViewReport={targetReport ? () => openReport(targetReport) : undefined}
+          onGenerated={handleGenerated}
         />
       </section>
 
       <section
         className={`${styles.panel} ${styles.aiDetailPanel}`}
-        aria-labelledby="ai-list-title"
+        aria-labelledby="weekly-list-title"
       >
         <header className={styles.panelHeader}>
           <div className={styles.panelTitleGroup}>
             <span className={styles.panelIcon}>
               <SparklesIcon />
             </span>
-            <h2 className={styles.panelTitle} id="ai-list-title">
-              저장된 일간 리포트
+            <h2 className={styles.panelTitle} id="weekly-list-title">
+              저장된 주간 리포트
             </h2>
           </div>
           <span className={styles.panelMeta}>{displayReports.length}개 저장</span>
         </header>
 
-        {queryError ? <p className={styles.formError}>{queryError}</p> : null}
-
         {displayReports.length > 0 ? (
           <div className={styles.aiReportList}>
-            {displayReports.map((report) => {
-              const item = buildReportListItem(
-                report,
-                selectedReport ? selectedReport.reportId || selectedReport.date : null,
-              );
-              return (
-                <button
-                  className={styles.aiReportItem}
-                  key={item.key}
-                  type="button"
-                  onClick={(event) => openReport(report, event.currentTarget)}
-                  data-selected={item.selected}
-                >
-                  <div>
-                    <strong>
-                      {item.dateLabel} · {statusLabel(report.status)}
-                    </strong>
-                    <p>{item.summary}</p>
-                  </div>
-                  <span>{item.meta}</span>
-                  <small>리포트 보기 →</small>
-                </button>
-              );
-            })}
+            {displayReports.map((report) => (
+              <button
+                className={styles.aiReportItem}
+                key={report.weekKey}
+                type="button"
+                onClick={(event) => openReport(report, event.currentTarget)}
+                data-selected={selectedReport?.weekKey === report.weekKey}
+              >
+                <div>
+                  <strong>{formatPeriod(report)} · {statusBadge(report)}</strong>
+                  <p>{reportSummary(report)}</p>
+                </div>
+                <span>
+                  활동 {report.sourceCounts.activeDays}일 · 피드백 {report.sourceCounts.answeredFeedbacks} · 주문 시도 {report.sourceCounts.orderAttempts} · 가드레일 {report.sourceCounts.shownGuardrails}
+                </span>
+                <small>리포트 보기 →</small>
+              </button>
+            ))}
           </div>
         ) : (
           <div className={styles.aiDetailEmpty}>
@@ -758,15 +496,15 @@ export default function AiInsightsPage({
               <span className={styles.emptyGlyph}>
                 <SparklesIcon />
               </span>
-              <strong>아직 저장된 일간 리포트가 없습니다</strong>
-              <p>생성하기 버튼을 누르면 현재 기록으로 새 AI 인사이트를 만들 수 있어요.</p>
+              <strong>아직 저장된 주간 리포트가 없습니다</strong>
+              <p>주간 피드백이 5개 이상 쌓이면 새 AI 인사이트를 만들 수 있어요.</p>
             </div>
           </div>
         )}
       </section>
 
       {selectedReport ? (
-        <ReportDetailModal report={selectedReport} onClose={closeReport} />
+        <ReportModal report={selectedReport} onClose={closeReport} />
       ) : null}
     </>
   );

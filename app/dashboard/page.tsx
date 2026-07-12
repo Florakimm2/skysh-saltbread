@@ -1,5 +1,5 @@
 import { getDashboardSession } from "@/backend/modules/auth/session";
-import { getLatestDailyInsight } from "@/backend/modules/insight/daily-service";
+import { getLatestWeeklyInsightBundle } from "@/backend/modules/insight/weekly-service";
 import DashboardOverview from "@/frontend/dashboard/dashboard-overview";
 import {
   loadDashboardTimelineData,
@@ -15,7 +15,7 @@ export default async function DashboardPage() {
   }
 
   const timelineData = await loadDashboardTimelineData(session.userId, 5);
-  const insight = await getLatestDailyInsight({ userId: session.userId });
+  const insight = await getLatestWeeklyInsightBundle({ userId: session.userId });
 
   return (
     <DashboardOverview
