@@ -1,5 +1,6 @@
 // backend/modules/insight/rules.ts
 import { getMonthlyTradeUnits, getMonthlyAggregates } from "./repository";
+import type { MonthlyAggregateRecord, OptimizedTradeUnit } from "./repository";
 
 // ── 앵커 점수 타입 (테마 순서는 프롬프트 카드 순서와 동일) ──
 export interface AnchorScore {
@@ -28,7 +29,7 @@ export async function analyzeInsights(userId: string): Promise<InsightMetricsRes
     const anchorScores: AnchorScore[] = [];
 
     // ═══════════════════════════════════════════
-    // 1. [EMOTIONAL] 지표 산출 + 앵커 점수
+    // 1. [EMOTIONAL] 원칙 회고 지표 산출 + 앵커 점수
     // ═══════════════════════════════════════════
     const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000).getTime();
     const threeDaysAgo = new Date(now - 3 * 24 * 60 * 60 * 1000).getTime();
@@ -49,7 +50,7 @@ export async function analyzeInsights(userId: string): Promise<InsightMetricsRes
         : 0;
 
     metricSummaries.push(
-        `[지표-감정매매] 최근 7일간 피드백 제출 거래 수: ${recent7DaysFeedbacks.length}건, 감정적 거래 수: ${emotional7Days.length}건, 감정적 매매 비율: ${(emotionalRatio * 100).toFixed(1)}%, 최근 3일간 감정적 거래 횟수: ${emotional3Days.length}회`
+        `[지표-원칙회고] 최근 7일간 피드백 제출 거래 수: ${recent7DaysFeedbacks.length}건, 후회했던 거래 기록 수: ${emotional7Days.length}건, 후회 거래 기록 비율: ${(emotionalRatio * 100).toFixed(1)}%, 최근 3일간 후회 거래 기록 횟수: ${emotional3Days.length}회`
     );
 
     let emotionalAnchor: number;
@@ -71,7 +72,7 @@ export async function analyzeInsights(userId: string): Promise<InsightMetricsRes
         : 0;
 
     metricSummaries.push(
-        `[지표-가드레일] 경고 무시 진행(PROCEED) 횟수: ${proceedTrades.length}회, 무시 후 감정적 거래 유발 건수: ${emotionalProceeds.length}건, 경고 무시 위험 전환율: ${proceedRiskRatio.toFixed(1)}%`
+        `[지표-가드레일] 경고 후 진행(PROCEED) 횟수: ${proceedTrades.length}회, 진행 후 후회 거래로 기록된 건수: ${emotionalProceeds.length}건, 경고 후 후회 기록 비율: ${proceedRiskRatio.toFixed(1)}%`
     );
 
     let guardrailAnchor: number;

@@ -367,6 +367,135 @@
   line-height: 1.45;
 }
 
+.saltbread-warning-reason {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--flame-border) 70%, #ffffff);
+  border-radius: 8px;
+  background: #fffdfb;
+  color: #4e596c;
+}
+
+.saltbread-warning-reason__heading {
+  color: var(--flame-deep);
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1.25;
+}
+
+.saltbread-warning-reason__rule {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  padding: 3px 6px;
+  border-radius: 999px;
+  color: #8a4e59;
+  background: var(--flame-soft);
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.saltbread-warning-reason__summary {
+  margin: 0;
+  color: #5a6678;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
+.saltbread-condition-list,
+.saltbread-condition-group {
+  display: grid;
+  gap: 6px;
+}
+
+.saltbread-condition-group {
+  padding-left: calc(var(--condition-depth, 0) * 8px);
+}
+
+.saltbread-condition-group__label {
+  display: block;
+  margin-top: 2px;
+  color: #7a6570;
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
+.saltbread-condition-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 7px;
+  padding: 7px 0;
+  border-top: 1px solid #f2e7e5;
+}
+
+.saltbread-condition-row:first-child,
+.saltbread-condition-group__label + .saltbread-condition-row {
+  border-top: 0;
+}
+
+.saltbread-condition-row__icon {
+  width: 16px;
+  height: 16px;
+  display: inline-grid;
+  place-items: center;
+  margin-top: 1px;
+  border-radius: 999px;
+  color: #ffffff;
+  background: var(--flame-primary);
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.saltbread-condition-row[data-matched="false"] .saltbread-condition-row__icon {
+  color: #697386;
+  background: #e7ebf1;
+}
+
+.saltbread-condition-row__body {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.saltbread-condition-row__title {
+  color: #313b4c;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
+.saltbread-condition-row__meta,
+.saltbread-condition-row__sentence {
+  color: #6a7485;
+  font-size: 10px;
+  font-weight: 750;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.saltbread-condition-row__sentence {
+  color: #8a4e59;
+}
+
+.saltbread-condition-details {
+  display: grid;
+  gap: 7px;
+}
+
+.saltbread-condition-details summary {
+  cursor: pointer;
+  color: var(--flame-deep);
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
 .saltbread-analysis-status[data-state="detected"]
   .saltbread-analysis-status__dot {
   background: var(--flame-primary);
@@ -418,6 +547,66 @@
   background: #fff9ef;
   font-size: 10px;
   font-weight: 700;
+  line-height: 1.45;
+}
+
+.saltbread-panel-intro-notice {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 9px;
+  margin: -2px 0 12px;
+  padding: 10px;
+  border: 1px solid #e3e8f1;
+  border-radius: 8px;
+  color: #435067;
+  background: #f8fafc;
+  max-height: 220px;
+  overflow: hidden;
+  transition:
+    opacity 320ms ease,
+    max-height 320ms ease,
+    margin 320ms ease,
+    padding 320ms ease;
+}
+
+.saltbread-panel-intro-notice[hidden] {
+  display: none;
+}
+
+.saltbread-panel-intro-notice.is-hiding {
+  max-height: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+}
+
+.saltbread-panel-intro-notice__icon {
+  width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 7px;
+  color: var(--flame-deep);
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.saltbread-panel-intro-notice strong {
+  display: block;
+  color: #344158;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
+.saltbread-panel-intro-notice p {
+  margin: 3px 0 0;
+  color: #697386;
+  font-size: 10px;
+  font-weight: 750;
   line-height: 1.45;
 }
 
@@ -558,6 +747,23 @@
   font-weight: 900;
   line-height: 1;
   white-space: nowrap;
+}
+
+.saltbread-rule-row__detected-badge {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border-radius: 999px;
+  color: #ffffff;
+  background: var(--flame-primary);
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.saltbread-rule-row[data-detected-rule="true"] {
+  border-color: color-mix(in srgb, var(--flame-primary) 42%, #dce2eb);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--flame-focus) 62%, transparent);
 }
 
 .saltbread-rule-row--empty {

@@ -9,6 +9,10 @@ const {
   detectOrderActionSide,
   evaluateGuardrailRules,
   evaluateRuleExpression,
+  flattenExpressionEvaluation,
+  formatConditionEvaluation,
+  formatExpressionEvaluationSummary,
+  formatRuleFieldValue,
   getOrderTimeParts,
   mapUpbitOrder,
   parseMarket,
@@ -263,6 +267,156 @@ test("사용자 규칙은 우선순위와 비활성 규칙을 반영한다", () 
   assert.deepEqual(result.matchedRuleIds, ["top", "medium"]);
   assert.equal(result.primaryRuleId, "top");
   assert.equal(result.visualMode, "FAST_BURN");
+  assert.equal(
+    result.conditionResults.find((item) => item.ruleId === "top").actualValue,
+    "MARKET",
+  );
+  assert.equal(
+    result.conditionResults.find((item) => item.ruleId === "top").expectedValue[0],
+    "MARKET",
+  );
+  assert.equal(
+    result.conditionResults.find((item) => item.ruleId === "top").valueSource,
+    "orderSnapshot.orderMode",
+  );
+});
+
+test("개인 API 필드가 없으면 0 대신 MISSING_PERSONAL_DATA로 남긴다", () => {
+  const result = evaluateGuardrailRules(
+    [
+      {
+        ruleId: "private-required",
+        isEnabled: true,
+        expression: {
+          nodeType: "CONDITION",
+          leftField: "actualOrderCreatedCount10m",
+          operator: "GTE",
+          rightOperand: { operandType: "LITERAL", value: 1 },
+        },
+      },
+    ],
+    {
+      side: "BUY",
+      actualOrderCreatedCount10m: null,
+    },
+  );
+  const condition = result.conditionResults[0];
+
+  assert.equal(result.detected, false);
+  assert.equal(condition.actualValue, null);
+  assert.equal(condition.expectedValue, 1);
+  assert.equal(condition.matched, false);
+  assert.equal(condition.missingReason, "MISSING_PERSONAL_DATA");
+  assert.equal(condition.valueSource, "personalSnapshot.actualOrderCreatedCount10m");
+});
+
+test("조건 formatter는 기준값과 경고 당시 actualValue를 자연어로 만든다", () => {
+  assert.equal(formatRuleFieldValue("shortTermReturn5m", 0.072), "7.2%");
+  assert.equal(formatRuleFieldValue("orderbookClickToSnapshotMs", 3200), "3.2초");
+  assert.equal(formatRuleFieldValue("intentAmount", "5000"), "5,000원");
+  assert.equal(formatRuleFieldValue("side", "BUY"), "매수");
+  assert.equal(formatRuleFieldValue("orderMode", "MARKET"), "시장가");
+
+  const marketCondition = formatConditionEvaluation({
+    leftField: "shortTermReturn5m",
+    operator: "GTE",
+    expectedValue: 0.05,
+    actualValue: 0.072,
+    matched: true,
+  });
+
+  assert.equal(
+    marketCondition.description,
+    "최근 5분 가격 변화가 5% 이상일 때",
+  );
+  assert.equal(marketCondition.criteriaText, "5% 이상");
+  assert.equal(marketCondition.actualText, "7.2%");
+  assert.equal(marketCondition.actualSentence, "경고 당시 7.2%였어요.");
+
+  const durationCondition = formatConditionEvaluation({
+    leftField: "orderbookClickToSnapshotMs",
+    operator: "LTE",
+    expectedValue: 5000,
+    actualValue: 3200,
+    matched: true,
+  });
+
+  assert.equal(
+    durationCondition.description,
+    "호가 클릭 후 주문까지 걸린 시간이 5초 이내일 때",
+  );
+  assert.equal(durationCondition.actualSentence, "경고 당시 3.2초가 걸렸어요.");
+
+  const enumCondition = formatConditionEvaluation({
+    leftField: "side",
+    operator: "EQ",
+    expectedValue: "BUY",
+    actualValue: "BUY",
+    matched: true,
+  });
+
+  assert.equal(enumCondition.description, "매수 주문일 때");
+  assert.equal(enumCondition.actualSentence, "경고 당시 매수 주문이었어요.");
+});
+
+test("AND/OR expression evaluation은 개별 true/false와 그룹 요약을 보존한다", () => {
+  const rules = [
+    {
+      ruleId: "or-rule",
+      isEnabled: true,
+      expression: {
+        nodeType: "GROUP",
+        operator: "OR",
+        children: [
+          {
+            nodeType: "CONDITION",
+            leftField: "shortTermReturn5m",
+            operator: "GTE",
+            rightOperand: { operandType: "LITERAL", value: 0.05 },
+          },
+          {
+            nodeType: "CONDITION",
+            leftField: "signedChangeRate",
+            operator: "GTE",
+            rightOperand: { operandType: "LITERAL", value: 0.1 },
+          },
+        ],
+      },
+    },
+  ];
+  const result = evaluateGuardrailRules(rules, {
+    shortTermReturn5m: 0.072,
+    signedChangeRate: 0.061,
+  });
+  const expression = result.expressionResults[0].expression;
+  const conditions = flattenExpressionEvaluation(expression);
+
+  assert.equal(result.detected, true);
+  assert.equal(expression.matched, true);
+  assert.equal(conditions.length, 2);
+  assert.equal(conditions[0].matched, true);
+  assert.equal(conditions[1].matched, false);
+  assert.equal(
+    formatExpressionEvaluationSummary(expression),
+    "설정한 조건 2개 중 1개 이상이 충족됐어요.",
+  );
+});
+
+test("개인 API 누락값은 UI용 문장에서 0으로 대체하지 않는다", () => {
+  const formatted = formatConditionEvaluation({
+    leftField: "actualOrderCreatedCount10m",
+    operator: "GTE",
+    expectedValue: 1,
+    actualValue: null,
+    matched: false,
+    missingReason: "MISSING_PERSONAL_DATA",
+  });
+
+  assert.equal(formatted.actualText, "업비트 개인 API 연결 필요");
+  assert.equal(
+    formatted.actualSentence,
+    "업비트 개인 API 연결이 필요한 조건이에요.",
+  );
 });
 
 test("주문하는 시간 조건은 분 단위 숫자로 비교한다", () => {
@@ -726,6 +880,9 @@ test("규칙 엔진 카탈로그는 OrderContextSnapshotDTO 규칙 대상 필드
 
   for (const field of expectedFields) {
     assert.equal(Boolean(RULE_FIELD_CATALOG[field]?.ruleEligible), true, field);
+    assert.equal(typeof RULE_FIELD_CATALOG[field]?.label, "string", field);
+    assert.ok(RULE_FIELD_CATALOG[field].label.length > 0, field);
+    assert.equal(typeof RULE_FIELD_CATALOG[field]?.semanticType, "string", field);
   }
 
   for (const field of [

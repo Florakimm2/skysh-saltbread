@@ -86,7 +86,7 @@ const RISK_LEVEL_META: Record<
   },
   HIGH: {
     label: "높은 위험",
-    description: "충동적인 주문 가능성이 높아 강하게 확인할 상황",
+    description: "정한 원칙에서 벗어날 가능성이 커 강하게 확인할 상황",
   },
 };
 

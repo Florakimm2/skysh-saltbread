@@ -5,11 +5,11 @@ export default function Home() {
   return (
     <main className={styles.page}>
       <section className={styles.hero}>
-        <span className={styles.eyebrow}>불씨 · FIREGUARD</span>
-        <h1>투자하기 전에, 내 행동부터 바라보세요.</h1>
+        <span className={styles.eyebrow}>WITH GUARDRAIL</span>
+        <h1>투자에 원칙을 더하다</h1>
         <p>
-          실제 업비트 공개 시세와 가상 자산으로 주문 흐름을 체험하고,
-          확장 프로그램이 어떤 행동과 시장 맥락을 읽는지 확인할 수 있습니다.
+          직접 정한 거래 원칙을 주문 순간에 확인하고, 이후 기록을 통해
+          같은 후회를 반복하지 않도록 돕는 투자 보조 도구입니다.
         </p>
         <div className={styles.actions}>
           <Link className={styles.primary} href="/demo">

@@ -36,7 +36,14 @@ function extractInsightFromFastApiResponse(rawText: string): FastApiInsightRespo
     throw new Error("FastAPI 응답이 비어 있습니다.");
   }
   try {
-    return JSON.parse(trimmed);
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (typeof parsed === "string") {
+      return { summary: parsed, cards: [] };
+    }
+    if (isRecord(parsed)) {
+      return parsed;
+    }
+    return { summary: trimmed, cards: [] };
   } catch {
     return { summary: trimmed, cards: [] };
   }
@@ -256,10 +263,13 @@ export async function requestDashboardInsight(
       summaries: combinedSummaries,
     });
     const parsedData = result.insight;
+    const insightSummary = typeof parsedData.summary === "string"
+      ? parsedData.summary
+      : "분석 완료";
 
     return {
       status: "ready",
-      insight: parsedData?.summary || (typeof parsedData === 'string' ? parsedData : "분석 완료"),
+      insight: insightSummary,
       parsedData: parsedData,
       sourceCount: recentRecords.length,
     };

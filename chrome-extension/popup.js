@@ -136,7 +136,7 @@ async function refreshCredentialStatus() {
         : "locked";
     apiKeyTitle.textContent = status.configured
       ? "업비트 API가 연결되어 있어요"
-      : "API를 연결해 더 정확하게 탐지해요";
+      : "API를 연결해 가드레일 기록을 보강해요";
     unlockApiKeyButton.hidden = !status.configured || status.unlocked;
     deleteApiKeyButton.hidden = !status.configured;
     saveApiKeyButton.textContent = status.configured

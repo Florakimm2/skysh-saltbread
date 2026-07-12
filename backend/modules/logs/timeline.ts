@@ -1,4 +1,5 @@
-import type { RuleExpression } from "@/backend/modules/guardrail/types";
+import { RULE_FIELD_CATALOG } from "@/backend/modules/guardrail/catalog";
+import type { RuleExpression, RuleOperator } from "@/backend/modules/guardrail/types";
 import { listGuardrailTimelineSources } from "./repository";
 import type {
   EnrichedRuleData,
@@ -96,6 +97,53 @@ function enrichFromRuleSnapshot(snapshot: GuardrailRuleSnapshot): EnrichedRuleDa
   };
 }
 
+const OPERATOR_LABELS: Record<RuleOperator, string> = {
+  EQ: "같음",
+  NEQ: "같지 않음",
+  GT: "초과",
+  GTE: "이상",
+  LT: "미만",
+  LTE: "이하",
+  IN: "포함",
+  NOT_IN: "포함하지 않음",
+  IS_NULL: "값 없음",
+  IS_NOT_NULL: "값 있음",
+};
+
+const DATA_CATEGORY_LABELS = {
+  ORDER: "주문",
+  BEHAVIOR: "행동",
+  MARKET: "시장",
+  ACCOUNT: "개인 계정",
+} as const;
+
+function toConditionResults(evaluation: RuleEvaluationSnapshot) {
+  return evaluation.conditions.map((condition) => {
+    const field = RULE_FIELD_CATALOG[
+      condition.leftField as keyof typeof RULE_FIELD_CATALOG
+    ];
+
+    return {
+      leftField: condition.leftField,
+      fieldLabel: field?.label ?? condition.leftField,
+      operator: condition.operator,
+      operatorLabel: OPERATOR_LABELS[condition.operator],
+      expectedValue: condition.expectedValue,
+      actualValue: condition.actualValue,
+      matched: condition.matched,
+      dataCategory: condition.dataCategory,
+      dataCategoryLabel: DATA_CATEGORY_LABELS[condition.dataCategory],
+      unavailableReason:
+        field?.requiresPrivateApi &&
+        (condition.actualValue === null || condition.actualValue === undefined)
+          ? "MISSING_PERSONAL_DATA"
+          : condition.actualValue === null || condition.actualValue === undefined
+            ? "REQUIRED_FIELD_MISSING"
+            : null,
+    };
+  });
+}
+
 function enrichFromStoredEvaluation(
   evaluation: RuleEvaluationSnapshot,
 ): EnrichedRuleData {
@@ -112,6 +160,7 @@ function enrichFromStoredEvaluation(
       warningMessage: evaluation.warningMessage ?? evaluation.description ?? "",
     }),
     ruleVersion: evaluation.ruleVersion,
+    conditionResults: toConditionResults(evaluation),
   };
 }
 

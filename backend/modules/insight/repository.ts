@@ -1,6 +1,52 @@
 import { adminDb } from "@/backend/infrastructure/firebase/firebase-admin";
 import { toIsoString } from "../behavior/repository";
 
+type TimestampLike = {
+  toDate: () => Date;
+};
+
+type InsightRecord = Record<string, unknown>;
+
+type JoinedTradeUnit = {
+  attemptId: string;
+  snapshot: InsightRecord;
+  reaction: InsightRecord | null;
+  feedback: InsightRecord | null;
+  trade: InsightRecord | null;
+  outcome: InsightRecord | null;
+};
+
+export type OptimizedTradeUnit = {
+  attemptId: string;
+  snapshot: {
+    orderMode?: unknown;
+    spreadRate?: unknown;
+    shortTermReturn5m?: unknown;
+    requestedBalanceRatio?: unknown;
+    tradePriceAtIntent?: unknown;
+  };
+  reaction: {
+    action?: unknown;
+    reactionTimeMs: number | null;
+  } | null;
+  trade: {
+    ordType?: unknown;
+    orderCreatedAt: string;
+  } | null;
+  outcome: {
+    state?: unknown;
+    executedVolume?: unknown;
+    paidFee?: unknown;
+    executedFunds?: unknown;
+  } | null;
+  feedback: {
+    feedbackStatus?: unknown;
+    selfAssessment?: unknown;
+  } | null;
+};
+
+export type MonthlyAggregateRecord = InsightRecord;
+
 // Timestamp 또는 ISO 문자열을 ms(숫자)로 안전하게 변환하는 헬퍼 함수
 function getTimeMs(val: unknown): number {
     if (!val) return 0;
@@ -15,7 +61,7 @@ function getTimeMs(val: unknown): number {
     return new Date(String(val)).getTime();
 }
 
-export async function getMonthlyTradeUnits(userId: string) {
+export async function getMonthlyTradeUnits(userId: string): Promise<OptimizedTradeUnit[]> {
 // 1. 여기서 확실하게 체크합니다!
 // 1. 확실한 방어막! (글자가 아닌 이상한 데이터 덩어리가 들어와도 무조건 막아냄)
     if (!userId || typeof userId !== "string") {
@@ -67,9 +113,10 @@ export async function getMonthlyTradeUnits(userId: string) {
 
   // A. Snapshot을 기준으로 초기 Unit 생성
     snapshots.forEach((data) => {
-    if (data.attemptId) {
-        tradeUnitsMap.set(data.attemptId, {
-        attemptId: data.attemptId,
+    const attemptId = typeof data.attemptId === "string" ? data.attemptId : null;
+    if (attemptId) {
+        tradeUnitsMap.set(attemptId, {
+        attemptId,
         snapshot: data,
         reaction: null,
         feedback: null,
@@ -146,7 +193,7 @@ export async function getMonthlyTradeUnits(userId: string) {
     return optimizedTradeUnits;
 }
 
-export async function getMonthlyAggregates(userId: string) {
+export async function getMonthlyAggregates(userId: string): Promise<MonthlyAggregateRecord[]> {
   const thirtyDaysAgoMs = Date.now() - 30 * 24 * 60 * 60 * 1000;
 if (!userId || typeof userId !== "string") {
         userId = "GUEST_USER_NO_ID";

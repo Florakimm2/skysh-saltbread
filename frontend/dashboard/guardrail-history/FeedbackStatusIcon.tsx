@@ -12,10 +12,10 @@ export function getFeedbackPresentation(feedback: TradeFeedbackDTO): {
     feedback.feedbackStatus === "ANSWERED" &&
     feedback.selfAssessment === "PLANNED"
   ) {
-    return {
+      return {
       tone: "planned",
-      label: "계획된 거래였어요",
-      description: "사용자가 이번 거래를 계획된 거래로 평가했어요.",
+      label: "원칙을 지킨 거래였어요",
+      description: "사용자가 이번 거래를 정한 원칙에 맞는 거래로 기록했어요.",
     };
   }
 
@@ -23,10 +23,10 @@ export function getFeedbackPresentation(feedback: TradeFeedbackDTO): {
     feedback.feedbackStatus === "ANSWERED" &&
     feedback.selfAssessment === "EMOTIONAL"
   ) {
-    return {
+      return {
       tone: "emotional",
-      label: "감정적인 거래였어요",
-      description: "사용자가 이번 거래를 감정적인 거래로 평가했어요.",
+      label: "후회했던 거래였어요",
+      description: "사용자가 이번 거래를 다시 돌아보고 싶은 거래로 기록했어요.",
     };
   }
 

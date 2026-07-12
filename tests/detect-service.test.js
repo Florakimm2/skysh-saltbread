@@ -101,7 +101,7 @@ function cancelBuy(minutes, price) {
   };
 }
 
-test("문서 기준의 정상 주문은 감정 매매로 감지하지 않는다", () => {
+test("문서 기준의 정상 주문은 가드레일 경고로 감지하지 않는다", () => {
   const result = detectEmotionTrade(createInput());
 
   assert.equal(result.detected, false);
@@ -110,7 +110,7 @@ test("문서 기준의 정상 주문은 감정 매매로 감지하지 않는다"
   assert.equal(result.primaryRuleId, null);
   assert.equal(
     result.message,
-    "현재 감정적 매매 패턴은 감지되지 않았어요.",
+    "현재 설정한 가드레일 기준에 해당하는 주문은 감지되지 않았어요.",
   );
 });
 

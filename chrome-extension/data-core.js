@@ -51,6 +51,11 @@
     priceVsAvgBuyRateAtSnapshot: { valueType: "NUMBER", requiresPrivateApi: true, ruleEligible: true, comparisonGroup: RATE_GROUP },
     snapshotId: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: false },
     attemptId: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: false },
+    dataSource: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: false },
+    marketSource: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: false },
+    orderSource: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: false },
+    behaviorSource: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: false },
+    personalSource: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: false },
     capturedAt: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: false },
     orderTime: { valueType: "STRING", requiresPrivateApi: false, ruleEligible: false },
     matchedRuleIdsAtSnapshot: { valueType: "STRING_ARRAY", requiresPrivateApi: false, ruleEligible: false },
@@ -65,6 +70,82 @@
     "SCARED",
     "SAD",
   ]);
+  const RULE_FIELD_DISPLAY_METADATA = {
+    snapshotTrigger: { label: "규칙을 확인할 시점", semanticType: "ENUM", options: { ORDER_INTENT_CLICK: "주문하려는 순간", GUARDRAIL_SHOWN: "가드레일 표시 이후" } },
+    market: { label: "거래 종목", semanticType: "MARKET" },
+    side: { label: "매수·매도 방향", semanticType: "ENUM", options: { BUY: "매수", SELL: "매도", UNKNOWN: "알 수 없음" } },
+    orderMode: { label: "주문 방식", semanticType: "ENUM", options: { LIMIT: "지정가", MARKET: "시장가", BEST: "최유리 주문", RESERVED: "예약 주문", UNKNOWN: "알 수 없음" } },
+    entryPoint: { label: "주문 시작 방식", semanticType: "ENUM", options: { NORMAL: "일반 주문", QUICK: "간편 주문", REORDER: "다시 주문", UNKNOWN: "알 수 없음" } },
+    orderTimeMinutes: { label: "주문하는 시간", semanticType: "TIME_OF_DAY", storageUnit: "minutes" },
+    intentPrice: { label: "입력한 주문 가격", semanticType: "PRICE", displayUnit: "원" },
+    intentQuantity: { label: "입력한 주문 수량", semanticType: "QUANTITY", displayUnit: "개" },
+    intentAmount: { label: "입력한 주문 금액", semanticType: "AMOUNT", displayUnit: "원" },
+    requestedBalanceRatio: { label: "사용 가능 자산 중 주문 비율", semanticType: "RATIO_0_TO_1", storageUnit: "ratio", displayUnit: "%" },
+    allocationPresetPercent: { label: "선택한 주문 비율 버튼", semanticType: "ALLOCATION_PRESET", options: { 10: "10%", 25: "25%", 50: "50%", 100: "100%", CUSTOM: "직접 입력 사용" } },
+    draftDurationMs: { label: "주문 작성에 걸린 시간", semanticType: "DURATION_MS", storageUnit: "ms" },
+    lastEditToSnapshotMs: { label: "마지막 수정 후 주문까지 걸린 시간", semanticType: "DURATION_MS", storageUnit: "ms" },
+    draftEditCount: { label: "이번 주문에서 내용을 수정한 횟수", semanticType: "COUNT", displayUnit: "회" },
+    amountChangeRate: { label: "처음보다 주문 금액이 변한 정도", semanticType: "SIGNED_PERCENT", storageUnit: "ratio", displayUnit: "%" },
+    modeChangedToMarket: { label: "시장가 주문으로 바꿨는지", semanticType: "BOOLEAN", options: { true: "시장가로 변경했을 때", false: "시장가로 변경하지 않았을 때" } },
+    orderbookClickToSnapshotMs: { label: "호가 클릭 후 주문까지 걸린 시간", semanticType: "DURATION_MS", storageUnit: "ms" },
+    orderIntentCount1m: { label: "최근 1분 주문 시도 횟수", semanticType: "COUNT", displayUnit: "회" },
+    actualOrderCreatedCount10m: { label: "최근 10분 실제 주문 횟수", semanticType: "COUNT", displayUnit: "회" },
+    sameSideIntentCount1m: { label: "같은 방향으로 반복 주문한 횟수", semanticType: "COUNT", displayUnit: "회" },
+    marketChangeCount5m: { label: "최근 5분 거래 종목 변경 횟수", semanticType: "COUNT", displayUnit: "회" },
+    sideChangeCount3m: { label: "최근 3분 매수·매도 변경 횟수", semanticType: "COUNT", displayUnit: "회" },
+    priceEditCount3m: { label: "최근 3분 가격 수정 횟수", semanticType: "COUNT", displayUnit: "회" },
+    quantityEditCount3m: { label: "최근 3분 수량 수정 횟수", semanticType: "COUNT", displayUnit: "회" },
+    amountEditCount3m: { label: "최근 3분 주문 금액 수정 횟수", semanticType: "COUNT", displayUnit: "회" },
+    inputRevertCount: { label: "이전 입력값으로 되돌린 횟수", semanticType: "COUNT", displayUnit: "회" },
+    priceDirectionChangeCount: { label: "가격을 올렸다 내린 횟수", semanticType: "COUNT", displayUnit: "회" },
+    priceChangeRate: { label: "처음보다 주문 가격이 변한 정도", semanticType: "SIGNED_PERCENT", storageUnit: "ratio", displayUnit: "%" },
+    orderModeChangeCount3m: { label: "최근 3분 주문 방식 변경 횟수", semanticType: "COUNT", displayUnit: "회" },
+    draftResetCount3m: { label: "최근 3분 주문 내용 초기화 횟수", semanticType: "COUNT", displayUnit: "회" },
+    tradePriceAtSnapshot: { label: "현재 시장 가격", semanticType: "PRICE", displayUnit: "원" },
+    shortTermReturn5m: { label: "최근 5분 가격 변화", semanticType: "SIGNED_PERCENT", storageUnit: "ratio", displayUnit: "%" },
+    signedChangeRate: { label: "전일 대비 가격 변화", semanticType: "SIGNED_PERCENT", storageUnit: "ratio", displayUnit: "%" },
+    spreadRate: { label: "매수·매도 호가 차이", semanticType: "NON_NEGATIVE_PERCENT", storageUnit: "ratio", displayUnit: "%" },
+    marketRiskFlags: {
+      label: "시장 경보",
+      semanticType: "FLAG_SET",
+      options: {
+        WARNING: "투자 유의",
+        CAUTION_PRICE_FLUCTUATIONS: "가격 급변 주의",
+        CAUTION_TRADING_VOLUME_SOARING: "거래량 급증 주의",
+        CAUTION_DEPOSIT_AMOUNT_SOARING: "입금량 급증 주의",
+        CAUTION_GLOBAL_PRICE_DIFFERENCES: "가격 차이 주의",
+        CAUTION_CONCENTRATION_OF_SMALL_ACCOUNTS: "소수 계정 집중 주의",
+      },
+    },
+    pricePositionIn5mRange: { label: "최근 5분 가격대에서 현재 위치", semanticType: "RATIO_0_TO_1", storageUnit: "ratio", displayUnit: "%" },
+    volumeSpikeRatio5m: { label: "최근 거래량 증가 배수", semanticType: "MULTIPLIER", displayUnit: "배" },
+    baseAssetAvgBuyPriceBeforeSnapshot: { label: "내 평균 매수가", semanticType: "PRICE", displayUnit: "원" },
+    priceVsAvgBuyRateAtSnapshot: { label: "평균 매수가 대비 현재 손익률", semanticType: "SIGNED_PERCENT", storageUnit: "ratio", displayUnit: "%" },
+  };
+  const OPERATOR_LABELS = {
+    EQ: "같음",
+    NEQ: "같지 않음",
+    GT: "초과",
+    GTE: "이상",
+    LT: "미만",
+    LTE: "이하",
+    IN: "포함",
+    NOT_IN: "포함하지 않음",
+    IS_NULL: "값 없음",
+    IS_NOT_NULL: "값 있음",
+  };
+  const OPERATOR_CRITERIA_PHRASES = {
+    GT: "초과",
+    GTE: "이상",
+    LT: "미만",
+    LTE: "이하",
+  };
+
+  Object.entries(RULE_FIELD_DISPLAY_METADATA).forEach(([field, metadata]) => {
+    if (RULE_FIELD_CATALOG[field]) {
+      Object.assign(RULE_FIELD_CATALOG[field], metadata);
+    }
+  });
 
   function toNumber(value) {
     if (typeof value === "number") {
@@ -78,6 +159,302 @@
     const normalized = value.replaceAll(",", "").replace(/[^\d.-]/g, "");
     const parsed = Number(normalized);
     return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function hasFinalConsonant(text) {
+    const last = String(text || "").trim().at(-1);
+    if (!last) return false;
+    const code = last.charCodeAt(0);
+    if (code < 0xac00 || code > 0xd7a3) return false;
+    return (code - 0xac00) % 28 !== 0;
+  }
+
+  function subjectParticle(text) {
+    return hasFinalConsonant(text) ? "이" : "가";
+  }
+
+  function formatNumberWithComma(value, maximumFractionDigits = 8) {
+    const numeric = toNumber(value);
+    if (numeric === null) {
+      return String(value ?? "");
+    }
+
+    return new Intl.NumberFormat("ko-KR", {
+      maximumFractionDigits,
+    }).format(numeric);
+  }
+
+  function formatDurationValue(ms) {
+    const numeric = toNumber(ms);
+    if (numeric === null) {
+      return String(ms ?? "");
+    }
+
+    if (numeric === 0) {
+      return "0초";
+    }
+
+    if (Math.abs(numeric) >= 60_000 && numeric % 60_000 === 0) {
+      return `${formatNumberWithComma(numeric / 60_000, 2)}분`;
+    }
+
+    if (Math.abs(numeric) >= 1000) {
+      return `${formatNumberWithComma(Number((numeric / 1000).toFixed(2)), 2)}초`;
+    }
+
+    return `${formatNumberWithComma(numeric, 0)}밀리초`;
+  }
+
+  function formatMinutesValue(minutes) {
+    const numeric = toNumber(minutes);
+    if (numeric === null) {
+      return String(minutes ?? "");
+    }
+
+    const normalized = Math.max(0, Math.min(1439, Math.trunc(numeric)));
+    const hour = Math.floor(normalized / 60);
+    const minute = normalized % 60;
+    return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  }
+
+  function getRuleFieldDefinition(field) {
+    return RULE_FIELD_CATALOG[field] || {
+      label: field || "조건",
+      semanticType: "TEXT",
+      valueType: "STRING",
+      input: {},
+    };
+  }
+
+  function formatRuleFieldValue(field, value, options = {}) {
+    const definition = getRuleFieldDefinition(field);
+    const metadata = RULE_FIELD_DISPLAY_METADATA[field] || definition || {};
+
+    if (value === null || value === undefined || value === "") {
+      if (options.missingReason === "MISSING_PERSONAL_DATA" || definition.requiresPrivateApi) {
+        return "업비트 개인 API 연결 필요";
+      }
+      if (options.historyMissing) {
+        return "이 기록에는 당시 판정값이 저장되지 않았어요";
+      }
+      return "당시 값을 확인할 수 없어요";
+    }
+
+    if (Array.isArray(value)) {
+      return value.length
+        ? value.map((item) => formatRuleFieldValue(field, item, options)).join(", ")
+        : "없음";
+    }
+
+    const optionLabel = metadata.options?.[String(value)];
+    if (optionLabel) {
+      return optionLabel;
+    }
+
+    if (typeof value === "boolean") {
+      if (metadata.semanticType === "BOOLEAN") {
+        return value ? "해당함" : "해당하지 않음";
+      }
+      return value ? "예" : "아니요";
+    }
+
+    if (metadata.storageUnit === "minutes" || metadata.semanticType === "TIME_OF_DAY") {
+      return formatMinutesValue(value);
+    }
+
+    if (metadata.storageUnit === "ms" || metadata.semanticType === "DURATION_MS") {
+      return formatDurationValue(value);
+    }
+
+    if (
+      metadata.storageUnit === "ratio" ||
+      metadata.semanticType === "SIGNED_PERCENT" ||
+      metadata.semanticType === "NON_NEGATIVE_PERCENT" ||
+      metadata.semanticType === "RATIO_0_TO_1"
+    ) {
+      const numeric = toNumber(value);
+      return numeric === null
+        ? String(value)
+        : `${formatNumberWithComma(Number((numeric * 100).toFixed(4)), 4)}%`;
+    }
+
+    if (
+      metadata.semanticType === "PRICE" ||
+      metadata.semanticType === "AMOUNT"
+    ) {
+      return `${formatNumberWithComma(value)}${metadata.displayUnit || "원"}`;
+    }
+
+    if (
+      metadata.semanticType === "QUANTITY" ||
+      metadata.semanticType === "COUNT" ||
+      metadata.semanticType === "MULTIPLIER"
+    ) {
+      return `${formatNumberWithComma(value)}${metadata.displayUnit || ""}`;
+    }
+
+    return String(value);
+  }
+
+  function formatOperatorLabel(operator) {
+    return OPERATOR_LABELS[operator] || operator || "";
+  }
+
+  function formatConditionCriteria(conditionOrResult) {
+    const field = conditionOrResult?.leftField || conditionOrResult?.field;
+    const operator = conditionOrResult?.operator;
+    const expectedValue = Object.prototype.hasOwnProperty.call(conditionOrResult || {}, "expectedValue")
+      ? conditionOrResult.expectedValue
+      : resolveOperandValue(conditionOrResult?.rightOperand, {});
+    const expectedText = formatRuleFieldValue(field, expectedValue, conditionOrResult);
+
+    if (operator === "IS_NULL") {
+      return "값 없음";
+    }
+
+    if (operator === "IS_NOT_NULL") {
+      return "값 있음";
+    }
+
+    if (operator === "EQ") {
+      return expectedText;
+    }
+
+    if (operator === "NEQ") {
+      return `${expectedText} 아님`;
+    }
+
+    if (operator === "IN") {
+      return `${expectedText} 중 하나`;
+    }
+
+    if (operator === "NOT_IN") {
+      return `${expectedText} 제외`;
+    }
+
+    return `${expectedText} ${OPERATOR_CRITERIA_PHRASES[operator] || formatOperatorLabel(operator)}`;
+  }
+
+  function formatConditionDescription(condition) {
+    const field = condition?.leftField || condition?.field;
+    const definition = getRuleFieldDefinition(field);
+    const label = definition.label || field || "조건";
+    const particle = subjectParticle(label);
+    const expectedValue = resolveOperandValue(condition?.rightOperand, {});
+    const criteria = formatConditionCriteria({
+      ...condition,
+      expectedValue,
+    });
+
+    if (condition?.operator === "IS_NULL") {
+      return `${label}을 확인할 수 없을 때`;
+    }
+
+    if (condition?.operator === "IS_NOT_NULL") {
+      return `${label}을 확인할 수 있을 때`;
+    }
+
+    if (condition?.operator === "EQ") {
+      if (field === "side") return `${criteria} 주문일 때`;
+      if (field === "orderMode") return `${criteria} 주문일 때`;
+      return `${label}${particle} ${criteria}일 때`;
+    }
+
+    if (condition?.operator === "NEQ") {
+      return `${label}${particle} ${criteria}일 때`;
+    }
+
+    if (definition.semanticType === "DURATION_MS" && condition?.operator === "LTE") {
+      return `${label}${particle} ${formatRuleFieldValue(field, expectedValue)} 이내일 때`;
+    }
+
+    if (definition.semanticType === "TIME_OF_DAY") {
+      const expected = formatRuleFieldValue(field, expectedValue);
+      if (condition?.operator === "GT" || condition?.operator === "GTE") {
+        return `${label}${particle} ${expected} 이후일 때`;
+      }
+      if (condition?.operator === "LT" || condition?.operator === "LTE") {
+        return `${label}${particle} ${expected} 이전일 때`;
+      }
+    }
+
+    return `${label}${particle} ${criteria}일 때`;
+  }
+
+  function formatConditionActualSentence(conditionResult) {
+    const field = conditionResult?.leftField || conditionResult?.field;
+    const definition = getRuleFieldDefinition(field);
+    const actualText = formatRuleFieldValue(field, conditionResult?.actualValue, conditionResult);
+
+    if (conditionResult?.missingReason === "MISSING_PERSONAL_DATA") {
+      return "업비트 개인 API 연결이 필요한 조건이에요.";
+    }
+
+    if (
+      conditionResult?.actualValue === null ||
+      conditionResult?.actualValue === undefined ||
+      conditionResult?.actualValue === ""
+    ) {
+      return "이 기록에는 당시 판정값이 저장되지 않았어요.";
+    }
+
+    if (definition.semanticType === "DURATION_MS") {
+      return `경고 당시 ${actualText}가 걸렸어요.`;
+    }
+
+    if (field === "side") {
+      return `경고 당시 ${actualText} 주문이었어요.`;
+    }
+
+    if (field === "orderMode") {
+      return `경고 당시 ${actualText} 주문이었어요.`;
+    }
+
+    return `경고 당시 ${actualText}였어요.`;
+  }
+
+  function formatConditionEvaluation(conditionResult) {
+    const field = conditionResult?.leftField || conditionResult?.field;
+    const definition = getRuleFieldDefinition(field);
+    const title = definition.label || field || "조건";
+    const criteriaText = formatConditionCriteria(conditionResult);
+    const actualText = formatRuleFieldValue(field, conditionResult?.actualValue, conditionResult);
+    const description = formatConditionDescription({
+      nodeType: "CONDITION",
+      leftField: field,
+      operator: conditionResult?.operator,
+      rightOperand: { operandType: "LITERAL", value: conditionResult?.expectedValue },
+    });
+
+    return {
+      title,
+      criteriaText,
+      actualText,
+      description,
+      actualSentence: formatConditionActualSentence(conditionResult),
+      matched: Boolean(conditionResult?.matched ?? conditionResult?.pass),
+      missingReason: conditionResult?.missingReason || null,
+      operatorLabel: formatOperatorLabel(conditionResult?.operator),
+    };
+  }
+
+  function formatExpressionEvaluationSummary(expressionResult) {
+    const conditions = flattenExpressionEvaluation(expressionResult);
+
+    if (!expressionResult) {
+      return "설정한 규칙 조합이 충족됐어요.";
+    }
+
+    if (expressionResult.nodeType === "GROUP") {
+      if (expressionResult.operator === "OR") {
+        const matchedCount = conditions.filter((condition) => condition.matched).length;
+        return `설정한 조건 ${conditions.length}개 중 ${Math.max(1, matchedCount)}개 이상이 충족됐어요.`;
+      }
+
+      return `설정한 조건 ${conditions.length}개를 모두 만족했어요.`;
+    }
+
+    return "설정한 조건이 충족됐어요.";
   }
 
   function normalizeDecimalParts(value) {
@@ -674,6 +1051,181 @@
     return false;
   }
 
+  function collectRuleConditions(expression) {
+    if (!expression || typeof expression !== "object") {
+      return [];
+    }
+
+    if (expression.nodeType === "CONDITION") {
+      return [expression];
+    }
+
+    if (expression.nodeType !== "GROUP") {
+      return [];
+    }
+
+    return (Array.isArray(expression.children) ? expression.children : [])
+      .flatMap(collectRuleConditions);
+  }
+
+  function getRuleValueSource(field) {
+    if (
+      [
+        "tradePriceAtSnapshot",
+        "shortTermReturn5m",
+        "signedChangeRate",
+        "spreadRate",
+        "marketRiskFlags",
+        "pricePositionIn5mRange",
+        "volumeSpikeRatio5m",
+      ].includes(field)
+    ) {
+      return `marketSnapshot.${field}`;
+    }
+
+    if (
+      [
+        "draftDurationMs",
+        "lastEditToSnapshotMs",
+        "draftEditCount",
+        "amountChangeRate",
+        "modeChangedToMarket",
+        "orderbookClickToSnapshotMs",
+        "orderIntentCount1m",
+        "sameSideIntentCount1m",
+        "marketChangeCount5m",
+        "sideChangeCount3m",
+        "priceEditCount3m",
+        "quantityEditCount3m",
+        "amountEditCount3m",
+        "inputRevertCount",
+        "priceDirectionChangeCount",
+        "priceChangeRate",
+        "orderModeChangeCount3m",
+        "draftResetCount3m",
+      ].includes(field)
+    ) {
+      return `behaviorSnapshot.${field}`;
+    }
+
+    if (
+      [
+        "actualOrderCreatedCount10m",
+        "baseAssetAvgBuyPriceBeforeSnapshot",
+        "priceVsAvgBuyRateAtSnapshot",
+      ].includes(field)
+    ) {
+      return `personalSnapshot.${field}`;
+    }
+
+    return `orderSnapshot.${field}`;
+  }
+
+  function evaluateRuleConditionWithResult(rule, condition, context) {
+    const fieldDefinition = RULE_FIELD_CATALOG[condition?.leftField] || null;
+    const actualValue = getRuleFieldValue(context, condition?.leftField);
+    const expectedValue = resolveOperandValue(condition?.rightOperand, context);
+    const unsupported = !fieldDefinition?.ruleEligible;
+    const missingPersonalData =
+      fieldDefinition?.requiresPrivateApi &&
+      (actualValue === null || actualValue === undefined);
+    const invalidComparableField =
+      condition?.rightOperand?.operandType === "FIELD" &&
+      !areComparableFields(condition.leftField, condition.rightOperand.field);
+    const matched = unsupported || invalidComparableField
+      ? false
+      : evaluateRuleExpression(condition, context);
+
+    const result = {
+      ruleId: rule?.ruleId || null,
+      ruleName: rule?.name || rule?.warningTitle || rule?.title || null,
+      field: condition?.leftField || null,
+      leftField: condition?.leftField || null,
+      operator: condition?.operator || null,
+      expectedValue,
+      actualValue,
+      matched,
+      pass: matched,
+      valueSource: getRuleValueSource(condition?.leftField),
+      missingReason: missingPersonalData
+        ? "MISSING_PERSONAL_DATA"
+        : unsupported
+          ? "UNSUPPORTED_RULE_FIELD"
+          : actualValue === null || actualValue === undefined
+            ? "REQUIRED_FIELD_MISSING"
+            : invalidComparableField
+              ? "INVALID_NORMALIZED_VALUE"
+              : null,
+    };
+    const formatted = formatConditionEvaluation(result);
+
+    return {
+      ...result,
+      fieldLabel: formatted.title,
+      operatorLabel: formatted.operatorLabel,
+      formattedExpectedValue: formatted.criteriaText,
+      formattedActualValue: formatted.actualText,
+      description: formatted.description,
+      actualSentence: formatted.actualSentence,
+    };
+  }
+
+  function buildRuleConditionResults(rules, context) {
+    return (Array.isArray(rules) ? rules : [])
+      .filter((rule) => rule?.isEnabled !== false)
+      .flatMap((rule) =>
+        collectRuleConditions(rule.expression).map((condition) =>
+          evaluateRuleConditionWithResult(rule, condition, context),
+        ),
+      );
+  }
+
+  function buildExpressionEvaluationResult(rule, expression, context) {
+    if (!expression || typeof expression !== "object") {
+      return null;
+    }
+
+    if (expression.nodeType === "CONDITION") {
+      const condition = evaluateRuleConditionWithResult(rule, expression, context);
+      return {
+        nodeType: "CONDITION",
+        matched: condition.matched,
+        condition,
+      };
+    }
+
+    if (expression.nodeType !== "GROUP") {
+      return null;
+    }
+
+    const children = (Array.isArray(expression.children) ? expression.children : [])
+      .map((child) => buildExpressionEvaluationResult(rule, child, context))
+      .filter(Boolean);
+    const matched = expression.operator === "OR"
+      ? children.some((child) => child.matched)
+      : children.length > 0 && children.every((child) => child.matched);
+
+    return {
+      nodeType: "GROUP",
+      operator: expression.operator === "OR" ? "OR" : "AND",
+      matched,
+      children,
+    };
+  }
+
+  function flattenExpressionEvaluation(result) {
+    if (!result || typeof result !== "object") {
+      return [];
+    }
+
+    if (result.nodeType === "CONDITION") {
+      return result.condition ? [result.condition] : [];
+    }
+
+    return (Array.isArray(result.children) ? result.children : [])
+      .flatMap(flattenExpressionEvaluation);
+  }
+
   function evaluateGuardrailRules(rules, context) {
     const enabledRules = Array.isArray(rules)
       ? rules.filter((rule) => rule?.isEnabled !== false)
@@ -692,12 +1244,19 @@
       detected: matchedRules.length > 0,
       matchedRules,
       matchedRuleIds: matchedRules.map((rule) => rule.ruleId),
+      expressionResults: enabledRules.map((rule) => ({
+        ruleId: rule.ruleId || null,
+        ruleName: rule.name || rule.warningTitle || rule.title || null,
+        matched: evaluateRuleExpression(rule.expression, context),
+        expression: buildExpressionEvaluationResult(rule, rule.expression, context),
+      })),
       primaryRule,
       primaryRuleId: primaryRule?.ruleId || null,
       warningTitle: primaryRule?.warningTitle || null,
       warningMessage: primaryRule?.warningMessage || null,
       riskLevel: primaryRule?.riskLevel || null,
       visualMode: resolveVisualMode(primaryRule),
+      conditionResults: buildRuleConditionResults(enabledRules, context),
     };
   }
 
@@ -757,6 +1316,13 @@
     detectOrderActionSide,
     evaluateGuardrailRules,
     evaluateRuleExpression,
+    flattenExpressionEvaluation,
+    formatConditionDescription,
+    formatConditionEvaluation,
+    formatExpressionEvaluationSummary,
+    formatOperatorLabel,
+    formatRuleFieldValue,
+    buildRuleConditionResults,
     getOrderTimeParts,
     mapOrderSide,
     mapOrderStatus,

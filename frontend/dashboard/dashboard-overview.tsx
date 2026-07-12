@@ -127,7 +127,7 @@ export default function DashboardOverview({
       <PageHeader
         eyebrow="Overview"
         title="대시보드"
-        description="나의 투자 기록과 AI 분석을 한눈에 확인하세요."
+        description="나의 거래 기록과 가드레일 인사이트를 한눈에 확인하세요."
         showDate
       />
 

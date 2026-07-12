@@ -16,6 +16,8 @@ const SALTBREAD_DEBUG_STATE_EVENT = "SALTBREAD_UPBIT_DEBUG_STATE";
 const SALTBREAD_DEMO_PAGE_SOURCE = "SALTBREAD_DEMO_PAGE";
 const SALTBREAD_EXTENSION_SOURCE = "SALTBREAD_EXTENSION";
 const SALTBREAD_DEMO_STATE_REQUEST = "REQUEST_DEMO_STATE";
+const PANEL_INTRO_NOTICE_DURATION_MS = 5000;
+const PANEL_INTRO_NOTICE_ANIMATION_MS = 320;
 const UPBIT_CONFIRM_MODAL_WAIT_TIMEOUT_MS = 3000;
 const UPBIT_CONFIRM_MODAL_POLL_INTERVAL_MS = 50;
 const {
@@ -24,6 +26,9 @@ const {
   detectOrderActionSide,
   evaluateGuardrailRules,
   evaluateRuleExpression,
+  flattenExpressionEvaluation,
+  formatConditionEvaluation: formatRuleConditionEvaluation,
+  formatExpressionEvaluationSummary,
   getOrderTimeParts,
   parseMarket,
   resolveVisualMode,
@@ -116,6 +121,8 @@ let extensionContextInvalidated = false;
 let upbitModalObserver = null;
 let upbitConfirmModalWaitTimerId = null;
 let upbitConfirmModalWaitContext = null;
+let panelIntroNoticeTimerId = null;
+let panelIntroNoticeHideTimerId = null;
 let lastOrderIntent = null;
 let lastOrderContextSnapshot = null;
 let lastDtoSnapshot = null;
@@ -768,6 +775,42 @@ function formatRuleValue(value, field = null) {
   return String(value);
 }
 
+function emitDetectionPipelineTrace(stage, fields = {}) {
+  const attemptId =
+    fields.attemptId ||
+    fields.orderSnapshot?.attemptId ||
+    fields.orderContextSnapshot?.attemptId ||
+    pendingAttempt?.attemptId ||
+    null;
+  const market =
+    fields.market ||
+    fields.orderSnapshot?.market ||
+    fields.orderContextSnapshot?.market ||
+    behaviorState?.market ||
+    parseMarket(location.href);
+  const dataSource = fields.dataSource || (isDemoPage() ? "DEMO" : "UPBIT");
+  const capturedAt = fields.capturedAt || new Date().toISOString();
+
+  emitExtensionDebug("behavior", "DETECTION_PIPELINE_TRACE", {
+    type: "DETECTION_PIPELINE_TRACE",
+    attemptId,
+    dataSource,
+    market,
+    stage,
+    capturedAt,
+    ...fields,
+  }, capturedAt);
+  debugUpbitOrder("DETECTION_PIPELINE_TRACE", {
+    type: "DETECTION_PIPELINE_TRACE",
+    attemptId,
+    dataSource,
+    market,
+    stage,
+    capturedAt,
+    ...fields,
+  });
+}
+
 function collectMatchedRuleConditions(expression, snapshot) {
   if (!expression || typeof expression !== "object") {
     return [];
@@ -790,10 +833,14 @@ function collectMatchedRuleConditions(expression, snapshot) {
   );
 }
 
-function buildConditionDescription(condition, snapshot) {
+function buildConditionDescription(condition, snapshot, values = {}) {
   const label = getRuleFieldLabel(condition.leftField);
-  const leftValue = getRuleFieldValue(snapshot, condition.leftField);
-  const rightValue = getRuleOperandValue(condition.rightOperand, snapshot);
+  const leftValue = Object.prototype.hasOwnProperty.call(values, "actualValue")
+    ? values.actualValue
+    : getRuleFieldValue(snapshot, condition.leftField);
+  const rightValue = Object.prototype.hasOwnProperty.call(values, "expectedValue")
+    ? values.expectedValue
+    : getRuleOperandValue(condition.rightOperand, snapshot);
   const leftText = formatRuleValue(leftValue, condition.leftField);
   const rightField = condition.rightOperand?.field || condition.leftField;
   const rightText = formatRuleValue(rightValue, rightField);
@@ -920,6 +967,35 @@ function buildConditionDescription(condition, snapshot) {
 
 function buildMatchedRuleDescriptions(result) {
   const snapshot = result?.orderContextSnapshot;
+  const matchedRuleIds = new Set(result?.ruleEvaluation?.matchedRuleIds || []);
+  const conditionResults = Array.isArray(result?.ruleEvaluation?.conditionResults)
+    ? result.ruleEvaluation.conditionResults
+    : [];
+
+  if (conditionResults.length > 0) {
+    return conditionResults
+      .filter((conditionResult) =>
+        conditionResult.matched &&
+          (!conditionResult.ruleId || matchedRuleIds.has(conditionResult.ruleId)),
+      )
+      .map((conditionResult) => ({
+        ruleId: conditionResult.ruleId || null,
+        ruleTitle: conditionResult.ruleName || "가드레일",
+        ...buildConditionDescription(
+          {
+            leftField: conditionResult.leftField || conditionResult.field,
+            operator: conditionResult.operator,
+            rightOperand: { operandType: "LITERAL", value: conditionResult.expectedValue },
+          },
+          snapshot,
+          {
+            actualValue: conditionResult.actualValue,
+            expectedValue: conditionResult.expectedValue,
+          },
+        ),
+      }));
+  }
+
   const matchedRules = Array.isArray(result?.ruleEvaluation?.matchedRules)
     ? result.ruleEvaluation.matchedRules
     : result?.primaryRule
@@ -938,32 +1014,190 @@ function buildMatchedRuleDescriptions(result) {
   });
 }
 
+function getPrimaryExpressionEvaluation(result) {
+  const ruleEvaluation = result?.ruleEvaluation || result?.evaluation || null;
+  const primaryRuleId =
+    result?.primaryRuleId ||
+    ruleEvaluation?.primaryRuleId ||
+    result?.primaryRule?.ruleId ||
+    ruleEvaluation?.primaryRule?.ruleId ||
+    null;
+  const expressionResults = Array.isArray(ruleEvaluation?.expressionResults)
+    ? ruleEvaluation.expressionResults
+    : [];
+  const byPrimaryId = expressionResults.find(
+    (item) => item?.ruleId && item.ruleId === primaryRuleId,
+  );
+  const matchedExpression = expressionResults.find((item) => item?.matched);
+
+  return byPrimaryId || matchedExpression || null;
+}
+
+function createConditionEvaluationRow(conditionResult) {
+  const formatted = formatRuleConditionEvaluation
+    ? formatRuleConditionEvaluation(conditionResult)
+    : null;
+  const row = document.createElement("div");
+  row.className = "saltbread-condition-row";
+  row.dataset.matched = String(Boolean(conditionResult?.matched));
+
+  const icon = document.createElement("span");
+  icon.className = "saltbread-condition-row__icon";
+  icon.textContent = conditionResult?.matched ? "✓" : "–";
+  icon.setAttribute(
+    "aria-label",
+    conditionResult?.matched ? "충족" : "미충족",
+  );
+
+  const body = document.createElement("span");
+  body.className = "saltbread-condition-row__body";
+
+  const title = document.createElement("strong");
+  title.className = "saltbread-condition-row__title";
+  title.textContent =
+    formatted?.description ||
+    `${getRuleFieldLabel(conditionResult?.leftField || conditionResult?.field)} 조건`;
+
+  const meta = document.createElement("span");
+  meta.className = "saltbread-condition-row__meta";
+  meta.textContent = [
+    formatted?.criteriaText ? `기준 ${formatted.criteriaText}` : null,
+    formatted?.actualText ? `당시 ${formatted.actualText}` : null,
+  ].filter(Boolean).join(" · ");
+
+  const actualSentence = document.createElement("span");
+  actualSentence.className = "saltbread-condition-row__sentence";
+  actualSentence.textContent =
+    formatted?.actualSentence ||
+    "이 기록에는 당시 판정값이 저장되지 않았어요.";
+
+  body.append(title, meta, actualSentence);
+  row.append(icon, body);
+  return row;
+}
+
+function renderExpressionEvaluationNode(node, depth = 0) {
+  if (!node || typeof node !== "object") {
+    return document.createDocumentFragment();
+  }
+
+  if (node.nodeType === "CONDITION") {
+    return createConditionEvaluationRow(node.condition || node);
+  }
+
+  const group = document.createElement("div");
+  group.className = "saltbread-condition-group";
+  group.dataset.operator = node.operator || "AND";
+  group.style.setProperty("--condition-depth", String(Math.min(depth, 3)));
+
+  const label = document.createElement("span");
+  label.className = "saltbread-condition-group__label";
+  label.textContent =
+    node.operator === "OR"
+      ? "다음 조건 중 하나 이상을 만족할 때"
+      : "다음 조건을 모두 만족할 때";
+  group.append(label);
+
+  (Array.isArray(node.children) ? node.children : []).forEach((child) => {
+    group.append(renderExpressionEvaluationNode(child, depth + 1));
+  });
+
+  return group;
+}
+
+function renderWarningReason(messageElement, result) {
+  const expressionEvaluation = getPrimaryExpressionEvaluation(result);
+  const expressionTree = expressionEvaluation?.expression || null;
+  const flattened = flattenExpressionEvaluation
+    ? flattenExpressionEvaluation(expressionTree)
+    : [];
+  const primaryRule =
+    result?.primaryRule ||
+    result?.ruleEvaluation?.primaryRule ||
+    expressionEvaluation ||
+    null;
+  const matchedConditions = flattened.filter((condition) => condition?.matched);
+
+  if (!expressionTree && flattened.length === 0) {
+    return false;
+  }
+
+  const section = document.createElement("section");
+  section.className = "saltbread-warning-reason";
+  section.setAttribute("aria-label", "경고 기준");
+
+  const heading = document.createElement("strong");
+  heading.className = "saltbread-warning-reason__heading";
+  heading.textContent = "왜 이 경고가 표시됐나요?";
+
+  const ruleName = document.createElement("span");
+  ruleName.className = "saltbread-warning-reason__rule";
+  ruleName.textContent = primaryRule?.ruleName || primaryRule?.name
+    ? `이번에 감지된 규칙 · ${primaryRule.ruleName || primaryRule.name}`
+    : "이번에 감지된 규칙";
+
+  const summary = document.createElement("p");
+  summary.className = "saltbread-warning-reason__summary";
+  summary.textContent = formatExpressionEvaluationSummary
+    ? formatExpressionEvaluationSummary(expressionTree)
+    : `설정한 조건 ${flattened.length || matchedConditions.length}개가 충족됐어요.`;
+
+  section.append(heading, ruleName, summary);
+
+  if (flattened.length > 3) {
+    const preview = document.createElement("div");
+    preview.className = "saltbread-condition-list saltbread-condition-list--preview";
+    flattened.slice(0, 3).forEach((condition) => {
+      preview.append(createConditionEvaluationRow(condition));
+    });
+    section.append(preview);
+
+    const details = document.createElement("details");
+    details.className = "saltbread-condition-details";
+    const detailsSummary = document.createElement("summary");
+    detailsSummary.textContent = `경고 기준 자세히 보기 ${flattened.length}개`;
+    details.append(detailsSummary, renderExpressionEvaluationNode(expressionTree));
+    section.append(details);
+  } else {
+    const list = document.createElement("div");
+    list.className = "saltbread-condition-list";
+    list.append(renderExpressionEvaluationNode(expressionTree));
+    section.append(list);
+  }
+
+  messageElement.append(section);
+  return true;
+}
+
 function renderDetectedStatusMessage(messageElement, message, result = null) {
-  const descriptions = buildMatchedRuleDescriptions(result);
   messageElement.replaceChildren();
   messageElement.append(document.createTextNode(message));
 
-  if (descriptions.length > 0) {
-    messageElement.append(document.createElement("br"));
-    messageElement.append(document.createElement("br"));
+  const renderedReason = renderWarningReason(messageElement, result);
+  if (!renderedReason) {
+    const descriptions = buildMatchedRuleDescriptions(result);
+    if (descriptions.length > 0) {
+      messageElement.append(document.createElement("br"));
+      messageElement.append(document.createElement("br"));
 
-    const list = document.createElement("span");
-    list.className = "saltbread-rule-match-list";
+      const list = document.createElement("span");
+      list.className = "saltbread-rule-match-list";
 
-    descriptions.forEach((description) => {
-      const line = document.createElement("span");
-      line.className = "saltbread-rule-match-line";
+      descriptions.forEach((description) => {
+        const line = document.createElement("span");
+        line.className = "saltbread-rule-match-line";
 
-      description.parts.forEach((part) => {
-        const node = document.createElement(part.emphasis ? "strong" : "span");
-        node.textContent = part.text;
-        line.append(node);
+        description.parts.forEach((part) => {
+          const node = document.createElement(part.emphasis ? "strong" : "span");
+          node.textContent = part.text;
+          line.append(node);
+        });
+
+        list.append(line);
       });
 
-      list.append(line);
-    });
-
-    messageElement.append(list);
+      messageElement.append(list);
+    }
   }
 
   const disclaimer = document.createElement("span");
@@ -998,6 +1232,16 @@ function getRuleDisplayTitle(rule) {
 
 function renderRuleRows(rules = []) {
   const userRules = Array.isArray(rules) ? rules : [];
+  const activePrimaryRuleId =
+    activeDetectionResult?.primaryRuleId ||
+    activeDetectionResult?.ruleEvaluation?.primaryRuleId ||
+    activeDetectionResult?.primaryRule?.ruleId ||
+    null;
+  const activeMatchedRuleIds = new Set(
+    activeDetectionResult?.matchedRuleIds ||
+      activeDetectionResult?.ruleEvaluation?.matchedRuleIds ||
+      [],
+  );
 
   if (userRules.length === 0) {
     return `
@@ -1015,6 +1259,9 @@ function renderRuleRows(rules = []) {
     const requiresPrivateApi = Boolean(rule.requiresPrivateApi);
     const isPrivateApiReady = !requiresPrivateApi || privateApiReady;
     const description = rule.description || rule.warningMessage || title;
+    const isDetectedRule =
+      Boolean(rule.ruleId) &&
+      (rule.ruleId === activePrimaryRuleId || activeMatchedRuleIds.has(rule.ruleId));
     const apiNotice =
       requiresPrivateApi && !privateApiReady
         ? "개인 API 연결 시 감시 가능"
@@ -1031,10 +1278,12 @@ function renderRuleRows(rules = []) {
         data-enabled="${String(rule.isEnabled !== false)}"
         data-private-api-required="${String(requiresPrivateApi)}"
         data-private-api-ready="${String(isPrivateApiReady)}"
+        data-detected-rule="${String(isDetectedRule)}"
         title="${escapeHtml(titleText)}"
       >
         <span class="saltbread-rule-row__flame-icon" aria-hidden="true">🔥</span>
         <span class="saltbread-rule-row__title">${escapeHtml(title)}</span>
+        ${isDetectedRule ? `<span class="saltbread-rule-row__detected-badge">이번 경고</span>` : ""}
         <strong class="saltbread-rule-row__mode">${escapeHtml(modeLabel)}</strong>
         ${requiresPrivateApi ? `<span class="saltbread-rule-row__api-badge">API</span>` : ""}
       </article>
@@ -1255,7 +1504,40 @@ function setPanelFeedbackActive(isActive) {
   feedbackSection.hidden = !isActive;
 }
 
+function clearPanelIntroNoticeTimers() {
+  if (panelIntroNoticeTimerId) {
+    window.clearTimeout(panelIntroNoticeTimerId);
+    panelIntroNoticeTimerId = null;
+  }
+
+  if (panelIntroNoticeHideTimerId) {
+    window.clearTimeout(panelIntroNoticeHideTimerId);
+    panelIntroNoticeHideTimerId = null;
+  }
+}
+
+function schedulePanelIntroNotice(panel) {
+  const notice = panel?.querySelector("[data-panel-intro-notice]");
+  if (!notice) {
+    return;
+  }
+
+  clearPanelIntroNoticeTimers();
+  notice.hidden = false;
+  notice.classList?.remove?.("is-hiding");
+  panelIntroNoticeTimerId = window.setTimeout(() => {
+    notice.classList?.add?.("is-hiding");
+    panelIntroNoticeTimerId = null;
+    panelIntroNoticeHideTimerId = window.setTimeout(() => {
+      notice.hidden = true;
+      notice.classList?.remove?.("is-hiding");
+      panelIntroNoticeHideTimerId = null;
+    }, PANEL_INTRO_NOTICE_ANIMATION_MS);
+  }, PANEL_INTRO_NOTICE_DURATION_MS);
+}
+
 function removePanel() {
+  clearPanelIntroNoticeTimers();
   panelFlame?.destroy();
   panelFlame = null;
   collapsedPanelFlame?.destroy();
@@ -1321,6 +1603,16 @@ function createPanel(auth) {
       </div>
       <p class="saltbread-logging-status" data-logging-status hidden></p>
 
+      <section class="saltbread-panel-intro-notice" data-panel-intro-notice aria-live="polite">
+        <span class="saltbread-panel-intro-notice__icon" aria-hidden="true">▦</span>
+        <div>
+          <strong>가드레일이 활성화되어 있어요</strong>
+          <p>
+            불씨는 수익률을 보장하는 서비스가 아니라, 내가 정한 원칙을 주문 순간에 확인하도록 돕는 투자 보조 도구예요. 주문 전 가드레일 안내를 확인해 주세요.
+          </p>
+        </div>
+      </section>
+
       <section
         class="saltbread-panel__section"
         aria-labelledby="saltbread-rules-title"
@@ -1354,14 +1646,14 @@ function createPanel(auth) {
             type="button"
             data-assessment="PLANNED"
           >
-            계획된 거래였어요
+            원칙을 지킨 거래였어요
           </button>
           <button
             class="saltbread-feedback-button saltbread-feedback-button--emotional"
             type="button"
             data-assessment="EMOTIONAL"
           >
-            감정적인 거래였어요
+            후회했던 거래였어요
           </button>
           <button
             class="saltbread-feedback-button saltbread-feedback-button--dismiss"
@@ -1449,18 +1741,19 @@ function createPanel(auth) {
     panel.querySelector(".saltbread-panel__flame"),
     {
       mode: "default",
-      label: "현재 감정 매매 상태를 보여주는 불꽃",
+      label: "현재 가드레일 상태를 보여주는 불꽃",
     },
   );
   collapsedPanelFlame = createPanelFlame(
     panel.querySelector(".saltbread-panel__collapsed-flame"),
     {
       mode: "default",
-      label: "접힌 불씨의 현재 감정 매매 상태 불꽃",
+      label: "접힌 불씨의 현재 가드레일 상태 불꽃",
     },
   );
   resetPanelFlameState();
   safeRuntimeSendMessage({ type: "RESET_FLAME_STATE" }).catch(() => {});
+  schedulePanelIntroNotice(panel);
   void loadPageGuardrailRules();
   void refreshDailyInsightStatus();
   void refreshPrivateApiReadyState();
@@ -2005,6 +2298,7 @@ function readNumberAfterLabels(root, labelAlternatives) {
 
 function findPriceValue(root) {
   return (
+    findInputValueByTestIds(root, ["order-price-input"]) ??
     findInputValue(root, /매수가격|매도가격|주문가격|가격/) ??
     readNumberAfterLabels(root, ["매수가격", "매도가격", "주문가격", "가격"])
   );
@@ -2012,6 +2306,7 @@ function findPriceValue(root) {
 
 function findQuantityValue(root) {
   return (
+    findInputValueByTestIds(root, ["volume-input"]) ??
     findInputValue(root, /주문수량|매수수량|매도수량|수량/) ??
     readNumberAfterLabels(root, ["주문수량", "매수수량", "매도수량", "수량"])
   );
@@ -2019,6 +2314,7 @@ function findQuantityValue(root) {
 
 function findAmountValue(root) {
   return (
+    findInputValueByTestIds(root, ["total-input"]) ??
     findInputValue(
       root,
       /주문총액|매수금액|매도금액|총주문금액|주문금액|총액|금액/,
@@ -2599,8 +2895,40 @@ function findInputValue(panel, labelPattern) {
   return null;
 }
 
+function isUpbitOrderbookClickTarget(target) {
+  if (!isUpbitExchangePage() || !(target instanceof Element)) {
+    return false;
+  }
+
+  const row = target.closest("[data-showbunchtooltip='true']");
+  if (!row) {
+    return false;
+  }
+
+  const text = normalizedText(row);
+  return /[0-9,]+(?:\.\d+)?/.test(text);
+}
+
+function findInputValueByTestIds(panel, testIds = []) {
+  if (!panel?.querySelector) {
+    return null;
+  }
+
+  for (const testId of testIds) {
+    const input = panel.querySelector(`input[data-testid="${testId}"]`);
+    const value = readInputNumber(input);
+
+    if (value !== null) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
 function inputMatchesLabel(input, panel, labelPattern) {
   const directLabels = [
+    input.getAttribute("data-testid"),
     input.getAttribute("aria-label"),
     input.getAttribute("placeholder"),
     input.getAttribute("title"),
@@ -2640,6 +2968,7 @@ function getOrderInputKind(input, panel = findOrderPanel(input)) {
   }
 
   const directLabels = [
+    input.getAttribute("data-testid"),
     input.getAttribute("aria-label"),
     input.getAttribute("placeholder"),
     ...[...(input.labels || [])].map((label) => label.textContent),
@@ -2657,15 +2986,15 @@ function getOrderInputKind(input, panel = findOrderPanel(input)) {
   for (const text of candidates) {
     const normalized = String(text).replace(/\s/g, "");
 
-    if (/주문총액|매수금액|매도금액|총주문금액|주문금액|총액|금액/.test(normalized)) {
+    if (/total-input|주문총액|매수금액|매도금액|총주문금액|주문금액|총액|금액/.test(normalized)) {
       return { eventType: "AMOUNT_INPUT", field: "amount" };
     }
 
-    if (/매수가격|매도가격|주문가격|가격/.test(normalized)) {
+    if (/order-price-input|매수가격|매도가격|주문가격|가격/.test(normalized)) {
       return { eventType: "PRICE_INPUT", field: "price" };
     }
 
-    if (/주문수량|매수수량|매도수량|수량/.test(normalized)) {
+    if (/volume-input|주문수량|매수수량|매도수량|수량/.test(normalized)) {
       return { eventType: "QUANTITY_INPUT", field: "quantity" };
     }
   }
@@ -3090,6 +3419,17 @@ function handleAmountInput(event) {
   behaviorState.draftStartedAt ||= editedAt;
   behaviorState.lastEditAt = editedAt;
   behaviorState.draftEditCount += 1;
+  emitDetectionPipelineTrace("BEHAVIOR_UPDATED", {
+    dataSource: isDemoPage() ? "DEMO" : "UPBIT",
+    market: behaviorState.market,
+    behaviorSnapshot: {
+      draftEditCount: behaviorState.draftEditCount,
+      inputEditTimestampsByField: Object.fromEntries(
+        Object.entries(behaviorState.inputEditTimestampsByField || {})
+          .map(([field, timestamps]) => [field, timestamps.length]),
+      ),
+    },
+  });
   const input = event.target;
   const inputKind = getOrderInputKind(input);
 
@@ -3638,6 +3978,15 @@ function applyDemoOverrideState(state = {}, source = "demo-state") {
     accountsLength: override.demoData.accounts.length,
     recentOrdersLength: override.demoData.recentOrders.length,
   });
+  emitDetectionPipelineTrace("RAW_DATA_CAPTURED", {
+    dataSource: "DEMO",
+    market: behaviorState.market,
+    marketSnapshot: override.demoMarketSnapshot || null,
+    personalSnapshot: override.demoPersonalSnapshot || null,
+    orderSnapshot: override.currentOrder || null,
+    behaviorSnapshot: override.behaviorData || null,
+    source,
+  });
 }
 
 function handleDemoScenario(event) {
@@ -4058,6 +4407,15 @@ function buildOrderContextSnapshot(orderButton, snapshotTrigger, options = {}) {
     attemptId:
       options.attemptId ||
       (snapshotTrigger === "ORDER_INTENT_CLICK" ? createUuid() : null),
+    dataSource: isDemoPage() ? "DEMO" : "UPBIT",
+    marketSource: isDemoPage() ? "DEMO_PAGE" : "UPBIT_PUBLIC_API",
+    orderSource: isDemoPage() ? "DEMO_PAGE" : "UPBIT_DOM",
+    behaviorSource: isDemoPage() ? "DEMO_INTERACTION" : "UPBIT_INTERACTION",
+    personalSource: isDemoPage()
+      ? "DEMO_PAGE"
+      : cachedPersonalSnapshotCache?.[market]
+        ? "UPBIT_PERSONAL_API"
+        : "UNAVAILABLE",
     snapshotTrigger,
     capturedAt,
     orderTime: orderTimeParts.orderTime,
@@ -4130,6 +4488,53 @@ function buildOrderContextSnapshot(orderButton, snapshotTrigger, options = {}) {
   };
 }
 
+function validateSnapshotSourceConsistency(snapshot) {
+  const dataSource = snapshot?.dataSource || (isDemoPage() ? "DEMO" : "UPBIT");
+  const expectedSources = dataSource === "DEMO"
+    ? {
+        marketSource: "DEMO_PAGE",
+        orderSource: "DEMO_PAGE",
+        behaviorSource: "DEMO_INTERACTION",
+        personalSource: "DEMO_PAGE",
+      }
+    : {
+        marketSource: "UPBIT_PUBLIC_API",
+        orderSource: "UPBIT_DOM",
+        behaviorSource: "UPBIT_INTERACTION",
+      };
+  const mismatches = Object.entries(expectedSources)
+    .filter(([field, expected]) => snapshot?.[field] !== expected)
+    .map(([field, expected]) => ({
+      field,
+      expected,
+      actual: snapshot?.[field] ?? null,
+    }));
+
+  if (
+    dataSource === "UPBIT" &&
+    !["UPBIT_PERSONAL_API", "UNAVAILABLE"].includes(snapshot?.personalSource)
+  ) {
+    mismatches.push({
+      field: "personalSource",
+      expected: "UPBIT_PERSONAL_API|UNAVAILABLE",
+      actual: snapshot?.personalSource ?? null,
+    });
+  }
+
+  if (mismatches.length > 0) {
+    emitDetectionPipelineTrace("DATA_SOURCE_MISMATCH", {
+      attemptId: snapshot?.attemptId || null,
+      dataSource,
+      market: snapshot?.market || null,
+      mismatches,
+      orderSnapshot: snapshot || null,
+    });
+    return false;
+  }
+
+  return true;
+}
+
 function emitOrderContextSnapshot(snapshot, detection = null) {
   const matchedRuleIds = detection?.matchedRuleIds || [];
   const primaryRuleId = detection?.primaryRuleId || null;
@@ -4154,6 +4559,12 @@ function emitOrderContextSnapshot(snapshot, detection = null) {
     detection?.ruleEvaluation,
     payload,
   );
+  emitDetectionPipelineTrace("GUARDRAIL_LOG_SAVED", {
+    attemptId: payload.attemptId,
+    dataSource: payload.dataSource,
+    market: payload.market,
+    orderSnapshot: payload,
+  });
   emitExtensionDebug(
     "behavior",
     payload.snapshotTrigger || "OrderContextSnapshotDTO",
@@ -4294,25 +4705,47 @@ function buildRuleEvaluationSnapshots(ruleEvaluation, snapshot) {
   const matchedRules = Array.isArray(ruleEvaluation?.matchedRules)
     ? ruleEvaluation.matchedRules
     : [];
+  const conditionResults = Array.isArray(ruleEvaluation?.conditionResults)
+    ? ruleEvaluation.conditionResults
+    : [];
 
-  return matchedRules.map((rule) => ({
-    ...(createGuardrailRuleSnapshot(rule) || {}),
-    ruleId: rule.ruleId,
-    ruleVersion: rule.schemaVersion || "v1",
-    ruleName: rule.name || rule.warningTitle || "이름 없는 규칙",
-    description: rule.description || rule.warningMessage || null,
-    visualMode: rule.visualMode || "CURIOUS",
-    riskLevel: rule.riskLevel || "MEDIUM",
-    expression: rule.expression,
-    conditions: collectRuleConditionsForDebug(rule.expression).map((condition) => ({
-      leftField: condition.leftField,
-      operator: condition.operator,
-      expectedValue: getRuleOperandValue(condition.rightOperand, snapshot),
-      actualValue: getRuleFieldValue(snapshot, condition.leftField),
-      matched: evaluateRuleExpression(condition, snapshot),
-      dataCategory: getRuleEvaluationDataCategory(condition.leftField),
-    })),
-  }));
+  return matchedRules.map((rule) => {
+    const evaluatedConditions = conditionResults
+      .filter((condition) => condition.ruleId === rule.ruleId)
+      .map((condition) => ({
+        leftField: condition.leftField || condition.field,
+        operator: condition.operator,
+        expectedValue: condition.expectedValue,
+        actualValue: condition.actualValue,
+        matched: Boolean(condition.matched ?? condition.pass),
+        dataCategory: getRuleEvaluationDataCategory(
+          condition.leftField || condition.field,
+        ),
+      }));
+    const fallbackConditions = collectRuleConditionsForDebug(rule.expression)
+      .map((condition) => ({
+        leftField: condition.leftField,
+        operator: condition.operator,
+        expectedValue: getRuleOperandValue(condition.rightOperand, snapshot),
+        actualValue: getRuleFieldValue(snapshot, condition.leftField),
+        matched: evaluateRuleExpression(condition, snapshot),
+        dataCategory: getRuleEvaluationDataCategory(condition.leftField),
+      }));
+
+    return {
+      ...(createGuardrailRuleSnapshot(rule) || {}),
+      ruleId: rule.ruleId,
+      ruleVersion: rule.schemaVersion || "v1",
+      ruleName: rule.name || rule.warningTitle || "이름 없는 규칙",
+      description: rule.description || rule.warningMessage || null,
+      visualMode: rule.visualMode || "CURIOUS",
+      riskLevel: rule.riskLevel || "MEDIUM",
+      expression: rule.expression,
+      conditions: evaluatedConditions.length > 0
+        ? evaluatedConditions
+        : fallbackConditions,
+    };
+  });
 }
 
 function evaluatePageGuardrailRulesForSnapshot(snapshot) {
@@ -4338,10 +4771,9 @@ function evaluatePageGuardrailRulesForSnapshot(snapshot) {
   };
   const ruleEvaluation = {
     ...baseRuleEvaluation,
-    conditionResults: buildRuleConditionResultsForDebug(
-      pageGuardrailRules,
-      evaluatedSnapshot,
-    ),
+    conditionResults:
+      baseRuleEvaluation.conditionResults ||
+      buildRuleConditionResultsForDebug(pageGuardrailRules, evaluatedSnapshot),
   };
   lastRuleEvaluation = ruleEvaluation;
   const result = createLocalGuardrailResult(
@@ -4369,6 +4801,12 @@ function evaluatePageGuardrailRulesForSnapshot(snapshot) {
       intentQuantity: evaluatedSnapshot?.intentQuantity,
       intentAmount: evaluatedSnapshot?.intentAmount,
     },
+  });
+  emitDetectionPipelineTrace("RULE_EVALUATED", {
+    attemptId: evaluatedSnapshot.attemptId,
+    dataSource: evaluatedSnapshot.dataSource,
+    market: evaluatedSnapshot.market,
+    evaluation: ruleEvaluation,
   });
   return { snapshot: evaluatedSnapshot, result, ruleEvaluation };
 }
@@ -4462,6 +4900,7 @@ function showDetectedGuardrailResult(result, snapshot, options = {}) {
 
   activeDetectionResult = result;
   activeGuardrailSnapshotId = snapshot?.snapshotId || null;
+  renderGuardrailRulesFromCache(pageGuardrailRulesState);
 
   const panelBeforeApply = document.getElementById(PANEL_ID);
   if (!panelBeforeApply) {
@@ -4492,7 +4931,7 @@ function showDetectedGuardrailResult(result, snapshot, options = {}) {
   });
 
   setAnalysisStatus(
-    result.message || `${result.type} 감정 매매 타입을 감지했어요.`,
+    result.message || "설정한 가드레일 기준에 맞는 주문을 감지했어요.",
     "detected",
     result.type,
     result.warningTitle || result.primaryRule?.warningTitle || null,
@@ -4535,6 +4974,14 @@ function showDetectedGuardrailResult(result, snapshot, options = {}) {
       null,
     ...uiState,
   });
+  emitDetectionPipelineTrace("WARNING_UI_RENDERED", {
+    attemptId,
+    dataSource: snapshot?.dataSource || (isDemoPage() ? "DEMO" : "UPBIT"),
+    market: snapshot?.market || null,
+    orderSnapshot: snapshot || null,
+    ruleEvaluation: result?.ruleEvaluation || null,
+    warningUi: uiState,
+  });
   return true;
 }
 
@@ -4542,6 +4989,7 @@ function clearActiveGuardrailResult() {
   activeDetectionResult = null;
   activeGuardrailSnapshotId = null;
   setPanelWarningActive(false);
+  renderGuardrailRulesFromCache(pageGuardrailRulesState);
 }
 
 function clearActiveFeedbackViewForNewAttempt(nextAttemptId = null) {
@@ -4597,6 +5045,7 @@ function beginOrderAttempt(orderButton, options = {}) {
     "ORDER_INTENT_CLICK",
     options,
   );
+  validateSnapshotSourceConsistency(rawSnapshot);
   const snapshotWithCache = mergeCachedSnapshotsIntoOrderContext(rawSnapshot);
   const { snapshot, result } =
     evaluatePageGuardrailRulesForSnapshot(snapshotWithCache);
@@ -4605,6 +5054,12 @@ function beginOrderAttempt(orderButton, options = {}) {
     clearActiveWarningForNewAttempt(snapshot.attemptId);
   }
   emitOrderContextSnapshotDebug(snapshot);
+  emitDetectionPipelineTrace("SNAPSHOT_CREATED", {
+    attemptId: snapshot.attemptId,
+    dataSource: snapshot.dataSource,
+    market: snapshot.market,
+    orderSnapshot: snapshot,
+  });
   lastOrderIntent = {
     attemptId: snapshot.attemptId,
     market: snapshot.market,
@@ -4878,6 +5333,7 @@ function ensurePendingAttemptForConfirmedOrder(orderButton, options = {}) {
     "ORDER_INTENT_CLICK",
     options,
   );
+  validateSnapshotSourceConsistency(rawSnapshot);
   const snapshotWithCache = mergeCachedSnapshotsIntoOrderContext(rawSnapshot);
   const { snapshot, result } =
     evaluatePageGuardrailRulesForSnapshot(snapshotWithCache);
@@ -5970,8 +6426,16 @@ function handleDocumentClick(event) {
   const orderbookTarget = event.target instanceof Element
     ? event.target.closest("[data-saltbread-orderbook-price]")
     : null;
-  if (orderbookTarget) {
+  if (orderbookTarget || isUpbitOrderbookClickTarget(event.target)) {
     behaviorState.lastOrderbookClickAt = Date.now();
+    emitDetectionPipelineTrace("BEHAVIOR_UPDATED", {
+      dataSource: isDemoPage() ? "DEMO" : "UPBIT",
+      market: behaviorState.market,
+      behaviorSnapshot: {
+        orderbookClicked: true,
+        lastOrderbookClickAt: behaviorState.lastOrderbookClickAt,
+      },
+    });
   }
 
   const clickedControl = event.target instanceof Element

@@ -137,16 +137,16 @@ export default function AuthPanel() {
         </div>
 
         <div className={styles.introCopy}>
-          <p className={styles.eyebrow}>TRADE WITH CLARITY</p>
+          <p className={styles.eyebrow}>WITH GUARDRAIL</p>
           <h1 id="auth-intro-title">
-            감정은 잠시 내려놓고,
+            투자에 원칙을 더하고,
             <br />
-            판단은 더 선명하게.
+            기록으로 돌아보세요.
           </h1>
           <p>
-            나의 투자 행동을 돌아보고, 데이터와 AI 인사이트로
-            <br className={styles.desktopBreak} /> 더 단단한 투자 습관을
-            만들어 보세요.
+            직접 정한 거래 기준을 주문 순간에 확인하고,
+            <br className={styles.desktopBreak} /> 쌓인 기록으로 같은 후회를
+            반복하지 않게 도와드려요.
           </p>
         </div>
 
@@ -156,8 +156,8 @@ export default function AuthPanel() {
               <InsightIcon />
             </span>
             <p>
-              <strong>투자 패턴 한눈에</strong>
-              <small>흩어진 거래 행동을 이해하기 쉽게 정리해요.</small>
+              <strong>거래 기록 한눈에</strong>
+              <small>주문 시도와 가드레일 기록을 이해하기 쉽게 정리해요.</small>
             </p>
           </div>
           <div>
