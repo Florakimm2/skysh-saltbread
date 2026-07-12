@@ -1373,6 +1373,27 @@ function createPanel(auth) {
         </div>
       </section>
 
+      <section
+        class="saltbread-panel__section saltbread-panel__daily-insight"
+        aria-labelledby="saltbread-daily-insight-title"
+        data-daily-insight
+        hidden
+      >
+        <div class="saltbread-panel__section-heading">
+          <h2 id="saltbread-daily-insight-title">오늘의 AI 인사이트</h2>
+          <span data-daily-insight-status>대기</span>
+        </div>
+        <p class="saltbread-panel__daily-insight-copy" data-daily-insight-copy></p>
+        <button
+          class="saltbread-daily-insight-button"
+          type="button"
+          data-daily-insight-generate
+          hidden
+        >
+          AI 인사이트 생성
+        </button>
+      </section>
+
       <div class="saltbread-panel__actions" aria-label="거래 판단">
         <button
           class="saltbread-action-button saltbread-action-button--review"
@@ -1419,6 +1440,9 @@ function createPanel(auth) {
       answerTradeFeedback(button.dataset.assessment);
     });
   });
+  panel
+    .querySelector("[data-daily-insight-generate]")
+    ?.addEventListener("click", openDailyInsightDashboardFromPanel);
 
   document.body.append(panel);
   panelFlame = createPanelFlame(
@@ -1438,12 +1462,92 @@ function createPanel(auth) {
   resetPanelFlameState();
   safeRuntimeSendMessage({ type: "RESET_FLAME_STATE" }).catch(() => {});
   void loadPageGuardrailRules();
+  void refreshDailyInsightStatus();
   void refreshPrivateApiReadyState();
   startBehaviorTracking();
 }
 
 function openDashboardPage(path = "/dashboard") {
   safeRuntimeSendMessage({ type: "OPEN_DASHBOARD", payload: { path } });
+}
+
+function renderDailyInsightStatus(status) {
+  const section = document.querySelector("[data-daily-insight]");
+  const statusLabel = section?.querySelector("[data-daily-insight-status]");
+  const copy = section?.querySelector("[data-daily-insight-copy]");
+  const button = section?.querySelector("[data-daily-insight-generate]");
+
+  if (!section || !statusLabel || !copy || !button || !status) {
+    return;
+  }
+
+  let title = "";
+  let message = "";
+  let buttonText = "";
+  let dashboardPath = "/dashboard/ai-insights?focus=today";
+
+  if (status.reportStatus === "GENERATING") {
+    title = "오늘의 AI 인사이트를 만들고 있어요";
+    message = "대시보드에서 생성 상태를 확인할 수 있어요.";
+    buttonText = "생성 상태 보기";
+  } else if (status.reportStatus === "FAILED") {
+    title = "오늘의 AI 인사이트를 만들 수 있어요!";
+    message = "대시보드에서 리포트 생성 상태를 다시 확인해 보세요.";
+    buttonText = "대시보드에서 생성하기";
+  } else if (status.hasNewData || status.reportStatus === "STALE") {
+    title = "리포트 이후 새로운 기록이 쌓였어요";
+    message = "대시보드에서 기존 리포트와 최신 생성 옵션을 확인할 수 있어요.";
+    buttonText = "AI 인사이트 보기";
+  } else if (status.eligible && status.reportStatus === "NOT_CREATED") {
+    title = "오늘의 AI 인사이트를 만들 수 있어요!";
+    message = "오늘 쌓인 주문 기록과 가드레일을 일간 리포트로 확인해 보세요.";
+    buttonText = "대시보드에서 생성하기";
+  } else if (status.reportStatus === "COMPLETED" || status.reportStatus === "PARTIAL") {
+    title = "오늘의 AI 인사이트가 준비됐어요!";
+    message = "주문 흐름과 가드레일의 가격 효과를 리포트에서 확인해 보세요.";
+    buttonText = "오늘 리포트 보기";
+    dashboardPath = `/dashboard/ai-insights?report=${encodeURIComponent(status.date || "")}`;
+  } else {
+    if (
+      Number.isFinite(status.requiredFeedbackCount) &&
+      Number.isFinite(status.answeredFeedbackCount) &&
+      status.requiredFeedbackCount - status.answeredFeedbackCount <= 2 &&
+      status.requiredFeedbackCount > status.answeredFeedbackCount
+    ) {
+      title = "AI 인사이트 준비 중";
+      message = `피드백이 ${status.requiredFeedbackCount - status.answeredFeedbackCount}개 더 쌓이면 오늘의 AI 인사이트를 만들 수 있어요.`;
+      section.hidden = false;
+      statusLabel.textContent = title;
+      copy.textContent = message;
+      button.hidden = true;
+      return;
+    }
+    section.hidden = true;
+    return;
+  }
+
+  section.hidden = false;
+  statusLabel.textContent = title;
+  copy.textContent = message;
+  button.hidden = !buttonText;
+  button.textContent = buttonText || "AI 인사이트 보기";
+  button.dataset.reportDate = status.date || "";
+  button.dataset.dashboardPath = dashboardPath;
+}
+
+function refreshDailyInsightStatus() {
+  safeRuntimeSendMessage({ type: "GET_DAILY_INSIGHT_STATUS" })
+    .then((response) => {
+      if (response?.ok) {
+        renderDailyInsightStatus(response.data);
+      }
+    })
+    .catch(() => {});
+}
+
+function openDailyInsightDashboardFromPanel() {
+  const button = document.querySelector("[data-daily-insight-generate]");
+  openDashboardPage(button?.dataset?.dashboardPath || "/dashboard/ai-insights?focus=today");
 }
 
 function openRuleSettings() {
@@ -4658,6 +4762,7 @@ function answerTradeFeedback(assessment) {
     nextFlowState: "FEEDBACK_COMPLETED",
     reason: assessment,
   });
+  window.setTimeout(refreshDailyInsightStatus, 1200);
 }
 
 function showTradeFeedback(options = {}) {

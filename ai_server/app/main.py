@@ -1,4 +1,3 @@
-import os
 from dotenv import load_dotenv
 
 import logging
@@ -14,11 +13,13 @@ AI_SERVER_ROOT = Path(__file__).resolve().parents[1]  # ai-server/
 if str(AI_SERVER_ROOT) not in sys.path:
     sys.path.insert(0, str(AI_SERVER_ROOT))
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Request  # noqa: E402
+from fastapi.exceptions import RequestValidationError  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
-from app.api.routes import router
-from app.config import Settings
+from app.api.routes import router  # noqa: E402
+from app.config import Settings  # noqa: E402
 
 
 class ServicePrefixMiddleware:
@@ -51,6 +52,7 @@ def create_app(
     settings: Settings | None = None,
     *,
     analyzer: object | None = None,
+    guardrail_suggestion_analyzer: object | None = None,
 ) -> FastAPI:
     application = FastAPI(
         title="Trading Insight API",
@@ -74,7 +76,45 @@ def create_app(
 
     application.state.settings = settings or Settings.from_env()
     application.state.analyzer = analyzer
+    application.state.guardrail_suggestion_analyzer = guardrail_suggestion_analyzer
     application.state.analyzer_lock = Lock()
+
+    @application.exception_handler(RequestValidationError)
+    async def validation_exception_handler(
+        request: Request,
+        exc: RequestValidationError,
+    ) -> JSONResponse:
+        safe_detail = []
+        for item in exc.errors():
+            input_value = item.get("input")
+            if isinstance(input_value, list):
+                input_info = {"type": "array", "length": len(input_value)}
+            elif isinstance(input_value, dict):
+                input_info = {"type": "object"}
+            elif input_value is None:
+                input_info = None
+            else:
+                input_info = {"type": type(input_value).__name__}
+            safe_detail.append(
+                {
+                    "loc": item.get("loc"),
+                    "type": item.get("type"),
+                    "msg": item.get("msg"),
+                    "input": input_info,
+                }
+            )
+        logging.getLogger(__name__).warning(
+            "Request validation failed",
+            extra={
+                "http_status": 422,
+                "path": request.url.path,
+                "error_stage": "REQUEST_VALIDATION",
+                "error_code": "REQUEST_VALIDATION_FAILED",
+                "validation_detail": safe_detail,
+            },
+        )
+        return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
     application.include_router(router)
     return application
 

@@ -17,13 +17,25 @@ class FakeAnalyzer:
         self.received = summaries
         if self.error:
             raise self.error
-        return InsightResponse(summary="첫 번째 분석 문장입니다. 안정적인 성향이 나타납니다.")
+        return InsightResponse(
+            summary="첫 번째 분석 문장입니다. 안정적인 성향이 나타납니다.",
+            flameStatus="default",
+            cards=[],
+        )
 
 
 def settings(
     *, openai_key: str | None = "test-openai-key", service_key: str | None = None
 ) -> Settings:
     return Settings(openai_api_key=openai_key, service_api_key=service_key)
+
+
+def authed_settings() -> Settings:
+    return settings(service_key="client-secret")
+
+
+def service_headers() -> dict[str, str]:
+    return {"X-API-Key": "client-secret"}
 
 
 class ApiTests(unittest.TestCase):
@@ -52,10 +64,14 @@ class ApiTests(unittest.TestCase):
 
     def test_analyze_returns_structured_response(self) -> None:
         analyzer = FakeAnalyzer()
-        client = TestClient(create_app(settings(), analyzer=analyzer))
+        client = TestClient(create_app(authed_settings(), analyzer=analyzer))
         payload = {"summaries": ["시장 변동은 완만했다.", "평균 규모로 주문했다."]}
 
-        response = client.post("/api/v1/insights/analyze", json=payload)
+        response = client.post(
+            "/api/v1/insights/analyze",
+            json=payload,
+            headers=service_headers(),
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("summary", response.json())
@@ -63,10 +79,12 @@ class ApiTests(unittest.TestCase):
 
     def test_analyze_rejects_blank_summary(self) -> None:
         analyzer = FakeAnalyzer()
-        client = TestClient(create_app(settings(), analyzer=analyzer))
+        client = TestClient(create_app(authed_settings(), analyzer=analyzer))
 
         response = client.post(
-            "/api/v1/insights/analyze", json={"summaries": ["   "]}
+            "/api/v1/insights/analyze",
+            json={"summaries": ["   "]},
+            headers=service_headers(),
         )
 
         self.assertEqual(response.status_code, 422)
@@ -91,10 +109,12 @@ class ApiTests(unittest.TestCase):
 
     def test_upstream_error_is_hidden_from_client(self) -> None:
         analyzer = FakeAnalyzer(AnalyzerUpstreamError("sensitive upstream error"))
-        client = TestClient(create_app(settings(), analyzer=analyzer))
+        client = TestClient(create_app(authed_settings(), analyzer=analyzer))
 
         response = client.post(
-            "/api/v1/insights/analyze", json={"summaries": ["관찰 문장"]}
+            "/api/v1/insights/analyze",
+            json={"summaries": ["관찰 문장"]},
+            headers=service_headers(),
         )
 
         self.assertEqual(response.status_code, 502)

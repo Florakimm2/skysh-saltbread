@@ -1,6 +1,6 @@
 // backend/modules/insight/service.ts
 import type { BehaviorSessionRecord } from "@/backend/modules/behavior/types";
-import type { InsightRequestInput } from "./types";
+import type { FastApiInsightResponse, InsightRequestInput } from "./types";
 import { analyzeInsights } from "./rules";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -30,7 +30,7 @@ function getFastApiInsightUrl() {
   return url;
 }
 
-function extractInsightFromFastApiResponse(rawText: string): any {
+function extractInsightFromFastApiResponse(rawText: string): FastApiInsightResponse {
   const trimmed = rawText.trim();
   if (!trimmed) {
     throw new Error("FastAPI 응답이 비어 있습니다.");
@@ -63,7 +63,7 @@ async function fetchWithTimeout(
 
 export async function requestInsightFromFastApi(
   input: InsightRequestInput
-): Promise<any> {
+): Promise<{ insight: FastApiInsightResponse }> {
   const fastApiUrl = getFastApiInsightUrl();
 
   const response = await fetchWithTimeout(fastApiUrl, {
@@ -196,7 +196,16 @@ export async function requestDashboardInsight(
   userId: string,
   records: BehaviorSessionRecord[],
   now = new Date()
-): Promise<any> {
+): Promise<
+  | {
+      status: "ready";
+      insight: string;
+      parsedData: FastApiInsightResponse;
+      sourceCount: number;
+    }
+  | { status: "empty"; sourceCount: 0 }
+  | { status: "error"; sourceCount: number }
+> {
   // 정량 지표(analyzeInsights)와 동일한 30일 창으로 통일
   const since = now.getTime() - RECENT_ANALYSIS_WINDOW_MS;
 

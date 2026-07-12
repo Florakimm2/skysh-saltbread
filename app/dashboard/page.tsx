@@ -1,12 +1,10 @@
 import { getDashboardSession } from "@/backend/modules/auth/session";
-import { requestDashboardInsight } from "@/backend/modules/insight/service";
+import { getLatestDailyInsight } from "@/backend/modules/insight/daily-service";
 import DashboardOverview from "@/frontend/dashboard/dashboard-overview";
 import {
-  loadDashboardBehaviorData,
   loadDashboardTimelineData,
 } from "./load-dashboard-data";
 
-// 유저가 페이지를 열 때마다 매번 새로 FastAPI를 호출하도록 설정
 export const dynamic = 'force-dynamic';
 
 export default async function DashboardPage() {
@@ -16,12 +14,8 @@ export default async function DashboardPage() {
     return null;
   }
 
-  const behaviorData = await loadDashboardBehaviorData(session.userId);
   const timelineData = await loadDashboardTimelineData(session.userId, 5);
-  const insight =
-    behaviorData.status === "ready"
-      ? await requestDashboardInsight(session.userId, behaviorData.records)
-      : { status: "error" as const, sourceCount: 0 };
+  const insight = await getLatestDailyInsight({ userId: session.userId });
 
   return (
     <DashboardOverview

@@ -91,10 +91,10 @@ export async function analyzeInsights(userId: string): Promise<InsightMetricsRes
     let maxCancelledRatio = 0;
 
     for (const daily of dailyAggregates) {
-        const anyDaily = daily as any;
-        const paidFee = Number(anyDaily.dailyPaidFee || anyDaily.paidFee || 0);
-        const executedFunds = Number(anyDaily.dailyExecutedFunds || anyDaily.executedVolume || 0);
-        const cancelledUnfilledRatio = Number(anyDaily.cancelledUnfilledRatio || 0);
+        const dailyRecord = daily as Record<string, unknown>;
+        const paidFee = Number(dailyRecord.dailyPaidFee || dailyRecord.paidFee || 0);
+        const executedFunds = Number(dailyRecord.dailyExecutedFunds || dailyRecord.executedVolume || 0);
+        const cancelledUnfilledRatio = Number(dailyRecord.cancelledUnfilledRatio || 0);
 
         const feeRatio = breweryFunds(paidFee, executedFunds);
 
@@ -124,21 +124,24 @@ export async function analyzeInsights(userId: string): Promise<InsightMetricsRes
     // 4. [SLIPPAGE] 지표 산출 + 앵커 점수
     // ═══════════════════════════════════════════
     const marketTrades = tradeUnits.filter(u => {
-        const anySnapshot = u.snapshot as any;
-        return anySnapshot?.orderMode === 'MARKET' && Number(anySnapshot?.spreadRate || 0) >= 0.002;
+        const snapshot = u.snapshot as Record<string, unknown> | null | undefined;
+        return snapshot?.orderMode === 'MARKET' && Number(snapshot?.spreadRate || 0) >= 0.002;
     });
 
     let maxSlippage = 0;
 
     for (const trade of marketTrades) {
-        const anyTrade = trade as any;
-        if (!anyTrade.outcome?.executedFunds || !anyTrade.outcome?.executedVolume || !anyTrade.snapshot?.tradePriceAtIntent) {
+        const tradeRecord = trade as {
+          outcome?: Record<string, unknown> | null;
+          snapshot?: Record<string, unknown> | null;
+        };
+        if (!tradeRecord.outcome?.executedFunds || !tradeRecord.outcome?.executedVolume || !tradeRecord.snapshot?.tradePriceAtIntent) {
             continue;
         }
 
-        const executedFunds = Number(anyTrade.outcome.executedFunds);
-        const executedVolume = Number(anyTrade.outcome.executedVolume);
-        const tradePriceAtIntent = Number(anyTrade.snapshot.tradePriceAtIntent);
+        const executedFunds = Number(tradeRecord.outcome.executedFunds);
+        const executedVolume = Number(tradeRecord.outcome.executedVolume);
+        const tradePriceAtIntent = Number(tradeRecord.snapshot.tradePriceAtIntent);
 
         if (executedVolume === 0 || tradePriceAtIntent === 0) continue;
 

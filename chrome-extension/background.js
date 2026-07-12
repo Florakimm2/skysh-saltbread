@@ -776,6 +776,21 @@ async function fetchUserStats() {
   });
 }
 
+async function fetchDailyInsightStatus() {
+  const auth = await getValidBackendAuth();
+
+  if (!auth?.accessToken) {
+    const error = new Error("로그인이 필요합니다.");
+    error.status = 401;
+    throw error;
+  }
+
+  return fetchJson(`${getAuthApiBase(auth)}/api/insights/daily/status`, {
+    method: "GET",
+    headers: createBackendHeaders(auth),
+  });
+}
+
 async function patchBackendLog(path, payload, existingAuth = null) {
   const auth = existingAuth || (await getValidBackendAuth());
 
@@ -2568,6 +2583,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           data: typeof stats?.data === "string" ? stats.data : "",
         }),
       )
+      .catch((error) =>
+        sendResponse({
+          ok: false,
+          authRequired: error.status === 401 || error.status === 403,
+          error: error.message,
+        }),
+      );
+    return true;
+  }
+
+  if (message?.type === "GET_DAILY_INSIGHT_STATUS") {
+    fetchDailyInsightStatus()
+      .then((result) => sendResponse({ ok: true, data: result?.data || null }))
       .catch((error) =>
         sendResponse({
           ok: false,

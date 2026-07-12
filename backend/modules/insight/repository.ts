@@ -2,10 +2,17 @@ import { adminDb } from "@/backend/infrastructure/firebase/firebase-admin";
 import { toIsoString } from "../behavior/repository";
 
 // Timestamp 또는 ISO 문자열을 ms(숫자)로 안전하게 변환하는 헬퍼 함수
-function getTimeMs(val: any): number {
+function getTimeMs(val: unknown): number {
     if (!val) return 0;
-    if (typeof val.toDate === "function") return val.toDate().getTime();
-    return new Date(val).getTime();
+    if (
+      typeof val === "object" &&
+      val !== null &&
+      "toDate" in val &&
+      typeof (val as { toDate: () => Date }).toDate === "function"
+    ) {
+      return (val as { toDate: () => Date }).toDate().getTime();
+    }
+    return new Date(String(val)).getTime();
 }
 
 export async function getMonthlyTradeUnits(userId: string) {
@@ -49,7 +56,14 @@ export async function getMonthlyTradeUnits(userId: string) {
     .filter(data => getTimeMs(data.orderCreatedAt) >= thirtyDaysAgoMs);
 
   // 3. Map을 이용한 애플리케이션 레벨 조인 (Key: attemptId)
-    const tradeUnitsMap = new Map<string, any>();
+    const tradeUnitsMap = new Map<string, {
+      attemptId: string;
+      snapshot: FirebaseFirestore.DocumentData;
+      reaction: FirebaseFirestore.DocumentData | null;
+      feedback: FirebaseFirestore.DocumentData | null;
+      trade: FirebaseFirestore.DocumentData | null;
+      outcome: FirebaseFirestore.DocumentData | null;
+    }>();
 
   // A. Snapshot을 기준으로 초기 Unit 생성
     snapshots.forEach((data) => {
@@ -68,14 +82,16 @@ export async function getMonthlyTradeUnits(userId: string) {
   // B. Reaction 매핑
     reactions.forEach((data) => {
     if (data.attemptId && tradeUnitsMap.has(data.attemptId)) {
-        tradeUnitsMap.get(data.attemptId).reaction = data;
+        const unit = tradeUnitsMap.get(data.attemptId);
+        if (unit) unit.reaction = data;
     }
     });
 
   // C. Feedback 매핑
     feedbacks.forEach((data) => {
     if (data.attemptId && tradeUnitsMap.has(data.attemptId)) {
-        tradeUnitsMap.get(data.attemptId).feedback = data;
+        const unit = tradeUnitsMap.get(data.attemptId);
+        if (unit) unit.feedback = data;
     }
     });
 
@@ -83,8 +99,10 @@ export async function getMonthlyTradeUnits(userId: string) {
     tradeLogs.forEach((data) => {
     if (data.attemptId && tradeUnitsMap.has(data.attemptId)) {
         const unit = tradeUnitsMap.get(data.attemptId);
+        if (unit) {
         unit.trade = data;
         unit.outcome = data.outcomePatch || null; 
+        }
     }
     });
 

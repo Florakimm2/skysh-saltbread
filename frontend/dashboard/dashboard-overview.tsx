@@ -1,7 +1,11 @@
 import Link from "next/link";
-import type { DashboardInsightResult } from "@/backend/modules/insight/types";
+import type {
+  DailyInsightEligibility,
+  DailyInsightReport,
+} from "@/backend/modules/insight/daily-types";
 import type { GuardrailTimelineResponse } from "@/backend/modules/logs/types";
 import FlameMascot from "@/frontend/auth/flame-mascot";
+import { buildLatestInsightCardViewModel } from "./latest-insight-card-view-model";
 import PageHeader from "./page-header";
 import {
   NoteIcon,
@@ -10,61 +14,99 @@ import {
 import GuardrailTimeline from "./guardrail-history/GuardrailTimeline";
 import styles from "./dashboard.module.css";
 
-function splitFirstSentence(text: string) {
-  const normalized = text.trim();
-  const match = normalized.match(/^[\s\S]*?[.!?。！？](?:["'”’)]*)/);
-
-  if (!match) {
-    const [firstLine, ...rest] = normalized.split(/\n+/);
-    return {
-      firstSentence: firstLine,
-      remainder: rest.join("\n").trim(),
-    };
-  }
-
-  return {
-    firstSentence: match[0].trim(),
-    remainder: normalized.slice(match[0].length).trim(),
-  };
-}
-
-function InsightPreview({ insight }: { insight: DashboardInsightResult }) {
-  if (insight.status === "empty") {
+function InsightPreview({
+  report,
+  todayStatus,
+}: {
+  report: DailyInsightReport | null;
+  todayStatus: DailyInsightEligibility;
+}) {
+  if (!report) {
     return (
-      <div className={styles.emptyState}>
-        <div className={styles.emptyStateInner}>
-          <span className={styles.emptyGlyph}>
-            <SparklesIcon />
-          </span>
-          <strong>최근 7일간 분석할 행동 기록이 없습니다</strong>
-          <p>새로운 주문 행동이 쌓이면 AI 인사이트가 생성됩니다.</p>
+      <article className={styles.insightPreview}>
+        <div className={styles.insightPreviewContent}>
+          <section className={styles.insightSummaryBlock}>
+            <h3>
+              오늘의 기록으로 AI 인사이트를 만들 수 있어요
+            </h3>
+            <p>
+              생성하기 버튼을 누르면 현재 저장된 주문 시도, 가드레일, 피드백 {todayStatus.answeredFeedbackCount}건으로 새 리포트를 만들어요.
+            </p>
+          </section>
         </div>
-      </div>
+        <Link
+          className={styles.insightDetailLink}
+          href="/dashboard/ai-insights?focus=today"
+        >
+          AI 인사이트에서 생성하기 →
+        </Link>
+      </article>
     );
   }
 
-  if (insight.status === "error") {
-    return (
-      <div className={styles.emptyState}>
-        <div className={styles.emptyStateInner}>
-          <span className={styles.emptyGlyph}>
-            <SparklesIcon />
-          </span>
-          <strong>AI 인사이트를 불러오지 못했습니다</strong>
-          <p>잠시 후 페이지를 새로고침해 다시 확인해 주세요.</p>
-        </div>
-      </div>
-    );
-  }
-
-  const { firstSentence, remainder } = splitFirstSentence(insight.insight);
+  const viewModel = buildLatestInsightCardViewModel(report);
 
   return (
-    <Link className={styles.insightPreview} href="/dashboard/ai-insights">
-      <strong>{firstSentence}</strong>
-      {remainder ? <p>{remainder}</p> : null}
-      <span>AI 인사이트 자세히 보기 →</span>
-    </Link>
+    <article className={styles.insightPreview}>
+      <div className={styles.insightPreviewTop}>
+        <div>
+          <span className={styles.insightEyebrow}>최근 AI 인사이트</span>
+          <time dateTime={report.date}>{viewModel.dateLabel}</time>
+        </div>
+        {viewModel.flameLabel ? (
+          <span className={styles.insightStatusBadge}>{viewModel.flameLabel}</span>
+        ) : null}
+      </div>
+
+      <div className={styles.insightPreviewBody}>
+        <div className={styles.insightMascot} aria-hidden="true">
+          <FlameMascot
+            label=""
+            mode={viewModel.flameMode}
+            size="clamp(70px, 8vw, 96px)"
+            speed="slow"
+          />
+        </div>
+
+        <div className={styles.insightPreviewContent}>
+          <section className={styles.insightSummaryBlock}>
+            <h3>오늘 기록에서 발견한 패턴</h3>
+            <p>{viewModel.summary}</p>
+          </section>
+
+          {viewModel.oneLineAdvice ? (
+            <section className={styles.insightAdviceBox}>
+              <span>다음 주문에서 확인할 것</span>
+              <p>{viewModel.oneLineAdvice}</p>
+            </section>
+          ) : null}
+
+          <div className={styles.insightHighlightGrid}>
+            {viewModel.primaryCard ? (
+              <section className={styles.insightMiniCard}>
+                <span>{viewModel.primaryCard.severityLabel}</span>
+                <strong>{viewModel.primaryCard.label}</strong>
+                <p>{viewModel.primaryCard.description}</p>
+              </section>
+            ) : null}
+
+            {viewModel.primaryMetric ? (
+              <section className={styles.insightMiniCard}>
+                <span>{viewModel.primaryMetric.label}</span>
+                <strong>{viewModel.primaryMetric.value}</strong>
+                {viewModel.primaryMetric.description ? (
+                  <p>{viewModel.primaryMetric.description}</p>
+                ) : null}
+              </section>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      <Link className={styles.insightDetailLink} href={`/dashboard/ai-insights?report=${report.date}`}>
+        전체 보기 →
+      </Link>
+    </article>
   );
 }
 
@@ -73,7 +115,10 @@ export default function DashboardOverview({
   timeline,
   isTimelineUnavailable = false,
 }: {
-  insight: DashboardInsightResult;
+  insight: {
+    report: DailyInsightReport | null;
+    todayStatus: DailyInsightEligibility;
+  };
   timeline: GuardrailTimelineResponse | null;
   isTimelineUnavailable?: boolean;
 }) {
@@ -92,11 +137,11 @@ export default function DashboardOverview({
             <div className={styles.welcomeCopy}>
               <p>오늘도 불씨와 함께</p>
               <h2>
-                서두르지 않아도 괜찮아요.
+                내가 세운 투자 원칙,
                 <br />
-                차분한 투자를 이어가 볼까요?
+                주문 순간까지 이어가 볼까요?
               </h2>
-              <span>행동 기록과 맞춤 인사이트를 한곳에서 확인해요.</span>
+              <span>주문 기록과 가드레일 인사이트를 한곳에서 확인해요.</span>
             </div>
             <div className={styles.welcomeVisual} aria-hidden="true">
               <span className={styles.welcomeGlow} />
@@ -123,9 +168,16 @@ export default function DashboardOverview({
                   AI 인사이트
                 </h2>
               </div>
-              <span className={styles.panelMeta}>최근 분석</span>
+              <span className={styles.panelMeta}>
+                {insight.report
+                  ? buildLatestInsightCardViewModel(insight.report).shortDateLabel
+                  : "오늘 기록"}
+              </span>
             </header>
-            <InsightPreview insight={insight} />
+            <InsightPreview
+              report={insight.report}
+              todayStatus={insight.todayStatus}
+            />
           </section>
         </div>
 
