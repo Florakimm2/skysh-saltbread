@@ -857,6 +857,43 @@
   line-height: 1.5;
 }
 
+.saltbread-panel__daily-insight[hidden] {
+  display: none;
+}
+
+.saltbread-panel__daily-insight {
+  padding: 13px;
+  border: 1px solid #dbe7df;
+  border-radius: 8px;
+  background: #f8fcfa;
+}
+
+.saltbread-panel__daily-insight-copy {
+  margin: 0 0 11px;
+  color: #5f7167;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.saltbread-daily-insight-button {
+  width: 100%;
+  min-height: 38px;
+  border: 0;
+  border-radius: 10px;
+  color: #ffffff;
+  background: #2f7d5c;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.saltbread-daily-insight-button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
 .saltbread-feedback-actions {
   display: grid;
   gap: 8px;

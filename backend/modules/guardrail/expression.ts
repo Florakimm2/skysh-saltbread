@@ -8,6 +8,7 @@
 6. LITERAL 값 타입 검증
 7. requiresPrivateApi 자동 계산 */
 
+import { createHash } from "crypto";
 import { ApiError } from "@/backend/common/api";
 import { getRuleEligibleFieldDefinition } from "./catalog";
 import type {
@@ -417,4 +418,64 @@ export function validateRuleExpression(expression: RuleExpression): {
     "INVALID_RULE_EXPRESSION",
     "expression.nodeType은 CONDITION 또는 GROUP이어야 합니다."
   );
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value as Record<string, unknown>)
+      .sort()
+      .filter((key) => (value as Record<string, unknown>)[key] !== undefined)
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}:${stableJson(
+            (value as Record<string, unknown>)[key],
+          )}`,
+      )
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function canonicalizeRuleExpression(
+  expression: RuleExpression,
+): RuleExpression {
+  if (expression.nodeType === "GROUP") {
+    const children = expression.children
+      .map((child) => canonicalizeRuleExpression(child))
+      .sort((left, right) => stableJson(left).localeCompare(stableJson(right)));
+    return {
+      nodeType: "GROUP",
+      operator: expression.operator,
+      children,
+    };
+  }
+
+  if (expression.operator === "IS_NULL" || expression.operator === "IS_NOT_NULL") {
+    return {
+      nodeType: "CONDITION",
+      leftField: expression.leftField,
+      operator: expression.operator,
+    };
+  }
+
+  const comparisonCondition = expression as Extract<
+    RuleCondition,
+    { rightOperand: RuleOperand }
+  >;
+
+  return {
+    nodeType: "CONDITION",
+    leftField: comparisonCondition.leftField,
+    operator: comparisonCondition.operator,
+    rightOperand: comparisonCondition.rightOperand,
+  };
+}
+
+export function canonicalRuleExpressionHash(expression: RuleExpression): string {
+  return createHash("sha256")
+    .update(stableJson(canonicalizeRuleExpression(expression)))
+    .digest("hex");
 }

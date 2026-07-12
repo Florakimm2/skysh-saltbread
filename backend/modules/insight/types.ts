@@ -17,15 +17,16 @@ export interface InsightResult {
   insight: string;
 }
 
-export type DashboardInsightCard = {
-  title?: string;
-  description?: string;
-  severity?: string;
+export type FastApiInsightCard = {
+  title: string;
+  description: string;
+  severity: string;
 };
 
-export type DashboardInsightParsedData = {
-  cards?: DashboardInsightCard[];
-  [key: string]: unknown;
+export type FastApiInsightResponse = {
+  summary?: string;
+  flameStatus?: string;
+  cards?: FastApiInsightCard[];
 };
 
 export type DashboardInsightResult =
@@ -33,7 +34,7 @@ export type DashboardInsightResult =
       status: "ready";
       insight: string;
       sourceCount: number;
-      parsedData: DashboardInsightParsedData;
+      parsedData: FastApiInsightResponse;
     }
   | {
       status: "empty";

@@ -65,9 +65,9 @@ export default function Sidebar() {
 
       <div className={styles.sidebarFooter}>
         <p>
-          투자에 원칙을 더하는
+          내가 세운 투자 원칙을
           <br />
-          나만의 거래 가드레일
+          주문 순간까지 이어가세요
         </p>
         <LogoutButton />
       </div>
