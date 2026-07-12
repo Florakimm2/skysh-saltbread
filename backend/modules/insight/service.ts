@@ -10,6 +10,10 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const RECENT_ANALYSIS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_INSIGHT_SUMMARIES = 50;
 
+function isRecord(value: unknown): value is FastApiInsightResponse {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 const EVENT_LABELS: Record<string, string> = {
   AMOUNT_INPUT: "주문 금액 입력",
   QUANTITY_INPUT: "주문 수량 입력",
